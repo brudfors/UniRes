@@ -7,7 +7,6 @@ TODO:
         2 Coreg
         3 SuperRes w bounding box (vx is set here)
     . Deal with cross-talk? (http://www.mri-q.com/cross-talk.html)
-    . Make A and At standalone functions
     . Test A and At using the gradcheck function in torch
 
     x Test for Nc > 1, seems to work (need better test data)
@@ -64,10 +63,7 @@ class Input:
     Phi = None
     po = None
     sd = None
-    smo_ker = None
-    smo_pad = None
     tau = None
-    var = None
 
 
 @dataclass
@@ -96,16 +92,11 @@ class ProjOp:
     dim_y = None
     mat_y = None
     vx_y = None
-    dim_xy = None
-    mat_xy = None
-    vx_xy = None
-    fwhm = None
-    sd = None
-    shape = None
-    off = None
-    mat_off = None
+    dim_yx = None
+    mat_yx = None
     ratio = None
     smo_ker = None
+
 
 @dataclass
 class Settings:
@@ -152,7 +143,7 @@ class NiiProc:
         self.sett = sett  # self.sett is of class Settings()
         self.rho = None  # Infamous ADMM step-size
         self.do_proj = None  # Use projection matrices (set in format_output())
-        self.do_sr = None  # Do super-resolution, else denoising (set in format_output())
+        self.method = None  # Method name (super-resolution|denoising)
 
         # Read and format input
         self.x = self.format_input(pth_nii)
@@ -162,7 +153,6 @@ class NiiProc:
         # self.x[c][n].dat
         # self.x[c][n].dim
         # self.x[c][n].mat
-        # self.x[c][n].var
         # self.x[c][n].fname
         # self.x[c][n].tau
         # self.x[c][n].sd
@@ -173,6 +163,8 @@ class NiiProc:
         # self.x is of class Output()
         self.y = self.format_output()
         # Defines:
+        # self.do_proj
+        # self.method
         # self.y[c] = Output()
         # with fields:
         # self.y[c].lam0
@@ -195,27 +187,15 @@ class NiiProc:
         # self.x[c][n].po.dim_y
         # self.x[c][n].po.mat_y
         # self.x[c][n].po.vx_y
-        # self.x[c][n].po.dim_xy
-        # self.x[c][n].po.mat_xy
-        # self.x[c][n].po.vx_xy
-        # self.x[c][n].po.fwhm
-        # self.x[c][n].po.sd
-        # self.x[c][n].po.shape
-        # self.x[c][n].po.acc
-        # self.x[c][n].po.off
-        # self.x[c][n].po.mat_off
+        # self.x[c][n].po.dim_yx
+        # self.x[c][n].po.mat_yx
+        # self.x[c][n].po.smo_ker
+        # self.x[c][n].po.ratio
 
         # Initial guess of reconstructed images (y)
         self.init_y()
         # Defines:
         # self.y[c].dat
-
-        # TWO PUSH/PULL
-        # # Make smoothing operator
-        # self.smooth_build()
-        # # Defines:
-        # # self.x[c][n].smo
-        # # self.x[c][n].smo_p
 
         if False:  # Check adjointness of A and At operators
             self.check_adjoint(dtype=torch.float64)
@@ -296,8 +276,10 @@ class NiiProc:
         """ Compute negative model log-likelihood.
 
         Args:
-            vx_y (tuple(float)): Voxel size of reconstructed images.
+            vx_y (tuple(float)): Output voxel size.
             sum_dtype (torch.dtype): Defaults to torch.float64.
+            bound (str, optional): Bound for gradient/divergence calculation, defaults to
+                constant zero.
 
         Returns:
             nll (torch.tensor()): Negative log-likelihood.
@@ -323,12 +305,14 @@ class NiiProc:
 
         return nll_xy + nll_y
 
-    def DtD(self, dat, vx_y=None, bound='constant'):
+    def DtD(self, dat, vx_y, bound='constant'):
         """ Computes the divergence of the gradient.
 
         Args:
             dat (torch.tensor()): A tensor (D, H, W).
-            vx_y (tuple(float), optional): Voxel size. Defaults to 1.
+            vx_y (tuple(float)): Output voxel size.
+            bound (str, optional): Bound for gradient/divergence calculation, defaults to
+                constant zero.
 
         Returns:
               div (torch.tensor()): Laplacian (D, H, W).
@@ -495,7 +479,6 @@ class NiiProc:
         # input[c][n].dat
         # input[c][n].dim
         # input[c][n].mat
-        # input[c][n].var
         # input[c][n].fname
         # input[c][n].is_ct
         input = self.load_data(pth_nii)
@@ -550,22 +533,22 @@ class NiiProc:
         """
         Decide if super-resolving and/or projection is necessary
         """
-        self.do_sr = True
+        do_sr = True
         self.do_proj = True
         if vx_y is None and ((N == 1) or vx_same):  vx_y = all_vx[..., 0]  # One image, voxel size not given
 
         if vx_same and (np.abs(all_vx[..., 0] - vx_y) < 1e-3).all():
             # All input images have same voxel size, and output voxel size is the also the same
-            self.do_sr = False
+            do_sr = False
             if mat_same and dim_same:
                 # All input images have the same FOV
                 mat = all_mat[..., 0]
                 dim = all_dim[..., 0]
                 self.do_proj = False
 
-        if self.do_sr or self.do_proj:
+        if do_sr or self.do_proj:
             # Get FOV of mean space
-            if N == 1 and self.do_sr:
+            if N == 1 and do_sr:
                 D = np.diag([vx_y[0]/all_vx[0, 0], vx_y[1]/all_vx[1, 0], vx_y[2]/all_vx[2, 0], 1])
                 mat = np.matmul(all_mat[..., 0], D)
                 dim = np.squeeze(np.floor(np.matmul(np.linalg.inv(D)[:3, :3], np.reshape(all_dim[:, 0], (3, 1)))))
@@ -576,6 +559,10 @@ class NiiProc:
             for c in range(C):
                 for n in range(len(self.x[c])):
                     self.x[c][n].msk = None
+        if do_sr:
+            self.method = 'super-resolution'
+        else:
+            self.method = 'denoising'
 
         mat = torch.from_numpy(mat)
         dim = tuple(dim.astype(np.int))
@@ -611,259 +598,6 @@ class NiiProc:
 
         return output
 
-    def proj_apply(self, which, dat, c=0, n=0, bound='dct2'):
-        """ Applies operator A, At  or AtA (for denoising or super-resolution).
-
-        Args:
-            which (string): Either 'A', 'At' or 'AtA'.
-            dat (torch.tensor()): Image data (dim_x/dim_y).
-            c (int): Channel index, defaults to 0.
-            n (int): Observation index, defaults to 0.
-
-        Returns:
-            dat (torch.tensor()): Projected image data (dim_y/dim_x).
-
-        """
-        # Function settings
-        do_proj = self.do_proj
-        do_sr = self.do_sr
-        # Possibly, projection is not needed
-        if not do_proj:
-            return dat
-        dat = dat[None, None, ...]
-        dtype = dat.dtype
-        device = dat.device
-        # Projection info
-        mat_x = self.x[c][n].po.mat_x
-        mat_y = self.x[c][n].po.mat_y
-        mat_yx = self.x[c][n].po.mat_yx
-        # mat_xy = self.x[c][n].po.mat_xy
-        dim_x = self.x[c][n].po.dim_x
-        dim_y = self.x[c][n].po.dim_y
-        dim_yx = self.x[c][n].po.dim_yx
-        # dim_xy = self.x[c][n].po.dim_xy
-        ratio = self.x[c][n].po.ratio
-        smo_ker = self.x[c][n].po.smo_ker
-        # Do projection
-        if do_sr:
-            """ Super-resolution
-            """
-            # STRIDED CONVOLUTIONS
-            mat = mat_yx.solve(mat_y)[0]  # mat_y\mat_yx
-            grid = spm.affine(dim_yx[::-1], mat, device=device, dtype=dtype)
-            if which == 'A':
-                # STRIDED CONVOLUTIONS
-                dat = spatial.grid_pull(dat, grid, bound=bound)
-                dat = torch.conv3d(dat, smo_ker, stride=ratio)
-                # TWO PUSH/PULL
-                # # pullc
-                # mat = torch.matmul(torch.inverse(mat_y), mat_xy)
-                # grid = spm.affine(dim_xy[::-1], mat, device=self.sett.device)
-                # dat = spatial.grid_pull(dat, grid, bound=bound, extrapolate=True,
-                #                         interpolation=1)
-                # # smooth
-                # dat = self.smooth_apply(dat, c, n)
-                # # pull
-                # mat = torch.matmul(torch.inverse(mat_xy), mat_x)
-                # grid = spm.affine(dim_x[::-1], mat, device=self.sett.device)
-                # dat = spatial.grid_pull(dat, grid, bound=bound, extrapolate=False,
-                #                         interpolation=0)
-            elif which == 'At':
-                # STRIDED CONVOLUTIONS
-                dat = torch.conv_transpose3d(dat, smo_ker, stride=ratio)
-                dat = spatial.grid_push(dat, grid, shape=dim_y, bound=bound)
-                # TWO PUSH/PULL
-                # # push
-                # mat = torch.matmul(torch.inverse(mat_xy), mat_x)
-                # grid = spm.affine(dim_x[::-1], mat, device=self.sett.device)
-                # dat = spatial.grid_push(dat, grid, shape=dim_xy, bound=bound, extrapolate=False,
-                #                         interpolation=0)
-                # # smooth
-                # dat = self.smooth_apply(dat, c, n)
-                # # pushc
-                # mat = torch.matmul(torch.inverse(mat_y), mat_xy)
-                # grid = spm.affine(dim_xy[::-1], mat, device=self.sett.device)
-                # dat = spatial.grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=True,
-                #                         interpolation=1)
-            elif which == 'AtA':
-                # STRIDED CONVOLUTIONS
-                dat = spatial.grid_pull(dat, grid, bound=bound)
-                dat = torch.conv3d(dat, smo_ker, stride=ratio)
-                dat = torch.conv_transpose3d(dat, smo_ker, stride=ratio)
-                dat = spatial.grid_push(dat, grid, shape=dim_y, bound=bound)
-                # TWO PUSH/PULL
-                # # Make grids
-                # mat = torch.matmul(torch.inverse(mat_y), mat_xy)
-                # grid1 = spm.affine(dim_xy[::-1], mat, device=self.sett.device)
-                # mat = torch.matmul(torch.inverse(mat_xy), mat_x)
-                # grid2 = spm.affine(dim_x[::-1], mat, device=self.sett.device)
-                # # A
-                # dat = spatial.grid_pull(dat, grid1, bound=bound, extrapolate=True,
-                #                         interpolation=1)  # pullc
-                # dat = self.smooth_apply(dat, c, n)
-                # dat = spatial.grid_pull(dat, grid2, bound=bound, extrapolate=False,
-                #                         interpolation=0)  # pull
-                # # At
-                # dat = spatial.grid_push(dat, grid2, shape=dim_xy, bound=bound, extrapolate=False,
-                #                         interpolation=0)  # push
-                # dat = self.smooth_apply(dat, c, n)
-                # dat = spatial.grid_push(dat, grid1, shape=dim_y, bound=bound, extrapolate=True,
-                #                         interpolation=1)  # pushc
-        else:
-            """ Denoising
-            """
-            # Make grid
-            mat = mat_x.solve(mat_y)[0]  # mat_y\mat_x
-            grid = spm.affine(dim_x[::-1], mat, device=device)
-            if which == 'A':
-                dat = spatial.grid_pull(dat, grid, bound=bound,
-                                        extrapolate=False, interpolation=1)
-            elif which == 'At':
-                dat = spatial.grid_push(dat, grid, shape=dim_y, bound=bound,
-                                        extrapolate=False, interpolation=1)
-            elif which == 'AtA':
-                dat = spatial.grid_pull(dat, grid, bound=bound,
-                                        extrapolate=False, interpolation=1)
-                dat = spatial.grid_push(dat, grid, shape=dim_y, bound=bound,
-                                        extrapolate=False, interpolation=1)
-
-        return dat[0, 0, ...]
-
-    def proj_info(self):
-        """ Adds a projection matrix encoding to each input.
-
-        """
-        # Parse function parameters/settings
-        device = self.sett.device
-        gap = self.sett.gap
-        profile_ip = self.sett.profile_ip
-        profile_tp = self.sett.profile_tp
-        dtype = torch.float64
-        one = torch.tensor(1, device=device, dtype=torch.float64)
-        two = torch.tensor(2, device=device, dtype=torch.float64)
-        C = len(self.x)
-        # Build each projection operator
-        for c in range(C):
-            dim_y = torch.tensor(self.y[c].dim, device=device, dtype=torch.float64)
-            mat_y = self.y[c].mat
-            vx_y = self.vxsize(self.y[c].mat)
-            Nc = len(self.x[c])
-            for n in range(Nc):
-                po = ProjOp()
-                # STRIDED CONVOLUTIONS
-                # Output properties
-                po.dim_y = dim_y
-                po.mat_y = mat_y
-                po.vx_y = vx_y
-                # Input properties
-                po.dim_x = torch.tensor(self.x[c][n].dim, device=device, dtype=torch.float64)
-                po.mat_x = self.x[c][n].mat
-                po.vx_x = self.vxsize(self.x[c][n].mat)
-                # Slice-profile
-                gap_cn = torch.zeros(3, device=device, dtype=torch.float64)
-                profile_cn = torch.tensor([profile_ip, profile_ip, profile_ip], device=device, dtype=torch.float64)
-                ix_thick = torch.max(po.vx_x, dim=0)[1]
-                gap_cn[ix_thick] = gap
-                profile_cn[ix_thick] = profile_tp
-                # Intermediate
-                ratio = torch.solve(po.mat_x, po.mat_y)[0]  # mat_y\mat_x
-                ratio = (ratio[:3, :3] ** 2).sum(0).sqrt()
-                ratio = ratio.ceil().clamp(1)  # ratio low/high >= 1
-                mat_yx = torch.cat((ratio, torch.ones(1, device=device, dtype=torch.float64))).diag()
-                po.mat_yx = po.mat_x.matmul(mat_yx.inverse())  # mat_x/mat_yx
-                po.dim_yx = (po.dim_x - 1) * ratio + 1
-                # Make elements with ratio <= 1 use dirac profile
-                profile_cn[ratio == 1] = -1
-                profile_cn = profile_cn.int().tolist()
-                # Make smoothing kernel (slice-profile)
-                fwhm = (1. - gap_cn) * ratio
-                smo_ker = kernels.smooth(profile_cn, fwhm, sep=False, dtype=torch.float32, device=device)
-                po.smo_ker = smo_ker
-                # Add offset to intermediate space
-                off = torch.tensor(smo_ker.shape[5:1:-1], dtype=torch.float64, device=device)
-                off = -(off - 1) // 2 # set offset
-                mat_off = torch.eye(4, dtype=dtype, device=device)
-                mat_off[:3, -1] = off
-                po.dim_yx = po.dim_yx + 2*torch.abs(off)
-                po.mat_yx = torch.matmul(po.mat_yx, mat_off)
-                # To list of ints
-                po.dim_yx = po.dim_yx.int().tolist()
-                po.dim_x = po.dim_x.int().tolist()
-                po.dim_y = po.dim_y.int().tolist()
-                po.ratio = ratio.int().tolist()[::-1]
-                # TWO PUSH/PULL
-                # # Input properties
-                # po.dim_x = torch.tensor(self.x[c][n].dim, device=device, dtype=dtype)
-                # po.mat_x = self.x[c][n].mat
-                # po.vx_x = self.vxsize(self.x[c][n].mat)
-                # # Output properties
-                # po.dim_y = torch.tensor(self.y[c].dim, device=device, dtype=dtype)
-                # po.mat_y = self.y[c].mat
-                # po.vx_y = self.vxsize(self.y[c].mat)
-                # # Input to intermediate
-                # po.vx_xy =\
-                #     self.vxsize(torch.matmul(torch.diag(torch.cat((po.vx_x, one.view(1)))),
-                #         torch.matmul(torch.inverse(po.mat_x), po.mat_y)))
-                # po.mat_xy = \
-                #     torch.matmul(po.mat_x, torch.matmul(
-                #         torch.inverse(torch.diag(torch.cat((po.vx_x, one.view(1))))),
-                #         torch.diag(torch.cat((po.vx_xy, one.view(1))))))
-                # po.dim_xy = torch.ceil(po.dim_x*(po.vx_x/po.vx_xy))
-                # # Smoothing
-                # gap_c = torch.zeros(3, dtype=dtype, device=device)
-                # shape_c = torch.tensor([profile_ip, profile_ip, profile_ip], dtype=dtype, device=device)
-                # ix_thick = torch.max(po.vx_x, dim=0)[1]
-                # gap_c[ix_thick] = gap
-                # shape_c[ix_thick] = profile_tp
-                # po.fwhm = po.vx_x/po.vx_xy
-                # po.fwhm = (1 - gap_c)*po.fwhm
-                # po.fwhm = po.fwhm.float()
-                # po.sd = po.fwhm/(2*torch.sqrt(2 * torch.log(two)))
-                # po.shape = self.tensor2tuple(shape_c)
-                # # Offset
-                # po.off = -torch.ceil(po.sd*4)  # set offset
-                # po.mat_off = torch.eye(4, dtype=dtype, device=device)
-                # po.mat_off[:-1, -1] = po.off
-                # po.dim_xy = po.dim_xy + 2*torch.abs(po.off)
-                # po.mat_xy = torch.matmul(po.mat_xy, po.mat_off)
-                # # Make all dims tuples of ints
-                # po.dim_x = self.tensor2tuple(po.dim_x)
-                # po.dim_y = self.tensor2tuple(po.dim_y)
-                # po.dim_xy = self.tensor2tuple(po.dim_xy)
-                # Assign
-                self.x[c][n].po = po
-
-    def proj_which(self, which, dat, c=0, n=0, vx_y=None, bound_DtD='constant'):
-        """ Projects image data by A, At or AtA.
-
-        Args:
-            which (string): Either 'A', 'At ' or 'AtA'.
-            dat (torch.tensor()): Image data (dim_x/dim_y).
-            c (int): Channel index, defaults to 0.
-            n (int): Observation index, defaults to 0.
-
-        Returns:
-            dat (torch.tensor()): Projected image data (dim_y/dim_x).
-
-        """
-        # Parse function parameters/settings
-        device = self.sett.device
-        rho = self.rho
-        # Project
-        if which == 'A':  # Pull
-            dat = self.proj_apply('A', dat, c, n)
-        elif which == 'At':  # Push
-            dat = self.proj_apply('At', dat, c, n)
-        elif which == 'AtA':
-            dat1 = rho * self.y[c].lam ** 2 * self.DtD(dat, vx_y=vx_y, bound=bound_DtD)
-            dat = self.x[c][0].tau * self.proj_apply('AtA', dat, c, n)
-            Nc = len(self.x[c])
-            for n1 in range(1, Nc):
-                dat = dat + self.x[c][n1].tau * self.proj_apply('AtA', dat, c, n1)
-            dat = dat + dat1
-
-        return dat
-
     def image_statistics(self, input):
         """ Estimate noise precision (tau) and mean brain
             intensity (mu) of each observed image.
@@ -877,7 +611,6 @@ class NiiProc:
 
         """
         # Parse function settings
-        device = self.sett.device
         show_hyperpar = self.sett.show_hyperpar
 
         # Print info to screen
@@ -976,12 +709,12 @@ class NiiProc:
                 for n in range(Nc):  # Loop over observations of channel c
                     input[c].append(Input())
                     input[c][n].dat, input[c][n].dim, input[c][n].mat, \
-                    input[c][n].var, input[c][n].fname, input[c][n].msk, input[c][n].is_ct = \
+                    _, input[c][n].fname, input[c][n].msk, input[c][n].is_ct = \
                         self.load_nifti_3d(pth_nii[c][n], device)
             else:
                 input[c].append(Input())
                 input[c][0].dat, input[c][0].dim, input[c][0].mat, \
-                input[c][0].var, input[c][0].fname, input[c][0].msk, input[c][0].is_ct = \
+                _, input[c][0].fname, input[c][0].msk, input[c][0].is_ct = \
                     self.load_nifti_3d(pth_nii[c], device)
 
         return input
@@ -1091,21 +824,17 @@ class NiiProc:
         """
         if not self.sett.print_info:
             return 0
-        if self.do_sr:
-            which = 'super-resolution'
-        else:
-            which = 'denoising'
 
         if self.sett.print_info >= 1:
             if info == 'fit-finish':
                 print(' {} finished in {:0.5f} seconds and '
-                      '{} iterations\n'.format(which, timer() - argv[0], argv[1] + 1))
+                      '{} iterations\n'.format(self.method, timer() - argv[0], argv[1] + 1))
             elif info in 'fit-ll':
                 print('{:3} - Convergence ({:0.1f} s)  | nll={:0.4f}, '
                       'gain={:0.7f}'.format(argv[0] + 1, timer() - argv[3], argv[1], argv[2]))
             elif info == 'fit-start':
                 print('\nStarting {} \n{} | C={} | N={} | device={} | '
-                      'maxiter={} | tol={}'.format(which, datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                      'maxiter={} | tol={}'.format(self.method, datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                                                    argv[0], argv[1], argv[2], argv[3], argv[4]))
             elif info in 'step_size':
                 print('\nADMM step-size={:0.4f}'.format(argv[0]))
@@ -1138,6 +867,102 @@ class NiiProc:
                 print('{}'.format(argv[0]), end=' ')
 
         return timer()
+
+    def proj_info(self):
+        """ Adds a projection matrix encoding to each input.
+
+        """
+        # Parse function parameters/settings
+        device = self.sett.device
+        gap = self.sett.gap
+        profile_ip = self.sett.profile_ip
+        profile_tp = self.sett.profile_tp
+        C = len(self.x)
+        # Build each projection operator
+        for c in range(C):
+            dim_y = torch.tensor(self.y[c].dim, device=device, dtype=torch.float64)
+            mat_y = self.y[c].mat
+            vx_y = self.vxsize(self.y[c].mat)
+            Nc = len(self.x[c])
+            for n in range(Nc):
+                po = ProjOp()
+                # Output properties
+                po.dim_y = dim_y
+                po.mat_y = mat_y
+                po.vx_y = vx_y
+                # Input properties
+                po.dim_x = torch.tensor(self.x[c][n].dim, device=device, dtype=torch.float64)
+                po.mat_x = self.x[c][n].mat
+                po.vx_x = self.vxsize(self.x[c][n].mat)
+                # Slice-profile
+                gap_cn = torch.zeros(3, device=device, dtype=torch.float64)
+                profile_cn = torch.tensor([profile_ip, profile_ip, profile_ip], device=device, dtype=torch.float64)
+                ix_thick = torch.max(po.vx_x, dim=0)[1]
+                gap_cn[ix_thick] = gap
+                profile_cn[ix_thick] = profile_tp
+                # Intermediate
+                ratio = torch.solve(po.mat_x, po.mat_y)[0]  # mat_y\mat_x
+                ratio = (ratio[:3, :3] ** 2).sum(0).sqrt()
+                ratio = ratio.ceil().clamp(1)  # ratio low/high >= 1
+                mat_yx = torch.cat((ratio, torch.ones(1, device=device, dtype=torch.float64))).diag()
+                po.mat_yx = po.mat_x.matmul(mat_yx.inverse())  # mat_x/mat_yx
+                po.dim_yx = (po.dim_x - 1) * ratio + 1
+                # Make elements with ratio <= 1 use dirac profile
+                profile_cn[ratio == 1] = -1
+                profile_cn = profile_cn.int().tolist()
+                # Make smoothing kernel (slice-profile)
+                fwhm = (1. - gap_cn) * ratio
+                smo_ker = kernels.smooth(profile_cn, fwhm, sep=False, dtype=torch.float32, device=device)
+                po.smo_ker = smo_ker
+                # Add offset to intermediate space
+                off = torch.tensor(smo_ker.shape[5:1:-1], dtype=torch.float64, device=device)
+                off = -(off - 1) // 2 # set offset
+                mat_off = torch.eye(4, dtype=torch.float64, device=device)
+                mat_off[:3, -1] = off
+                po.dim_yx = po.dim_yx + 2*torch.abs(off)
+                po.mat_yx = torch.matmul(po.mat_yx, mat_off)
+                # To list of ints
+                po.dim_yx = po.dim_yx.int().tolist()
+                po.dim_x = po.dim_x.int().tolist()
+                po.dim_y = po.dim_y.int().tolist()
+                po.ratio = ratio.int().tolist()[::-1]
+                # Assign
+                self.x[c][n].po = po
+
+    def proj_which(self, operator, dat, c=0, n=0, vx_y=None, bound_DtD='constant'):
+        """ Projects image data by A, At or AtA.
+
+        Args:
+            operator (string): Either 'A', 'At ' or 'AtA'.
+            dat (torch.tensor()): Image data (dim_x/dim_y).
+            c (int): Channel index, defaults to 0.
+            n (int): Observation index, defaults to 0.
+            vx_y (tuple(float)): Output voxel size.
+            bound_DtD (str, optional): Bound for gradient/divergence calculation, defaults to
+                constant zero.
+
+        Returns:
+            dat (torch.tensor()): Projected image data (dim_y/dim_x).
+
+        """
+        # Parse function parameters/settings
+        rho = self.rho
+        method = self.method
+        do_proj = self.do_proj
+        # Project
+        if operator == 'AtA':
+            if not do_proj:  operator = 'none'  # self.proj_apply returns dat
+            dat1 = rho * self.y[c].lam ** 2 * self.DtD(dat, vx_y=vx_y, bound=bound_DtD)
+            dat = self.x[c][n].tau * self.proj_apply(operator, method, dat, self.x[c][n].po)
+            Nc = len(self.x[c])
+            for n1 in range(1, Nc):
+                dat = dat + self.x[c][n1].tau * self.proj_apply(operator, method, dat, self.x[c][n1].po)
+            dat = dat + dat1
+        else:  # A, At
+            if not do_proj:  operator = 'none'  # self.proj_apply returns dat
+            dat = self.proj_apply(operator, method, dat, self.x[c][n].po)
+
+        return dat
 
     def show_jtv(self, *argv):
         """ Show the joint total variation (JTV).
@@ -1179,50 +1004,6 @@ class NiiProc:
             fig.canvas.flush_events()
 
         return fig, ax
-
-    def smooth_apply(self, dat, c, n, bound='constant'):
-        """ Apply smoothing operator.
-
-        Args:
-            dat (torch.tensor()): Image data (1, 1, dim).
-            c (int): Channel index, defaults to 0.
-            n (int): Observation index, defaults to 0.
-
-        Returns:
-            dat (torch.tensor()): Smoothed image data (1, 1, dim).
-
-        """
-        # Pad
-        smo_pad = self.x[c][n].smo_pad  # Padding size
-        dat = utils.pad(dat, smo_pad, mode=bound)
-        # Apply smoothing by convolution
-        dat = torch.conv3d(dat, self.x[c][n].smo_ker)
-
-        return dat
-
-    def smooth_build(self):
-        """ Adds a smoothing operator encoding to each input. The smoothing operator
-            is here encoded by a 3D convolution with a Gaussian kernel.
-
-        """
-        # Parse function parameters/settings
-        device = self.sett.device
-        dtype = torch.float32
-        for c in range(len(self.x)):
-            for n in range(len(self.x[c])):
-                # Get nitorch smoothing kernel
-                smo_ker = kernels.smooth(self.x[c][n].po.shape, fwhm=self.x[c][n].po.fwhm,
-                                         basis=1, sep=False, dtype=dtype, device=device)
-                # Assign
-                self.x[c][n].smo_ker = smo_ker
-                # Set padding size
-                smo_pad = smo_ker.shape
-                smo_pad = torch.tensor([smo_pad[2], smo_pad[3], smo_pad[4]])
-                smo_pad = torch.floor(0.5 * smo_pad)
-                smo_pad = self.tensor2tuple(smo_pad)
-                smo_pad = (0,) * 4 + (smo_pad[0], smo_pad[0], smo_pad[1], smo_pad[1], smo_pad[2], smo_pad[2],)
-                # Assign
-                self.x[c][n].smo_pad = smo_pad
 
     def step_size(self):
         """ ADMM step size (rho) from image statistics.
@@ -1273,3 +1054,75 @@ class NiiProc:
 
         """
         return (mat[:3, :3] ** 2).sum(0).sqrt()
+
+    @staticmethod
+    def proj_apply(operator, method, dat, po, bound='dct2'):
+        """ Applies operator A, At  or AtA (for denoising or super-resolution).
+
+        Args:
+            operator (string): Either 'A', 'At', 'AtA' or 'none'.
+            method (string): Either 'denoising' or 'super-resolution'.
+            dat (torch.tensor()): Image data (dim_x/dim_y).
+            po (ProjOp()): Encodes projection operator.
+            bound (str, optional): Bound for nitorch push/pull, defaults to 'dct2'.
+
+        Returns:
+            dat (torch.tensor()): Projected image data (dim_y/dim_x).
+
+        """
+        # Sanity check
+        if operator not in ['A', 'At', 'AtA', 'none']:
+            raise ValueError('Undefined operator')
+        if method not in ['denoising', 'super-resolution']:
+            raise ValueError('Undefined method')
+        if operator == 'none':
+            # No projection
+            return dat
+        # Expand input image (for compatibility with nitorch)
+        dat = dat[None, None, ...]
+        dtype = dat.dtype
+        device = dat.device
+        # Parse required projection info
+        mat_x = po.mat_x
+        mat_y = po.mat_y
+        mat_yx = po.mat_yx
+        dim_x = po.dim_x
+        dim_y = po.dim_y
+        dim_yx = po.dim_yx
+        ratio = po.ratio
+        smo_ker = po.smo_ker
+        # Apply projection
+        if method == 'super-resolution':
+            """ Super-resolution
+            """
+            mat = mat_yx.solve(mat_y)[0]  # mat_y\mat_yx
+            grid = spm.affine(dim_yx[::-1], mat, device=device, dtype=dtype)
+            if operator == 'A':
+                dat = spatial.grid_pull(dat, grid, bound=bound)
+                dat = torch.conv3d(dat, smo_ker, stride=ratio)
+            elif operator == 'At':
+                dat = torch.conv_transpose3d(dat, smo_ker, stride=ratio)
+                dat = spatial.grid_push(dat, grid, shape=dim_y, bound=bound)
+            elif operator == 'AtA':
+                dat = spatial.grid_pull(dat, grid, bound=bound)
+                dat = torch.conv3d(dat, smo_ker, stride=ratio)
+                dat = torch.conv_transpose3d(dat, smo_ker, stride=ratio)
+                dat = spatial.grid_push(dat, grid, shape=dim_y, bound=bound)
+        elif method == 'denoising':
+            """ Denoising
+            """
+            mat = mat_x.solve(mat_y)[0]  # mat_y\mat_x
+            grid = spm.affine(dim_x[::-1], mat, device=device)
+            if operator == 'A':
+                dat = spatial.grid_pull(dat, grid, bound=bound,
+                                        extrapolate=False, interpolation=1)
+            elif operator == 'At':
+                dat = spatial.grid_push(dat, grid, shape=dim_y, bound=bound,
+                                        extrapolate=False, interpolation=1)
+            elif operator == 'AtA':
+                dat = spatial.grid_pull(dat, grid, bound=bound,
+                                        extrapolate=False, interpolation=1)
+                dat = spatial.grid_push(dat, grid, shape=dim_y, bound=bound,
+                                        extrapolate=False, interpolation=1)
+
+        return dat[0, 0, ...]
