@@ -1,0 +1,5 @@
+# Python ignore
+*.pyc
+
+# folder ignore
+__pycache__
