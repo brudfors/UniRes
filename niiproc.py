@@ -8,9 +8,7 @@ TODO:
         3 SuperRes w bounding box (vx is set here)
     . Deal with cross-talk? (http://www.mri-q.com/cross-talk.html)
     . Test A and At using the gradcheck function in torch
-
-    x Test for Nc > 1, seems to work (need better test data)
-    x Artefacts when superres N=1 (seems to have been due to central difference?)
+    . Why artefacts when using central difference?
 
 REFERENCES:
     Brudfors M, Balbastre Y, Nachev P, Ashburner J.
