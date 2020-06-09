@@ -196,9 +196,9 @@ class NiiProc:
         # self.y[c].dat
 
         if False:  # Check adjointness of A and At operators
-            self.check_adjoint(dtype=torch.float64)
+            self.check_adjoint(po=self.x[0][0].po, method=self.method, dtype=torch.float64)
 
-    """ Methods
+    """ Class methods
     """
     def all_mat_dim_vx(self):
         """ Get all images affine matrices, dimensions and voxel sizes (as numpy arrays).
@@ -246,29 +246,6 @@ class NiiProc:
         w = torch.zeros(dim, dtype=dtype, device=device)
 
         return z, w
-
-    def check_adjoint(self, dtype=torch.float32):
-        """ Check adjointness of A and At operators.
-
-        """
-        c = 0
-        n = 0
-        dim_x = self.x[c][n].po.dim_x[::-1]
-        dim_y = self.x[c][n].po.dim_y[::-1]
-        device = self.x[c][n].dat.device
-        torch.manual_seed(0)
-        x = torch.rand(dim_x, dtype=dtype, device=device)
-        y = torch.rand(dim_y, dtype=dtype, device=device)
-        dtype0 = self.x[c][n].po.smo_ker.type()
-        self.x[c][n].po.smo_ker = self.x[c][n].po.smo_ker.type(dtype)
-        # Apply operators
-        Ay = self.proj_which('A', y, c=c, n=n)
-        Atx = self.proj_which('At', x, c=c, n=n)
-        self.x[c][n].po.smo_ker = self.x[c][n].po.smo_ker.type(dtype0)
-        # Check okay
-        val = torch.sum(Ay * x, dtype=torch.float64) - torch.sum(Atx * y, dtype=torch.float64)
-        # Print okay
-        print('<Ay, x> - <Atx, y> = {}'.format(val))
 
     def compute_nll(self, vx_y, sum_dtype=torch.float64, bound='constant'):
         """ Compute negative model log-likelihood.
@@ -692,6 +669,7 @@ class NiiProc:
         """
         # Parse function settings
         device = self.sett.device
+        is_ct = self.sett.is_ct
 
         if type(pth_nii) is str:
             pth_nii = [pth_nii]
@@ -708,76 +686,14 @@ class NiiProc:
                     input[c].append(Input())
                     input[c][n].dat, input[c][n].dim, input[c][n].mat, \
                     _, input[c][n].fname, input[c][n].msk, input[c][n].is_ct = \
-                        self.load_nifti_3d(pth_nii[c][n], device)
+                        self.load_nifti_3d(pth_nii[c][n], device, is_ct=is_ct)
             else:
                 input[c].append(Input())
                 input[c][0].dat, input[c][0].dim, input[c][0].mat, \
                 _, input[c][0].fname, input[c][0].msk, input[c][0].is_ct = \
-                    self.load_nifti_3d(pth_nii[c], device)
+                    self.load_nifti_3d(pth_nii[c], device, is_ct=is_ct)
 
         return input
-
-    def load_nifti_3d(self, pth_nii, device='cpu', as_float=True):
-        """ Loads 3D nifti data using nibabel.
-
-        Args:
-            pth_nii (string): Path to nifti file.
-            device (string, optional): PyTorch on CPU or GPU? Defaults to 'cpu'.
-            as_float (bool, optional): Load image data as float (else double), defaults to True.
-
-        Returns:
-            dat (torch.tensor(float)): Image data.
-            dim (torch.Size()): Image dimensions.
-            mat (torch.tensor(float)): Affine matrix.
-            var (torch.tensor(float)): Observation uncertainty.
-            fname (string): Filename
-            msk (torch.tensor()): Mask.
-            is_ct (bool): Is data CT?
-
-        """
-        # Parse function settings
-        is_ct = self.sett.is_ct
-        # Load nifti
-        nii = nib.load(pth_nii)
-        fname = nii.get_filename()
-        # Get image data
-        if as_float:
-            dat = torch.tensor(nii.get_fdata()).float().to(device)
-        else:
-            dat = torch.tensor(nii.get_fdata()).double().to(device)
-        # Mask: Remove NaNs
-        msk = ~torch.isfinite(dat)
-        # Apply mask
-        dat[msk] = 0
-        # # Mask: Remove min and max
-        # msk = msk | (dat == torch.max(dat))
-        # msk = msk | (dat == torch.min(dat))
-        if torch.min(dat) >= 0:
-            is_ct = False
-        if is_ct:
-            # CT: more masking..
-            msk = msk | (dat < -1020)
-            msk = msk | (dat > 3000)
-            # Apply mask
-            dat[msk] = 0
-        # Get affine matrix
-        mat = nii.affine
-        mat = torch.from_numpy(mat).double().to(device)
-        # Get dimensions
-        dim = dat.shape
-        # Make PyTorch form
-        dat = dat.permute(2, 1, 0)
-        # Get observation uncertainty
-        slope = nii.dataobj.slope
-        dtype = nii.get_data_dtype()
-        dtypes = ['int8', 'uint8', 'int16', 'uint16', 'int32', 'uint32', 'int64', 'uint64']
-        if dtype in dtypes:
-            var = torch.tensor(slope, dtype=torch.float32, device=device)
-            var = var ** 2 / 12
-        else:
-            var = torch.tensor(0, dtype=torch.float32, device=device)
-
-        return dat, dim, mat, var, fname, msk, is_ct
 
     def plot_convergence(self, *argv):
         """ Plots algorithm convergence.
@@ -1030,28 +946,95 @@ class NiiProc:
         # _ = self.print_info('step_size', rho)
         return rho
 
-    def tensor2tuple(self, t, type='int'):
-        """ Convert torch tensor to python tuple.
-
-        """
-        if type == 'int':
-            t = t.int().cpu().numpy()
-        elif type == 'float':
-            t = t.float().cpu().numpy()
-        t = tuple(getattr(t, "tolist", lambda: t)())
-        return t
-
-    def vxsize(self, mat):
-        """ Compute voxel size from affine matrix.
+    """ Static methods
+    """
+    @staticmethod
+    def check_adjoint(po, method, dtype=torch.float32):
+        """ Print adjointness of A and At operators:
+            <Ay, x> - <Atx, y> \approx 0
 
         Args:
-            mat (torch.tensor()): Affine matrix.
-
-        Returns:
-            vx (torch.tensor()): Voxel size (3).
+            po (ProjOp()): Encodes projection operator.
+            method (string): Either 'denoising' or 'super-resolution'.
+            dtype (torch.dtype, optional)
 
         """
-        return (mat[:3, :3] ** 2).sum(0).sqrt()
+        dim_x = po.dim_x[::-1]
+        dim_y = po.dim_y[::-1]
+        device = po.smo_ker.device
+        torch.manual_seed(0)
+        x = torch.rand(dim_x, dtype=dtype, device=device)
+        y = torch.rand(dim_y, dtype=dtype, device=device)
+        po.smo_ker = po.smo_ker.type(dtype)
+        # Apply A and At operators
+        Ay = NiiProc.proj_apply('A', method, y, po)
+        Atx = NiiProc.proj_apply('At', method, x, po)
+        # Check okay
+        val = torch.sum(Ay * x, dtype=torch.float64) - torch.sum(Atx * y, dtype=torch.float64)
+        # Print okay
+        print('<Ay, x> - <Atx, y> = {}'.format(val))
+
+    @staticmethod
+    def load_nifti_3d(pth_nii, device='cpu', as_float=True, is_ct=False):
+        """ Loads 3D nifti data using nibabel.
+
+        Args:
+            pth_nii (string): Path to nifti file.
+            device (string, optional): PyTorch on CPU or GPU? Defaults to 'cpu'.
+            as_float (bool, optional): Load image data as float (else double), defaults to True.
+            is_ct (bool, optional): Is the image a CT scan?
+
+        Returns:
+            dat (torch.tensor(float)): Image data.
+            dim (torch.Size()): Image dimensions.
+            mat (torch.tensor(float)): Affine matrix.
+            var (torch.tensor(float)): Observation uncertainty.
+            fname (string): Filename
+            msk (torch.tensor()): Mask.
+            is_ct (bool): Is data CT?
+
+        """
+        # Load nifti
+        nii = nib.load(pth_nii)
+        fname = nii.get_filename()
+        # Get image data
+        if as_float:
+            dat = torch.tensor(nii.get_fdata()).float().to(device)
+        else:
+            dat = torch.tensor(nii.get_fdata()).double().to(device)
+        # Mask: Remove NaNs
+        msk = ~torch.isfinite(dat)
+        # Apply mask
+        dat[msk] = 0
+        # # Mask: Remove min and max
+        # msk = msk | (dat == torch.max(dat))
+        # msk = msk | (dat == torch.min(dat))
+        if torch.min(dat) >= 0:
+            is_ct = False
+        if is_ct:
+            # CT: more masking..
+            msk = msk | (dat < -1020)
+            msk = msk | (dat > 3000)
+            # Apply mask
+            dat[msk] = 0
+        # Get affine matrix
+        mat = nii.affine
+        mat = torch.from_numpy(mat).double().to(device)
+        # Get dimensions
+        dim = dat.shape
+        # Make PyTorch form
+        dat = dat.permute(2, 1, 0)
+        # Get observation uncertainty
+        slope = nii.dataobj.slope
+        dtype = nii.get_data_dtype()
+        dtypes = ['int8', 'uint8', 'int16', 'uint16', 'int32', 'uint32', 'int64', 'uint64']
+        if dtype in dtypes:
+            var = torch.tensor(slope, dtype=torch.float32, device=device)
+            var = var ** 2 / 12
+        else:
+            var = torch.tensor(0, dtype=torch.float32, device=device)
+
+        return dat, dim, mat, var, fname, msk, is_ct
 
     @staticmethod
     def proj_apply(operator, method, dat, po, bound='dct2'):
@@ -1124,3 +1107,28 @@ class NiiProc:
                                         extrapolate=False, interpolation=1)
 
         return dat[0, 0, ...]
+
+    @staticmethod
+    def tensor2tuple(t, type='int'):
+        """ Convert torch tensor to python tuple.
+
+        """
+        if type == 'int':
+            t = t.int().cpu().numpy()
+        elif type == 'float':
+            t = t.float().cpu().numpy()
+        t = tuple(getattr(t, "tolist", lambda: t)())
+        return t
+
+    @staticmethod
+    def vxsize(mat):
+        """ Compute voxel size from affine matrix.
+
+        Args:
+            mat (torch.tensor()): Affine matrix.
+
+        Returns:
+            vx (torch.tensor()): Voxel size (3).
+
+        """
+        return (mat[:3, :3] ** 2).sum(0).sqrt()
