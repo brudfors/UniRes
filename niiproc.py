@@ -58,7 +58,6 @@ class Input:
     fname = None
     is_ct = None
     mat = None
-    msk = None
     mu = None
     Phi = None
     po = None
@@ -157,7 +156,6 @@ class NiiProc:
         # self._x[c][n].tau
         # self._x[c][n].sd
         # self._x[c][n].mu
-        # self._x[c][n].msk
 
         # Format output
         # self._y is of class Output()
@@ -330,10 +328,6 @@ class NiiProc:
             dat = self._y[c].dat
             dat[dat < mn] = 0
             dat = dat.permute(2, 1, 0)  # Permute back to nifti form
-            if self._x[c][0].msk is not None and len(self._x[c]) == 1:
-                # Reapply mask (only if input and output grids are the same,
-                # and there is one observations per channel)
-                dat[self._x[c][0].msk] = 0
             dat = dat.cpu().numpy()
             dat = nib.Nifti1Image(dat, header=self._y[c].header, affine=mat)
             nib.save(dat, self._y[c].fname)
@@ -531,10 +525,6 @@ class NiiProc:
             else:
                 # Mean space from several images
                 dim, mat, _ = mean_space(all_mat, all_dim, vx=vx_y, mod_prct=-mod_prct)
-            # Do not store mask (will not be able to apply it as dimensions change)
-            for c in range(C):
-                for n in range(len(self._x[c])):
-                    self._x[c][n].msk = None
         if do_sr:
             self._method = 'super-resolution'
         else:
@@ -686,12 +676,12 @@ class NiiProc:
                 for n in range(Nc):  # Loop over observations of channel c
                     input[c].append(Input())
                     input[c][n].dat, input[c][n].dim, input[c][n].mat, \
-                    _, input[c][n].fname, input[c][n].msk, input[c][n].is_ct = \
+                        _, input[c][n].fname, input[c][n].is_ct = \
                         self.load_nifti_3d(pth_nii[c][n], device, is_ct=is_ct)
             else:
                 input[c].append(Input())
                 input[c][0].dat, input[c][0].dim, input[c][0].mat, \
-                _, input[c][0].fname, input[c][0].msk, input[c][0].is_ct = \
+                    _, input[c][0].fname, input[c][0].is_ct = \
                     self.load_nifti_3d(pth_nii[c], device, is_ct=is_ct)
 
         return input
@@ -993,7 +983,6 @@ class NiiProc:
             mat (torch.tensor(float)): Affine matrix.
             var (torch.tensor(float)): Observation uncertainty.
             fname (string): Filename
-            msk (torch.tensor()): Mask.
             is_ct (bool): Is data CT?
 
         """
@@ -1005,21 +994,14 @@ class NiiProc:
             dat = torch.tensor(nii.get_fdata()).float().to(device)
         else:
             dat = torch.tensor(nii.get_fdata()).double().to(device)
-        # Mask: Remove NaNs
-        msk = ~torch.isfinite(dat)
-        # Apply mask
-        dat[msk] = 0
-        # # Mask: Remove min and max
-        # msk = msk | (dat == torch.max(dat))
-        # msk = msk | (dat == torch.min(dat))
+        # Remove NaNs
+        dat[~torch.isfinite(dat)] = 0
         if torch.min(dat) >= 0:
             is_ct = False
         if is_ct:
-            # CT: more masking..
-            msk = msk | (dat < -1020)
-            msk = msk | (dat > 3000)
-            # Apply mask
-            dat[msk] = 0
+            # Winsorize CT
+            dat[dat < -1024] = -1024
+            dat[dat > 3071] = 3071
         # Get affine matrix
         mat = nii.affine
         mat = torch.from_numpy(mat).double().to(device)
@@ -1037,7 +1019,7 @@ class NiiProc:
         else:
             var = torch.tensor(0, dtype=torch.float32, device=device)
 
-        return dat, dim, mat, var, fname, msk, is_ct
+        return dat, dim, mat, var, fname, is_ct
 
     @staticmethod
     def proj_apply(operator, method, dat, po, bound='dct2'):
