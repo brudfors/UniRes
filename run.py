@@ -9,19 +9,19 @@ Example usage:
 
 
 from argparse import ArgumentParser
-import niiproc
 from niiproc import NiiProc
+from niiproc import Settings
 import sys
 import torch
 
-def apply(pth, device, dir_out, dir_nitorch, plot_conv, print_info,
-          reg_scl, show_hyperpar, tolerance, vx):
+def run(pth, device, dir_out, dir_nitorch, plot_conv, print_info,
+        reg_scl, show_hyperpar, tolerance, vx):
 
     # CPU/GPU?
     device = torch.device("cpu" if not torch.cuda.is_available() else device)
 
     # Algorithm settings
-    s = niiproc.Settings  # Get default settings
+    s = Settings()  # Get default settings
     s.device = device
     if dir_out is not None: s.dir_out = dir_out
     if dir_nitorch is not None: s.dir_nitorch = dir_nitorch
@@ -90,4 +90,4 @@ if __name__ == "__main__":
                         help="Reconstruction voxel size (if None, set automatically)")
     # Apply
     args = parser.parse_args()
-    apply(**vars(args))
+    run(**vars(args))

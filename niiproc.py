@@ -8,6 +8,7 @@ TODO:
         3 SuperRes w bounding box (vx is set here)
     . Deal with cross-talk? (http://www.mri-q.com/cross-talk.html)
     . Test A and At using the gradcheck function in torch
+    . Make A and At layers instead, and import these
     . Why artefacts when using central difference?
 
 REFERENCES:
@@ -30,11 +31,11 @@ import math
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 import nibabel as nib
-from nitorch import kernels
-from nitorch import spatial
-from nitorch import spm
-from nitorch import utils
-from nitorch import optim
+from nitorch.kernels import smooth
+from nitorch.spatial import grid_pull, grid_push, voxsize
+from nitorch.spm import affine, mean_space, noise_estimate
+from nitorch.utils import gradient_3d, divergence_3d
+from nitorch.optim import cg, get_gain
 import numpy as np
 import os
 from timeit import default_timer as timer
@@ -139,68 +140,211 @@ class NiiProc:
         """
         # Algorithm settings
         self.sett = sett  # self.sett is of class Settings()
-        self.rho = None  # Infamous ADMM step-size
-        self.do_proj = None  # Use projection matrices (set in format_output())
-        self.method = None  # Method name (super-resolution|denoising)
+        self._rho = None  # Infamous ADMM step-size
+        self._do_proj = None  # Use projection matrices (set in _format_output())
+        self._method = None  # Method name (super-resolution|denoising)
 
         # Read and format input
-        self.x = self.format_input(pth_nii)
+        self._x = self._format_input(pth_nii)
         # Defines
-        # self.x[c][n] = Input()
+        # self._x[c][n] = Input()
         # with fields:
-        # self.x[c][n].dat
-        # self.x[c][n].dim
-        # self.x[c][n].mat
-        # self.x[c][n].fname
-        # self.x[c][n].tau
-        # self.x[c][n].sd
-        # self.x[c][n].mu
-        # self.x[c][n].msk
+        # self._x[c][n].dat
+        # self._x[c][n].dim
+        # self._x[c][n].mat
+        # self._x[c][n].fname
+        # self._x[c][n].tau
+        # self._x[c][n].sd
+        # self._x[c][n].mu
+        # self._x[c][n].msk
 
         # Format output
-        # self.x is of class Output()
-        self.y = self.format_output()
+        # self._y is of class Output()
+        self._y = self._format_output()
         # Defines:
-        # self.do_proj
-        # self.method
-        # self.y[c] = Output()
+        # self._do_proj
+        # self._method
+        # self._y[c] = Output()
         # with fields:
-        # self.y[c].lam0
-        # self.y[c].lam
-        # self.y[c].dim
-        # self.y[c].mat
-        # self.y[c].fname
-        # self.y[c].header
-        # self.y[c].nam
-        # self.y[c].dir_out
+        # self._y[c].lam0
+        # self._y[c].lam
+        # self._y[c].dim
+        # self._y[c].mat
+        # self._y[c].fname
+        # self._y[c].header
+        # self._y[c].nam
+        # self._y[c].dir_out
 
         # Define projection matrices
-        self.proj_info()
+        self._proj_info()
         # Defines:
-        # self.x[c][n].po = ProjOp()
+        # self._x[c][n].po = ProjOp()
         # with fields:
-        # self.x[c][n].po.dim_x
-        # self.x[c][n].po.mat_x
-        # self.x[c][n].po.vx_x
-        # self.x[c][n].po.dim_y
-        # self.x[c][n].po.mat_y
-        # self.x[c][n].po.vx_y
-        # self.x[c][n].po.dim_yx
-        # self.x[c][n].po.mat_yx
-        # self.x[c][n].po.smo_ker
-        # self.x[c][n].po.ratio
+        # self._x[c][n].po.dim_x
+        # self._x[c][n].po.mat_x
+        # self._x[c][n].po.vx_x
+        # self._x[c][n].po.dim_y
+        # self._x[c][n].po.mat_y
+        # self._x[c][n].po.vx_y
+        # self._x[c][n].po.dim_yx
+        # self._x[c][n].po.mat_yx
+        # self._x[c][n].po.smo_ker
+        # self._x[c][n].po.ratio
 
         # Initial guess of reconstructed images (y)
-        self.init_y()
+        self._init_y()
         # Defines:
-        # self.y[c].dat
+        # self._y[c].dat
 
         if False:  # Check adjointness of A and At operators
-            self.check_adjoint(po=self.x[0][0].po, method=self.method, dtype=torch.float64)
+            self.check_adjoint(po=self._x[0][0].po, method=self._method, dtype=torch.float64)
 
     """ Class methods
     """
-    def all_mat_dim_vx(self):
+    def fit(self):
+        """ Fit model.
+
+        """
+        # Parse function settings/parameters
+        device = self.sett.device
+        dtype = torch.float32
+        C = len(self._y)  # Number of channels
+        N = sum([len(x) for x in self._x])  # Number of observations
+        dim_y = self._y[0].dim  # Output dimensions
+        vx_y = voxsize(self._y[0].mat).float()  # Output voxel size
+        bound_grad = 'constant'
+        # Constants
+        tiny = torch.tensor(1e-7, dtype=dtype, device=device)
+        inf = torch.tensor(np.inf, dtype=dtype, device=device)
+        one = torch.tensor(1, dtype=dtype, device=device)
+
+        # Get ADMM variables
+        z, w = self._alloc_admm_vars()
+
+        # Init plotting
+        fig_nll, ax_nll = self._plot_convergence()
+        fig_jtv, ax_jtv = self._show_jtv()
+
+        """ Start iterating:
+            Updates y, z, w in alternating fashion, until a convergence threshold is met
+            on the model negative log-likelihood.
+        """
+        nll = torch.zeros(self.sett.max_iter, dtype=dtype, device=device)
+        t_iter = timer() if self.sett.print_info else 0
+        for iter in range(self.sett.max_iter):
+
+            if iter == 0:
+                t00 = self._print_info('fit-start', C, N, device,
+                    self.sett.max_iter, self.sett.tolerance)  # PRINT
+
+            """ Scale lambda
+            """
+            for c in range(C):
+                if type(self.sett.reg_scl) is list:  # coarse-to-fine scaling
+                    if iter >= len(self.sett.reg_scl):
+                        self._y[c].lam = self.sett.reg_scl[-1] * self._y[c].lam0
+                    else:
+                        self._y[c].lam = self.sett.reg_scl[iter] * self._y[c].lam0
+                else:
+                    self._y[c].lam = self.sett.reg_scl * self._y[c].lam0
+
+            """ Get ADMM step-size (depends on lam and tau)
+            """
+            self._rho = self._step_size()
+            # self._rho = torch.tensor(1, dtype=dtype, device=device)
+
+            """ UPDATE: z
+            """
+            t0 = self._print_info('fit-update', 'z', iter)  # PRINT
+            jtv = torch.zeros(dim_y[::-1], dtype=dtype, device=device)
+            for c in range(C):
+                Dy = self._y[c].lam * gradient_3d(self._y[c].dat, vx=vx_y, bound=bound_grad)
+                jtv = jtv + torch.sum((w[c, ...]/self._rho + Dy)**2, dim=0)
+            jtv = torch.sqrt(jtv)
+            jtv = ((jtv - one/self._rho).clamp_min(0))/(jtv + tiny)
+            # Show computed JTV
+            _, _ = self._show_jtv(jtv, fig_jtv, ax_jtv)
+            for c in range(C):
+                Dy = self._y[c].lam * gradient_3d(self._y[c].dat, vx=vx_y, bound=bound_grad)
+                for d in range(Dy.shape[0]):
+                    z[c, d, ...] = jtv*(w[c, d, ...]/self._rho + Dy[d, ...])
+            _ = self._print_info('fit-done', t0)  # PRINT
+
+            """ UPDATE: y
+            """
+            t0 = self._print_info('fit-update', 'y', iter)  # PRINT
+            for c in range(C):  # Loop over channels
+                Nc = len(self._x[c])
+
+                # RHS
+                rhs = torch.zeros(dim_y[::-1], device=device, dtype=dtype)
+                for n in range(Nc):  # Loop over observations of channel 'c'
+                    # _ = self._print_info('int', n)  # PRINT
+                    rhs = rhs + self._x[c][n].tau*self._proj_which('At', self._x[c][n].dat, c, n)
+
+                # Divergence
+                div = w[c, ...] - self._rho*z[c, ...]
+                div = divergence_3d(div, vx=vx_y, bound=bound_grad)
+                rhs = rhs - self._y[c].lam * div
+
+                # Invert y = lhs\rhs by conjugate gradients
+                AtA = lambda y: self._proj_which('AtA', y, c, vx_y=vx_y, bound__DtD=bound_grad)  # lhs
+                self._y[c].dat = cg(A=AtA,
+                                   b=rhs, x=self._y[c].dat,
+                                   verbose=self.sett.cgs_verbose,
+                                   maxiter=self.sett.cgs_iter,
+                                   tolerance=self.sett.cgs_tol)
+
+                _ = self._print_info('int', c)  # PRINT
+
+            _ = self._print_info('fit-done', t0)  # PRINT
+
+            """ Objective function and convergence related
+            """
+            if self.sett.tolerance > 0:
+                nll[iter] = self._compute_nll(vx_y=vx_y, bound=bound_grad)
+            # Plot convergence (if sett.plot_conv = True)
+            _, _ = self._plot_convergence(nll[:iter + 1], fig_nll, ax_nll)
+            # Check convergence
+            gain = get_gain(nll, iter, monotonicity='decreasing')
+            t_iter = self._print_info('fit-ll', iter, nll[iter], gain, t_iter)  # PRINT
+            if (gain < self.sett.tolerance) or (iter >= (self.sett.max_iter - 1)):
+                _ = self._print_info('fit-finish', t00, iter)  # PRINT
+                break  # Finished
+
+            """ UPDATE: w
+            """
+            t0 = self._print_info('fit-update', 'w', iter)  # PRINT
+            for c in range(C):  # Loop over channels
+                Dy = self._y[c].lam * gradient_3d(self._y[c].dat, vx=vx_y, bound=bound_grad)
+                w[c, ...] = w[c, ...] + self._rho*(Dy - z[c, ...])
+                _ = self._print_info('int', c)  # PRINT
+            _ = self._print_info('fit-done', t0)  # PRINT
+
+        """ Write results to disk
+        """
+        mat = self._y[0].mat.cpu()
+        for c in range(C):
+            # Reconstructed images
+            mn = torch.min(self._x[c][0].dat)
+            dat = self._y[c].dat
+            dat[dat < mn] = 0
+            dat = dat.permute(2, 1, 0)  # Permute back to nifti form
+            if self._x[c][0].msk is not None and len(self._x[c]) == 1:
+                # Reapply mask (only if input and output grids are the same,
+                # and there is one observations per channel)
+                dat[self._x[c][0].msk] = 0
+            dat = dat.cpu().numpy()
+            dat = nib.Nifti1Image(dat, header=self._y[c].header, affine=mat)
+            nib.save(dat, self._y[c].fname)
+        if self.sett.write_jtv:
+            # JTV
+            jtv = jtv.permute(2, 1, 0)  # Permute back to nifti form
+            jtv = jtv.cpu().numpy()
+            dat = nib.Nifti1Image(jtv, affine=mat)
+            nib.save(dat, os.path.join(self._y[c].dir_out, 'jtv_' + self._y[c].nam))
+            
+    def _all_mat_dim_vx(self):
         """ Get all images affine matrices, dimensions and voxel sizes (as numpy arrays).
 
         Returns:
@@ -212,22 +356,22 @@ class NiiProc:
         # Parse function settings
         device = self.sett.device
 
-        N = sum([len(x) for x in self.x])
+        N = sum([len(x) for x in self._x])
         all_mat = np.zeros((4, 4, N))
         all_dim = np.zeros((3, N))
         all_vx = np.zeros((3, N))
 
         cnt = 0
-        for c in range(len(self.x)):
-            for n in range(len(self.x[c])):
-                all_mat[..., cnt] = self.x[c][n].mat.cpu()
-                all_dim[..., cnt] = self.x[c][n].dim
-                all_vx[..., cnt] = self.vxsize(self.x[c][n].mat).cpu()
+        for c in range(len(self._x)):
+            for n in range(len(self._x[c])):
+                all_mat[..., cnt] = self._x[c][n].mat.cpu()
+                all_dim[..., cnt] = self._x[c][n].dim
+                all_vx[..., cnt] = voxsize(self._x[c][n].mat).cpu()
                 cnt += 1
 
         return all_mat, all_dim, all_vx
 
-    def alloc_admm_vars(self):
+    def _alloc_admm_vars(self):
         """ Get ADMM variables z and w.
 
         Returns:
@@ -238,8 +382,8 @@ class NiiProc:
         # Parse function settings/parameters
         device = self.sett.device
         dtype = torch.float32
-        C = len(self.y)
-        dim = self.y[0].dim
+        C = len(self._y)
+        dim = self._y[0].dim
         dim = (C, 3) + dim[::-1]
         # Allocate
         z = torch.zeros(dim, dtype=dtype, device=device)
@@ -247,7 +391,7 @@ class NiiProc:
 
         return z, w
 
-    def compute_nll(self, vx_y, sum_dtype=torch.float64, bound='constant'):
+    def _compute_nll(self, vx_y, sum_dtype=torch.float64, bound='constant'):
         """ Compute negative model log-likelihood.
 
         Args:
@@ -263,24 +407,24 @@ class NiiProc:
         device = self.sett.device
         dtype = torch.float32
 
-        C = len(self.y)
+        C = len(self._y)
         nll_xy = torch.tensor(0, dtype=dtype, device=device)
-        nll_y = torch.zeros(self.y[0].dim[::-1], dtype=dtype, device=device)
+        nll_y = torch.zeros(self._y[0].dim[::-1], dtype=dtype, device=device)
         for c in range(C):
-            Nc = len(self.x[c])
+            Nc = len(self._x[c])
             for n in range(Nc):
                 nll_xy = nll_xy + \
-                    self.x[c][n].tau/2*torch.sum((self.proj_which('A', self.y[c].dat, c, n)
-                                                  - self.x[c][n].dat)**2, dtype=sum_dtype)
+                    self._x[c][n].tau/2*torch.sum((self._proj_which('A', self._y[c].dat, c, n)
+                                                  - self._x[c][n].dat)**2, dtype=sum_dtype)
 
-            Dy = self.y[c].lam * utils.gradient_3d(self.y[c].dat, vx=vx_y, bound=bound)
+            Dy = self._y[c].lam * gradient_3d(self._y[c].dat, vx=vx_y, bound=bound)
             nll_y = nll_y + torch.sum(Dy**2, dim=0, dtype=dtype)
 
         nll_y = torch.sum(torch.sqrt(nll_y), dtype=sum_dtype)
 
         return nll_xy + nll_y
 
-    def DtD(self, dat, vx_y, bound='constant'):
+    def _DtD(self, dat, vx_y, bound='constant'):
         """ Computes the divergence of the gradient.
 
         Args:
@@ -293,154 +437,11 @@ class NiiProc:
               div (torch.tensor()): Laplacian (D, H, W).
 
         """
-        dat = utils.gradient_3d(dat, vx=vx_y, bound=bound)
-        dat = utils.divergence_3d(dat, vx=vx_y, bound=bound)
+        dat = gradient_3d(dat, vx=vx_y, bound=bound)
+        dat = divergence_3d(dat, vx=vx_y, bound=bound)
         return dat
 
-    def fit(self):
-        """ Fit model.
-
-        """
-        # Parse function settings/parameters
-        device = self.sett.device
-        dtype = torch.float32
-        C = len(self.y)  # Number of channels
-        N = sum([len(x) for x in self.x])  # Number of observations
-        dim_y = self.y[0].dim  # Output dimensions
-        vx_y = self.vxsize(self.y[0].mat).float()  # Output voxel size
-        bound_grad = 'constant'
-        # Constants
-        tiny = torch.tensor(1e-7, dtype=dtype, device=device)
-        inf = torch.tensor(np.inf, dtype=dtype, device=device)
-        one = torch.tensor(1, dtype=dtype, device=device)
-
-        # Get ADMM variables
-        z, w = self.alloc_admm_vars()
-
-        # Init plotting
-        fig_nll, ax_nll = self.plot_convergence()
-        fig_jtv, ax_jtv = self.show_jtv()
-
-        """ Start iterating:
-            Updates y, z, w in alternating fashion, until a convergence threshold is met
-            on the model negative log-likelihood.
-        """
-        nll = torch.zeros(self.sett.max_iter, dtype=dtype, device=device)
-        t_iter = timer() if self.sett.print_info else 0
-        for iter in range(self.sett.max_iter):
-
-            if iter == 0:
-                t00 = self.print_info('fit-start', C, N, device,
-                    self.sett.max_iter, self.sett.tolerance)  # PRINT
-
-            """ Scale lambda
-            """
-            for c in range(C):
-                if type(self.sett.reg_scl) is list:  # coarse-to-fine scaling
-                    if iter >= len(self.sett.reg_scl):
-                        self.y[c].lam = self.sett.reg_scl[-1] * self.y[c].lam0
-                    else:
-                        self.y[c].lam = self.sett.reg_scl[iter] * self.y[c].lam0
-                else:
-                    self.y[c].lam = self.sett.reg_scl * self.y[c].lam0
-
-            """ Get ADMM step-size (depends on lam and tau)
-            """
-            self.rho = self.step_size()
-            # self.rho = torch.tensor(1, dtype=dtype, device=device)
-
-            """ UPDATE: z
-            """
-            t0 = self.print_info('fit-update', 'z', iter)  # PRINT
-            jtv = torch.zeros(dim_y[::-1], dtype=dtype, device=device)
-            for c in range(C):
-                Dy = self.y[c].lam * utils.gradient_3d(self.y[c].dat, vx=vx_y, bound=bound_grad)
-                jtv = jtv + torch.sum((w[c, ...]/self.rho + Dy)**2, dim=0)
-            jtv = torch.sqrt(jtv)
-            jtv = ((jtv - one/self.rho).clamp_min(0))/(jtv + tiny)
-            # Show computed JTV
-            _, _ = self.show_jtv(jtv, fig_jtv, ax_jtv)
-            for c in range(C):
-                Dy = self.y[c].lam * utils.gradient_3d(self.y[c].dat, vx=vx_y, bound=bound_grad)
-                for d in range(Dy.shape[0]):
-                    z[c, d, ...] = jtv*(w[c, d, ...]/self.rho + Dy[d, ...])
-            _ = self.print_info('fit-done', t0)  # PRINT
-
-            """ UPDATE: y
-            """
-            t0 = self.print_info('fit-update', 'y', iter)  # PRINT
-            for c in range(C):  # Loop over channels
-                Nc = len(self.x[c])
-
-                # RHS
-                rhs = torch.zeros(dim_y[::-1], device=device, dtype=dtype)
-                for n in range(Nc):  # Loop over observations of channel 'c'
-                    # _ = self.print_info('int', n)  # PRINT
-                    rhs = rhs + self.x[c][n].tau*self.proj_which('At', self.x[c][n].dat, c, n)
-
-                # Divergence
-                div = w[c, ...] - self.rho*z[c, ...]
-                div = utils.divergence_3d(div, vx=vx_y, bound=bound_grad)
-                rhs = rhs - self.y[c].lam * div
-
-                # Invert y = lhs\rhs by conjugate gradients
-                AtA = lambda y: self.proj_which('AtA', y, c, vx_y=vx_y, bound_DtD=bound_grad)  # lhs
-                self.y[c].dat = optim.cg(A=AtA,
-                                         b=rhs, x=self.y[c].dat,
-                                         verbose=self.sett.cgs_verbose,
-                                         maxiter=self.sett.cgs_iter,
-                                         tolerance=self.sett.cgs_tol)
-
-                _ = self.print_info('int', c)  # PRINT
-
-            _ = self.print_info('fit-done', t0)  # PRINT
-
-            """ Objective function and convergence related
-            """
-            if self.sett.tolerance > 0:
-                nll[iter] = self.compute_nll(vx_y=vx_y, bound=bound_grad)
-            # Plot convergence (if sett.plot_conv = True)
-            _, _ = self.plot_convergence(nll[:iter + 1], fig_nll, ax_nll)
-            # Check convergence
-            gain = optim.gain(nll, iter, monotonicity='decreasing')
-            t_iter = self.print_info('fit-ll', iter, nll[iter], gain, t_iter)  # PRINT
-            if (gain < self.sett.tolerance) or (iter >= (self.sett.max_iter - 1)):
-                _ = self.print_info('fit-finish', t00, iter)  # PRINT
-                break  # Finished
-
-            """ UPDATE: w
-            """
-            t0 = self.print_info('fit-update', 'w', iter)  # PRINT
-            for c in range(C):  # Loop over channels
-                Dy = self.y[c].lam * utils.gradient_3d(self.y[c].dat, vx=vx_y, bound=bound_grad)
-                w[c, ...] = w[c, ...] + self.rho*(Dy - z[c, ...])
-                _ = self.print_info('int', c)  # PRINT
-            _ = self.print_info('fit-done', t0)  # PRINT
-
-        """ Write results to disk
-        """
-        mat = self.y[0].mat.cpu()
-        for c in range(C):
-            # Reconstructed images
-            mn = torch.min(self.x[c][0].dat)
-            dat = self.y[c].dat
-            dat[dat < mn] = 0
-            dat = dat.permute(2, 1, 0)  # Permute back to nifti form
-            if self.x[c][0].msk is not None and len(self.x[c]) == 1:
-                # Reapply mask (only if input and output grids are the same,
-                # and there is one observations per channel)
-                dat[self.x[c][0].msk] = 0
-            dat = dat.cpu().numpy()
-            dat = nib.Nifti1Image(dat, header=self.y[c].header, affine=mat)
-            nib.save(dat, self.y[c].fname)
-        if self.sett.write_jtv:
-            # JTV
-            jtv = jtv.permute(2, 1, 0)  # Permute back to nifti form
-            jtv = jtv.cpu().numpy()
-            dat = nib.Nifti1Image(jtv, affine=mat)
-            nib.save(dat, os.path.join(self.y[c].dir_out, 'jtv_' + self.y[c].nam))
-
-    def format_input(self, pth_nii):
+    def _format_input(self, pth_nii):
         """ Construct algorithm input struct.
 
         Args:
@@ -456,17 +457,17 @@ class NiiProc:
         # input[c][n].mat
         # input[c][n].fname
         # input[c][n].is_ct
-        input = self.load_data(pth_nii)
+        input = self._load_data(pth_nii)
 
         # Estimate input image statistics, filling the following fields of Input():
         # input[c][n].tau
         # input[c][n].mu
         # input[c][n].sd
-        input = self.image_statistics(input)
+        input = self._image_statistics(input)
 
         return input
 
-    def format_output(self):
+    def _format_output(self):
         """ Construct algorithm output struct. See Output() dataclass.
 
         Returns:
@@ -474,7 +475,7 @@ class NiiProc:
 
         """
         # Parse function settings
-        C = len(self.x)  # Number of channels
+        C = len(self._x)  # Number of channels
         device = self.sett.device
         dir_out = self.sett.dir_out
         out_prefix = self.sett.prefix
@@ -490,7 +491,7 @@ class NiiProc:
             vx_y = np.asarray(vx_y)
 
         # Get all orientation matrices and dimensions
-        all_mat, all_dim, all_vx = self.all_mat_dim_vx()
+        all_mat, all_dim, all_vx = self._all_mat_dim_vx()
         N = all_mat.shape[-1]  # Total number of observations
 
         # Check if all input images have the same fov/vx
@@ -509,7 +510,7 @@ class NiiProc:
         Decide if super-resolving and/or projection is necessary
         """
         do_sr = True
-        self.do_proj = True
+        self._do_proj = True
         if vx_y is None and ((N == 1) or vx_same):  vx_y = all_vx[..., 0]  # One image, voxel size not given
 
         if vx_same and (np.abs(all_vx[..., 0] - vx_y) < 1e-3).all():
@@ -519,9 +520,9 @@ class NiiProc:
                 # All input images have the same FOV
                 mat = all_mat[..., 0]
                 dim = all_dim[..., 0]
-                self.do_proj = False
+                self._do_proj = False
 
-        if do_sr or self.do_proj:
+        if do_sr or self._do_proj:
             # Get FOV of mean space
             if N == 1 and do_sr:
                 D = np.diag([vx_y[0]/all_vx[0, 0], vx_y[1]/all_vx[1, 0], vx_y[2]/all_vx[2, 0], 1])
@@ -529,19 +530,19 @@ class NiiProc:
                 dim = np.squeeze(np.floor(np.matmul(np.linalg.inv(D)[:3, :3], np.reshape(all_dim[:, 0], (3, 1)))))
             else:
                 # Mean space from several images
-                dim, mat, _ = spm.mean_space(all_mat, all_dim, vx=vx_y, mod_prct=-mod_prct)
+                dim, mat, _ = mean_space(all_mat, all_dim, vx=vx_y, mod_prct=-mod_prct)
             # Do not store mask (will not be able to apply it as dimensions change)
             for c in range(C):
-                for n in range(len(self.x[c])):
-                    self.x[c][n].msk = None
+                for n in range(len(self._x[c])):
+                    self._x[c][n].msk = None
         if do_sr:
-            self.method = 'super-resolution'
+            self._method = 'super-resolution'
         else:
-            self.method = 'denoising'
+            self._method = 'denoising'
 
         mat = torch.from_numpy(mat)
         dim = tuple(dim.astype(np.int))
-        _ = self.print_info('mean-space', dim, mat)
+        _ = self._print_info('mean-space', dim, mat)
 
         """ Assign output
         """
@@ -549,17 +550,17 @@ class NiiProc:
         for c in range(C):
             output.append(Output())
             # Regularisation (lambda) for channel c
-            Nc = len(self.x[c])
+            Nc = len(self._x[c])
             mu_c = torch.zeros(Nc, dtype=dtype, device=device)
             for n in range(Nc):
-                mu_c[n] = self.x[c][n].mu
+                mu_c[n] = self._x[c][n].mu
             output[c].lam0 = 1/torch.mean(mu_c)
             output[c].lam = 1/torch.mean(mu_c)  # To facilitate rescaling
             # Output image(s) dimension and orientation matrix
             output[c].dim = dim
             output[c].mat = mat.double().to(device)
             # Output filename
-            fname_in = self.x[c][0].fname
+            fname_in = self._x[c][0].fname
             pth, nam = os.path.split(fname_in)
             if dir_out is None: dir_out = pth
             fname_out = os.path.join(dir_out, out_prefix + nam)
@@ -573,7 +574,7 @@ class NiiProc:
 
         return output
 
-    def image_statistics(self, input):
+    def _image_statistics(self, input):
         """ Estimate noise precision (tau) and mean brain
             intensity (mu) of each observed image.
 
@@ -589,7 +590,7 @@ class NiiProc:
         show_hyperpar = self.sett.show_hyperpar
 
         # Print info to screen
-        t0 = self.print_info('hyper_par')
+        t0 = self._print_info('hyper_par')
 
         # Do estimation
         cnt = 0
@@ -607,20 +608,20 @@ class NiiProc:
                     # Get CT foreground
                     mu_noise = -1000
                     num_class = 10
-                    _, sd_fg, _, mu_fg = spm.noise_estimate(dat,
-                                                            num_class=num_class, show_fit=show_hyperpar,
-                                                            fig_num=100 + cnt,
-                                                            mu_noise=mu_noise, max_iter=max_iter)
+                    _, sd_fg, _, mu_fg = noise_estimate(dat,
+                                                        num_class=num_class, show_fit=show_hyperpar,
+                                                        fig_num=100 + cnt,
+                                                        mu_noise=mu_noise, max_iter=max_iter)
                     # Get CT noise
                     dat = dat[(dat > -1020) & (dat < -900)]
                     num_class = 2
-                    sd_bg, _, mu_bg, _ = spm.noise_estimate(dat,
-                                                            num_class=num_class, show_fit=show_hyperpar,
-                                                            fig_num=100 + cnt + C,
-                                                            mu_noise=mu_noise, max_iter=max_iter)
+                    sd_bg, _, mu_bg, _ = noise_estimate(dat,
+                                                        num_class=num_class, show_fit=show_hyperpar,
+                                                        fig_num=100 + cnt + C,
+                                                        mu_noise=mu_noise, max_iter=max_iter)
                 else:
                     # Get noise and foreground statistics
-                    sd_bg, sd_fg, mu_bg, mu_fg = spm.noise_estimate(dat,
+                    sd_bg, sd_fg, mu_bg, mu_fg = noise_estimate(dat,
                         num_class=num_class, show_fit=show_hyperpar, fig_num=100 + cnt,
                         mu_noise=mu_noise, max_iter=max_iter)
                 input[c][n].sd = sd_bg.float()
@@ -629,11 +630,11 @@ class NiiProc:
                 cnt += 1
 
         # Print info to screen
-        self.print_info('hyper_par', input, t0)
+        self._print_info('hyper_par', input, t0)
 
         return input
 
-    def init_y(self, interpolation=4):
+    def _init_y(self, interpolation=4):
         """ Make initial guesses of reconstucted image(s) using b-spline interpolation,
             with averaging if more than one observation per channel.
 
@@ -641,23 +642,23 @@ class NiiProc:
             interpolation (int, optional): Interpolation order, defaults to 4.
 
         """
-        C = len(self.x)
-        dim_out = self.x[0][0].po.dim_y[::-1]
+        C = len(self._x)
+        dim_out = self._x[0][0].po.dim_y[::-1]
         for c in range(C):
             y = torch.zeros(dim_out, dtype=torch.float32, device=self.sett.device)
-            Nc = len(self.x[c])
+            Nc = len(self._x[c])
             for n in range(Nc):
                 # Make output grid
-                mat = torch.matmul(torch.inverse(self.x[c][n].po.mat_x), self.x[c][n].po.mat_y)
-                grid = spm.affine(self.x[c][n].po.dim_y[::-1], mat, device=self.sett.device)
+                mat = torch.matmul(torch.inverse(self._x[c][n].po.mat_x), self._x[c][n].po.mat_y)
+                grid = affine(self._x[c][n].po.dim_y[::-1], mat, device=self.sett.device)
                 # Get image data
-                dat = self.x[c][n].dat[None, None, ...]
+                dat = self._x[c][n].dat[None, None, ...]
                 # Do interpolation
-                dat = spatial.grid_pull(dat, grid, bound='zero', extrapolate=False, interpolation=interpolation)
+                dat = grid_pull(dat, grid, bound='zero', extrapolate=False, interpolation=interpolation)
                 y = y + dat[0, 0, ...]
-            self.y[c].dat = y / Nc
+            self._y[c].dat = y / Nc
 
-    def load_data(self, pth_nii):
+    def _load_data(self, pth_nii):
         """ Parse nifti files into algorithm input struct(s).
 
         Args:
@@ -695,7 +696,7 @@ class NiiProc:
 
         return input
 
-    def plot_convergence(self, *argv):
+    def _plot_convergence(self, *argv):
         """ Plots algorithm convergence.
 
         """
@@ -729,7 +730,7 @@ class NiiProc:
 
         return fig, ax
 
-    def print_info(self, info, *argv):
+    def _print_info(self, info, *argv):
         """ Print algorithm info to terminal.
 
         Args:
@@ -742,13 +743,13 @@ class NiiProc:
         if self.sett.print_info >= 1:
             if info == 'fit-finish':
                 print(' {} finished in {:0.5f} seconds and '
-                      '{} iterations\n'.format(self.method, timer() - argv[0], argv[1] + 1))
+                      '{} iterations\n'.format(self._method, timer() - argv[0], argv[1] + 1))
             elif info in 'fit-ll':
                 print('{:3} - Convergence ({:0.1f} s)  | nll={:0.4f}, '
                       'gain={:0.7f}'.format(argv[0] + 1, timer() - argv[3], argv[1], argv[2]))
             elif info == 'fit-start':
                 print('\nStarting {} \n{} | C={} | N={} | device={} | '
-                      'maxiter={} | tol={}'.format(self.method, datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                      'maxiter={} | tol={}'.format(self._method, datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                                                    argv[0], argv[1], argv[2], argv[3], argv[4]))
             elif info in 'step_size':
                 print('\nADMM step-size={:0.4f}'.format(argv[0]))
@@ -769,8 +770,8 @@ class NiiProc:
                 else:
                     print('\nEstimating model hyper-parameters...', end='')
             elif info == 'mean-space':
-                vx_y = self.vxsize(argv[1])
-                vx_y = self.tensor2tuple(vx_y, type='float')
+                vx_y = voxsize(argv[1])
+                vx_y = tuple(vx_y.tolist())
                 print('\nMean space | dim={}, vx_y={}'.format(argv[0], vx_y))
         if self.sett.print_info >= 2:
             if info == 'fit-done':
@@ -782,7 +783,7 @@ class NiiProc:
 
         return timer()
 
-    def proj_info(self):
+    def _proj_info(self):
         """ Adds a projection matrix encoding to each input.
 
         """
@@ -791,13 +792,13 @@ class NiiProc:
         gap = self.sett.gap
         profile_ip = self.sett.profile_ip
         profile_tp = self.sett.profile_tp
-        C = len(self.x)
+        C = len(self._x)
         # Build each projection operator
         for c in range(C):
-            dim_y = torch.tensor(self.y[c].dim, device=device, dtype=torch.float64)
-            mat_y = self.y[c].mat
-            vx_y = self.vxsize(self.y[c].mat)
-            Nc = len(self.x[c])
+            dim_y = torch.tensor(self._y[c].dim, device=device, dtype=torch.float64)
+            mat_y = self._y[c].mat
+            vx_y = voxsize(self._y[c].mat)
+            Nc = len(self._x[c])
             for n in range(Nc):
                 po = ProjOp()
                 # Output properties
@@ -805,9 +806,9 @@ class NiiProc:
                 po.mat_y = mat_y
                 po.vx_y = vx_y
                 # Input properties
-                po.dim_x = torch.tensor(self.x[c][n].dim, device=device, dtype=torch.float64)
-                po.mat_x = self.x[c][n].mat
-                po.vx_x = self.vxsize(self.x[c][n].mat)
+                po.dim_x = torch.tensor(self._x[c][n].dim, device=device, dtype=torch.float64)
+                po.mat_x = self._x[c][n].mat
+                po.vx_x = voxsize(self._x[c][n].mat)
                 # Slice-profile
                 gap_cn = torch.zeros(3, device=device, dtype=torch.float64)
                 profile_cn = torch.tensor([profile_ip, profile_ip, profile_ip], device=device, dtype=torch.float64)
@@ -826,7 +827,7 @@ class NiiProc:
                 profile_cn = profile_cn.int().tolist()
                 # Make smoothing kernel (slice-profile)
                 fwhm = (1. - gap_cn) * ratio
-                smo_ker = kernels.smooth(profile_cn, fwhm, sep=False, dtype=torch.float32, device=device)
+                smo_ker = smooth(profile_cn, fwhm, sep=False, dtype=torch.float32, device=device)
                 po.smo_ker = smo_ker
                 # Add offset to intermediate space
                 off = torch.tensor(smo_ker.shape[5:1:-1], dtype=torch.float64, device=device)
@@ -841,9 +842,9 @@ class NiiProc:
                 po.dim_y = po.dim_y.int().tolist()
                 po.ratio = ratio.int().tolist()[::-1]
                 # Assign
-                self.x[c][n].po = po
+                self._x[c][n].po = po
 
-    def proj_which(self, operator, dat, c=0, n=0, vx_y=None, bound_DtD='constant'):
+    def _proj_which(self, operator, dat, c=0, n=0, vx_y=None, bound__DtD='constant'):
         """ Projects image data by A, At or AtA.
 
         Args:
@@ -852,7 +853,7 @@ class NiiProc:
             c (int): Channel index, defaults to 0.
             n (int): Observation index, defaults to 0.
             vx_y (tuple(float)): Output voxel size.
-            bound_DtD (str, optional): Bound for gradient/divergence calculation, defaults to
+            bound__DtD (str, optional): Bound for gradient/divergence calculation, defaults to
                 constant zero.
 
         Returns:
@@ -860,25 +861,25 @@ class NiiProc:
 
         """
         # Parse function parameters/settings
-        rho = self.rho
-        method = self.method
-        do_proj = self.do_proj
+        rho = self._rho
+        method = self._method
+        do_proj = self._do_proj
         # Project
         if operator == 'AtA':
             if not do_proj:  operator = 'none'  # self.proj_apply returns dat
-            dat1 = rho * self.y[c].lam ** 2 * self.DtD(dat, vx_y=vx_y, bound=bound_DtD)
-            dat = self.x[c][n].tau * self.proj_apply(operator, method, dat, self.x[c][n].po)
-            Nc = len(self.x[c])
+            dat1 = rho * self._y[c].lam ** 2 * self._DtD(dat, vx_y=vx_y, bound=bound__DtD)
+            dat = self._x[c][n].tau * self.proj_apply(operator, method, dat, self._x[c][n].po)
+            Nc = len(self._x[c])
             for n1 in range(1, Nc):
-                dat = dat + self.x[c][n1].tau * self.proj_apply(operator, method, dat, self.x[c][n1].po)
+                dat = dat + self._x[c][n1].tau * self.proj_apply(operator, method, dat, self._x[c][n1].po)
             dat = dat + dat1
         else:  # A, At
             if not do_proj:  operator = 'none'  # self.proj_apply returns dat
-            dat = self.proj_apply(operator, method, dat, self.x[c][n].po)
+            dat = self.proj_apply(operator, method, dat, self._x[c][n].po)
 
         return dat
 
-    def show_jtv(self, *argv):
+    def _show_jtv(self, *argv):
         """ Show the joint total variation (JTV).
 
         """
@@ -919,7 +920,7 @@ class NiiProc:
 
         return fig, ax
 
-    def step_size(self):
+    def _step_size(self):
         """ ADMM step size (rho) from image statistics.
 
         Returns:
@@ -930,20 +931,20 @@ class NiiProc:
         device = self.sett.device
         dtype = torch.float32
 
-        C = len(self.y)
-        N = sum([len(x) for x in self.x])
+        C = len(self._y)
+        N = sum([len(x) for x in self._x])
 
         all_lam = torch.zeros(C, dtype=dtype, device=device)
         all_tau = torch.zeros(N, dtype=dtype, device=device)
         cnt = 0
-        for c in range(len(self.x)):
-            all_lam[c] = self.y[c].lam
-            for n in range(len(self.x[c])):
-                all_tau[cnt] = self.x[c][n].tau
+        for c in range(len(self._x)):
+            all_lam[c] = self._y[c].lam
+            for n in range(len(self._x[c])):
+                all_tau[cnt] = self._x[c][n].tau
                 cnt += 1
 
         rho = torch.sqrt(torch.mean(all_tau))/torch.mean(all_lam)
-        # _ = self.print_info('step_size', rho)
+        # _ = self._print_info('step_size', rho)
         return rho
 
     """ Static methods
@@ -1077,58 +1078,34 @@ class NiiProc:
             """ Super-resolution
             """
             mat = mat_yx.solve(mat_y)[0]  # mat_y\mat_yx
-            grid = spm.affine(dim_yx[::-1], mat, device=device, dtype=dtype)
+            grid = affine(dim_yx[::-1], mat, device=device, dtype=dtype)
             if operator == 'A':
-                dat = spatial.grid_pull(dat, grid, bound=bound)
-                dat = torch.conv3d(dat, smo_ker, stride=ratio)
+                dat = grid_pull(dat, grid, bound=bound)
+                dat = F.conv3d(dat, smo_ker, stride=ratio)
             elif operator == 'At':
-                dat = torch.conv_transpose3d(dat, smo_ker, stride=ratio)
-                dat = spatial.grid_push(dat, grid, shape=dim_y, bound=bound)
+                dat = F.conv_transpose3d(dat, smo_ker, stride=ratio)
+                dat = grid_push(dat, grid, shape=dim_y, bound=bound)
             elif operator == 'AtA':
-                dat = spatial.grid_pull(dat, grid, bound=bound)
-                dat = torch.conv3d(dat, smo_ker, stride=ratio)
-                dat = torch.conv_transpose3d(dat, smo_ker, stride=ratio)
-                dat = spatial.grid_push(dat, grid, shape=dim_y, bound=bound)
+                dat = grid_pull(dat, grid, bound=bound)
+                dat = F.conv3d(dat, smo_ker, stride=ratio)
+                dat = F.conv_transpose3d(dat, smo_ker, stride=ratio)
+                dat = grid_push(dat, grid, shape=dim_y, bound=bound)
         elif method == 'denoising':
             """ Denoising
             """
             mat = mat_x.solve(mat_y)[0]  # mat_y\mat_x
-            grid = spm.affine(dim_x[::-1], mat, device=device)
+            grid = affine(dim_x[::-1], mat, device=device)
             if operator == 'A':
-                dat = spatial.grid_pull(dat, grid, bound=bound,
-                                        extrapolate=False, interpolation=1)
+                dat = grid_pull(dat, grid, bound=bound,
+                                extrapolate=False, interpolation=1)
             elif operator == 'At':
-                dat = spatial.grid_push(dat, grid, shape=dim_y, bound=bound,
-                                        extrapolate=False, interpolation=1)
+                dat = grid_push(dat, grid, shape=dim_y, bound=bound,
+                                extrapolate=False, interpolation=1)
             elif operator == 'AtA':
-                dat = spatial.grid_pull(dat, grid, bound=bound,
-                                        extrapolate=False, interpolation=1)
-                dat = spatial.grid_push(dat, grid, shape=dim_y, bound=bound,
-                                        extrapolate=False, interpolation=1)
+                dat = grid_pull(dat, grid, bound=bound,
+                                extrapolate=False, interpolation=1)
+                dat = grid_push(dat, grid, shape=dim_y, bound=bound,
+                                extrapolate=False, interpolation=1)
 
         return dat[0, 0, ...]
 
-    @staticmethod
-    def tensor2tuple(t, type='int'):
-        """ Convert torch tensor to python tuple.
-
-        """
-        if type == 'int':
-            t = t.int().cpu().numpy()
-        elif type == 'float':
-            t = t.float().cpu().numpy()
-        t = tuple(getattr(t, "tolist", lambda: t)())
-        return t
-
-    @staticmethod
-    def vxsize(mat):
-        """ Compute voxel size from affine matrix.
-
-        Args:
-            mat (torch.tensor()): Affine matrix.
-
-        Returns:
-            vx (torch.tensor()): Voxel size (3).
-
-        """
-        return (mat[:3, :3] ** 2).sum(0).sqrt()
