@@ -590,7 +590,7 @@ class NiiProc:
                                                         fig_num=100 + cnt,
                                                         mu_noise=mu_noise, max_iter=max_iter)
                     # Get CT noise
-                    dat = dat[(dat >= -1024) & (dat < -900)]
+                    dat = dat[(dat >= -1020) & (dat < -900)]
                     num_class = 2
                     sd_bg, _, mu_bg, _ = noise_estimate(dat,
                                                         num_class=num_class, show_fit=show_hyperpar,
