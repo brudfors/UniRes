@@ -216,7 +216,6 @@ class NiiProc:
         bound_grad = 'constant'
         # Constants
         tiny = torch.tensor(1e-7, dtype=dtype, device=device)
-        inf = torch.tensor(np.inf, dtype=dtype, device=device)
         one = torch.tensor(1, dtype=dtype, device=device)
 
         # Get ADMM variables
