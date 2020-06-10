@@ -897,22 +897,24 @@ class NiiProc:
             fig = argv[1]
             ax = argv[2]
             jtv = jtv.squeeze()
-            jtv = jtv.cpu()  # To CPU
-            dm = torch.tensor(jtv.shape).numpy()
-            ix = np.round(0.5 * dm)
+            dm = torch.tensor(jtv.shape)
+            ix = torch.round(0.5 * dm).int().tolist()
 
             cmap = 'coolwarm'
             ax1 = ax[0]
             ax1.clear()
-            ax1.imshow(jtv[:, :, int(ix[2])], interpolation='None', cmap=cmap,  aspect='auto')
+            im = jtv[:, :, ix[2]].cpu()
+            ax1.imshow(im, interpolation='None', cmap=cmap,  aspect='auto')
             ax1.axis('off')
             ax1 = ax[1]
             ax1.clear()
-            ax1.imshow(np.squeeze(jtv[:, int(ix[1]), :]), interpolation='None', cmap=cmap, aspect='auto')
+            im = jtv[:, ix[1], :].squeeze().cpu()
+            ax1.imshow(im, interpolation='None', cmap=cmap, aspect='auto')
             ax1.axis('off')
             ax1 = ax[2]
             ax1.clear()
-            ax1.imshow(np.squeeze(jtv[int(ix[0]), :, :]), interpolation='None', cmap=cmap, aspect='auto')
+            im = jtv[ix[0], :, :].squeeze().cpu()
+            ax1.imshow(im, interpolation='None', cmap=cmap, aspect='auto')
             ax1.axis('off')
 
             fig.suptitle('JTV')
