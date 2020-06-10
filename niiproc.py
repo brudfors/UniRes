@@ -55,14 +55,16 @@ class Input:
     """
     dat = None
     dim = None
-    fname = None
     is_ct = None
     mat = None
     mu = None
-    Phi = None
     po = None
     sd = None
     tau = None
+    head = None
+    fname = None
+    direc = None
+    nam = None
 
 
 @dataclass
@@ -72,12 +74,8 @@ class Output:
     """
     dat = None
     dim = None
-    fname = None
     lam = None
     mat = None
-    header = None
-    nam = None
-    dir_out = None
 
 
 @dataclass
@@ -152,10 +150,13 @@ class NiiProc:
         # self._x[c][n].dat
         # self._x[c][n].dim
         # self._x[c][n].mat
-        # self._x[c][n].fname
         # self._x[c][n].tau
         # self._x[c][n].sd
         # self._x[c][n].mu
+        # self._x[c][n].fname
+        # self._x[c][n].nam
+        # self._x[c][n].direc
+        # self._x[c][n].head
 
         # Format output
         # self._y is of class Output()
@@ -169,10 +170,6 @@ class NiiProc:
         # self._y[c].lam
         # self._y[c].dim
         # self._y[c].mat
-        # self._y[c].fname
-        # self._y[c].header
-        # self._y[c].nam
-        # self._y[c].dir_out
 
         # Define projection matrices
         self._proj_info()
@@ -321,22 +318,23 @@ class NiiProc:
 
         """ Write results to disk
         """
-        mat = self._y[0].mat.cpu()
+        if self.sett.dir_out is None:
+            # No output directory given, use directory of input data
+            dir_out = self._x[0][0].direc
+        prefix_y = self.sett.prefix
+        mat = self._y[0].mat
         for c in range(C):
             # Reconstructed images
             mn = torch.min(self._x[c][0].dat)
             dat = self._y[c].dat
             dat[dat < mn] = 0
-            dat = dat.permute(2, 1, 0)  # Permute back to nifti form
-            dat = dat.cpu().numpy()
-            dat = nib.Nifti1Image(dat, header=self._y[c].header, affine=mat)
-            nib.save(dat, self._y[c].fname)
+            fname = os.path.join(dir_out, prefix_y + self._x[c][0].nam)
+            self.save_nifti_3d(dat, fname, mat=mat, header=self._x[c][0].head)
+
         if self.sett.write_jtv:
             # JTV
-            jtv = jtv.permute(2, 1, 0)  # Permute back to nifti form
-            jtv = jtv.cpu().numpy()
-            dat = nib.Nifti1Image(jtv, affine=mat)
-            nib.save(dat, os.path.join(self._y[c].dir_out, 'jtv_' + self._y[c].nam))
+            fname = os.path.join(dir_out, 'jtv_' + self._x[c][0].nam)
+            self.save_nifti_3d(jtv, fname, mat=mat)
             
     def _all_mat_dim_vx(self):
         """ Get all images affine matrices, dimensions and voxel sizes (as numpy arrays).
@@ -442,37 +440,38 @@ class NiiProc:
             pth_nii (list): List of path(s) to nifti file.
 
         Returns:
-            input (Input()): Algorithm input struct(s).
+            x (Input()): Algorithm input struct(s).
 
         """
         # Parse input niftis into Input() object, filling the following fields:
-        # input[c][n].dat
-        # input[c][n].dim
-        # input[c][n].mat
-        # input[c][n].fname
-        # input[c][n].is_ct
-        input = self._load_data(pth_nii)
+        # x[c][n].dat
+        # x[c][n].dim
+        # x[c][n].mat
+        # x[c][n].is_ct
+        # x[c][n].fname
+        # x[c][n].direc
+        # x[c][n].nam
+        # x[c][n].head
+        x = self._load_data(pth_nii)
 
         # Estimate input image statistics, filling the following fields of Input():
-        # input[c][n].tau
-        # input[c][n].mu
-        # input[c][n].sd
-        input = self._image_statistics(input)
+        # x[c][n].tau
+        # x[c][n].mu
+        # x[c][n].sd
+        x = self._image_statistics(x)
 
-        return input
+        return x
 
     def _format_output(self):
         """ Construct algorithm output struct. See Output() dataclass.
 
         Returns:
-            output (Output()): Algorithm output struct(s).
+            y (Output()): Algorithm output struct(s).
 
         """
         # Parse function settings
         C = len(self._x)  # Number of channels
         device = self.sett.device
-        dir_out = self.sett.dir_out
-        out_prefix = self.sett.prefix
         dtype = torch.float32
         mod_prct = self.sett.mod_prct
         vx_y = self.sett.vx  # output voxel size
@@ -536,40 +535,28 @@ class NiiProc:
 
         """ Assign output
         """
-        output = []
+        y = []
         for c in range(C):
-            output.append(Output())
+            y.append(Output())
             # Regularisation (lambda) for channel c
             Nc = len(self._x[c])
             mu_c = torch.zeros(Nc, dtype=dtype, device=device)
             for n in range(Nc):
                 mu_c[n] = self._x[c][n].mu
-            output[c].lam0 = 1/torch.mean(mu_c)
-            output[c].lam = 1/torch.mean(mu_c)  # To facilitate rescaling
+            y[c].lam0 = 1/torch.mean(mu_c)
+            y[c].lam = 1/torch.mean(mu_c)  # To facilitate rescaling
             # Output image(s) dimension and orientation matrix
-            output[c].dim = dim
-            output[c].mat = mat.double().to(device)
-            # Output filename
-            fname_in = self._x[c][0].fname
-            pth, nam = os.path.split(fname_in)
-            if dir_out is None: dir_out = pth
-            fname_out = os.path.join(dir_out, out_prefix + nam)
-            output[c].nam = nam
-            output[c].dir_out = dir_out
-            output[c].fname = fname_out
-            # Output header
-            header_in =  nib.load(fname_in)
-            header_in = header_in.header
-            output[c].header = header_in
+            y[c].dim = dim
+            y[c].mat = mat.double().to(device)
 
-        return output
+        return y
 
-    def _image_statistics(self, input):
+    def _image_statistics(self, x):
         """ Estimate noise precision (tau) and mean brain
             intensity (mu) of each observed image.
 
         Args:
-            input (Input()): Input data.
+            x (Input()): Input data.
 
         Returns:
             tau (list): List of C torch.tensor(float) with noise precision of each MR image.
@@ -584,17 +571,17 @@ class NiiProc:
 
         # Do estimation
         cnt = 0
-        C = len(input)
+        C = len(x)
         for c in range(C):
-            Nc = len(input[c])
+            Nc = len(x[c])
             for n in range(Nc):
 
                 # Set options for spm.noise_estimate
-                dat = input[c][n].dat
+                dat = x[c][n].dat
                 mu_noise = None
                 num_class = 2
                 max_iter = 10000
-                if input[c][n].is_ct:
+                if x[c][n].is_ct:
                     # Get CT foreground
                     mu_noise = -1000
                     num_class = 10
@@ -603,7 +590,7 @@ class NiiProc:
                                                         fig_num=100 + cnt,
                                                         mu_noise=mu_noise, max_iter=max_iter)
                     # Get CT noise
-                    dat = dat[(dat > -1020) & (dat < -900)]
+                    dat = dat[(dat >= -1024) & (dat < -900)]
                     num_class = 2
                     sd_bg, _, mu_bg, _ = noise_estimate(dat,
                                                         num_class=num_class, show_fit=show_hyperpar,
@@ -614,15 +601,15 @@ class NiiProc:
                     sd_bg, sd_fg, mu_bg, mu_fg = noise_estimate(dat,
                         num_class=num_class, show_fit=show_hyperpar, fig_num=100 + cnt,
                         mu_noise=mu_noise, max_iter=max_iter)
-                input[c][n].sd = sd_bg.float()
-                input[c][n].tau = 1/sd_bg.float()**2
-                input[c][n].mu = mu_fg.float() - mu_bg.float()
+                x[c][n].sd = sd_bg.float()
+                x[c][n].tau = 1/sd_bg.float()**2
+                x[c][n].mu = mu_fg.float() - mu_bg.float()
                 cnt += 1
 
         # Print info to screen
-        self._print_info('hyper_par', input, t0)
+        self._print_info('hyper_par', x, t0)
 
-        return input
+        return x
 
     def _init_y(self, interpolation=4):
         """ Make initial guesses of reconstucted image(s) using b-spline interpolation,
@@ -655,7 +642,7 @@ class NiiProc:
             pth_nii (list): List of path(s) to nifti file.
 
         Returns:
-            input (Input()): Algorithm input struct(s).
+            x (Input()): Algorithm input struct(s).
 
         """
         # Parse function settings
@@ -666,25 +653,44 @@ class NiiProc:
             pth_nii = [pth_nii]
 
         C = len(pth_nii)  # Number of channels
-        input = []
+        x = []
         for c in range(C):  # Loop over channels
-            input.append([])
-            input[c] = []
+            x.append([])
+            x[c] = []
 
             if type(pth_nii[c]) is list:
                 Nc = len(pth_nii[c])  # Number of observations of channel c
                 for n in range(Nc):  # Loop over observations of channel c
-                    input[c].append(Input())
-                    input[c][n].dat, input[c][n].dim, input[c][n].mat, \
-                        _, input[c][n].fname, input[c][n].is_ct = \
+                    x[c].append(Input())
+                    # Get data
+                    dat, dim, mat, fname, direc, nam, head, is_ct, _ = \
                         self.load_nifti_3d(pth_nii[c][n], device, is_ct=is_ct)
+                    # Assign
+                    x[c][n].dat = dat
+                    x[c][n].dim = dim
+                    x[c][n].mat = mat
+                    x[c][n].fname = fname
+                    x[c][n].direc = direc
+                    x[c][n].nam = nam
+                    x[c][n].head = head
+                    x[c][n].is_ct = is_ct
             else:
-                input[c].append(Input())
-                input[c][0].dat, input[c][0].dim, input[c][0].mat, \
-                    _, input[c][0].fname, input[c][0].is_ct = \
+                x[c].append(Input())
+                n = 0
+                # Get data
+                dat, dim, mat, fname, direc, nam, head, is_ct, _ = \
                     self.load_nifti_3d(pth_nii[c], device, is_ct=is_ct)
+                # Assign
+                x[c][n].dat = dat
+                x[c][n].dim = dim
+                x[c][n].mat = mat
+                x[c][n].fname = fname
+                x[c][n].direc = direc
+                x[c][n].nam = nam
+                x[c][n].head = head
+                x[c][n].is_ct = is_ct
 
-        return input
+        return x
 
     def _plot_convergence(self, *argv):
         """ Plots algorithm convergence.
@@ -981,14 +987,16 @@ class NiiProc:
             dat (torch.tensor(float)): Image data.
             dim (torch.Size()): Image dimensions.
             mat (torch.tensor(float)): Affine matrix.
-            var (torch.tensor(float)): Observation uncertainty.
-            fname (string): Filename
+            fname (string): File path
+            direc (string): File directory path
+            nam (string): Filename
+            head (nibabel.nifti1.Nifti1Header)
             is_ct (bool): Is data CT?
+            var (torch.tensor(float)): Observation uncertainty.
 
         """
         # Load nifti
         nii = nib.load(pth_nii)
-        fname = nii.get_filename()
         # Get image data
         if as_float:
             dat = torch.tensor(nii.get_fdata()).float().to(device)
@@ -1018,8 +1026,12 @@ class NiiProc:
             var = var ** 2 / 12
         else:
             var = torch.tensor(0, dtype=torch.float32, device=device)
+        # Get header, filename, etc
+        head = nii.get_header()
+        fname = nii.get_filename()
+        direc, nam = os.path.split(fname)
 
-        return dat, dim, mat, var, fname, is_ct
+        return dat, dim, mat, fname, direc, nam, head, is_ct, var
 
     @staticmethod
     def proj_apply(operator, method, dat, po, bound='dct2'):
@@ -1093,3 +1105,59 @@ class NiiProc:
 
         return dat[0, 0, ...]
 
+    @staticmethod
+    def save_nifti_3d(dat, ofname, mat=torch.eye(4), header=None, dtype='float32'):
+        """ Save 3D nifti data using nibabel.
+
+        Args:
+            dat (torch.tensor): Image data.
+            ofname (str): Output filename.
+            mat (torch.tensor, optional): Affine matrix (4, 4), defaults to identity.
+            header (nibabel.nifti1.Nifti1Header, optional): nibabel header, defaults to None.
+            dtype (str, optional): Output data type, defaults to 'float32', but uses the data type
+                in the header (if given).
+
+        """
+        # Sanity check
+        if dtype not in ['float32', 'uint8', 'int16', 'uint16']:
+            raise ValueError('Undefined data type')
+        # Permute back to nifti form
+        dat = dat.permute(2, 1, 0)
+        # Get min and max
+        mn = torch.min(dat)
+        mx = torch.max(dat)
+        if header is not None:
+            # If input was integer type, make output integer type
+            dtype = header.get_data_dtype()
+            dtypes = ['int8', 'uint8', 'int16', 'uint16', 'int32', 'uint32', 'int64', 'uint64']
+            if dtype in dtypes:
+                dat = dat.int()
+        # To CPU -> Numpy (because nibable cannot deal with torch.tensor)
+        dat = dat.cpu().numpy()
+        # Make nii object
+        nii = nib.Nifti1Image(dat, header=header, affine=mat.cpu().numpy())
+        if header is None:
+            # Set data type
+            header = nii.get_header()
+            header.set_data_dtype(dtype)
+            # Set offset, slope and intercept
+            if dtype == 'float32':
+                offset = 0
+                slope = 1
+                inter = 0
+            elif dtype == 'uint8':
+                offset = 0
+                slope = (mx/255).cpu().numpy()
+                inter = 0
+            elif dtype == 'int16':
+                offset = 0
+                slope = torch.max(mx / 32767, -mn / 32768).cpu().numpy()
+                inter = 0
+            elif dtype == 'uint16':
+                offset = 0
+                slope = torch.max(mx / 65535, -mn / 65535).cpu().numpy()
+                inter = 0
+            header.set_data_offset(offset=offset)
+            header.set_slope_inter(slope=slope, inter=inter)
+        # Write to  disk
+        nib.save(nii, ofname)
