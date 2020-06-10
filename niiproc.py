@@ -10,6 +10,7 @@ TODO:
     . Test A and At using the gradcheck function in torch
     . Make A and At layers instead, and import these
     . Why artefacts when using central difference?
+    . Remove dependency on numpy
 
 REFERENCES:
     Brudfors M, Balbastre Y, Nachev P, Ashburner J.
