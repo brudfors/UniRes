@@ -9,10 +9,11 @@ TODO:
     . Deal with cross-talk? (http://www.mri-q.com/cross-talk.html)
     . Test A and At using the gradcheck function in torch
     . Make A and At layers instead, and import these
-    . Why artefacts when using central difference?
     . Remove dependency on numpy
     . Support read/write nifti when large number of observations.
-    . Take tensor/ndarray as input, not only nifti files.
+
+WHY:
+    . Artefacts when using central difference?
 
 REFERENCES:
     Brudfors M, Balbastre Y, Nachev P, Ashburner J.
@@ -105,16 +106,16 @@ class Settings:
     cgs_verbose: bool = False  # CG verbosity (0, 1)
     device: str = None  # PyTorch device name
     dir_out: str = None  # Directory to write output, if None uses same as input (output is prefixed 'y_')
-    gap: float = 0  # Slice gap, between 0 and 1
+    gap: float = 0.0  # Slice gap, between 0 and 1
     is_ct: bool = False  # Is CT data? (data also needs to have negative values)
     max_iter: int = 256  # Max algorithm iterations
-    mod_prct: float = 0  # Amount to crop mean space, between 0 and 1 (faster, but could loss out on data)
+    mod_prct: float = 0.0  # Amount to crop mean space, between 0 and 1 (faster, but could loss out on data)
     prefix: str = 'y_'  # Prefix for reconstructed image(s)
     print_info: int = 1  # Print progress to terminal (0, 1, 2)
     plot_conv: bool = False  # Use matplotlib to plot convergence in real-time
     profile_ip: int = 0  # In-plane slice profile (0=rect|1=tri|2=gauss)
     profile_tp: int = 0  # Through-plane slice profile (0=rect|1=tri|2=gauss)
-    reg_scl: float = 20  # Scale regularisation estimate
+    reg_scl: float = 20.0  # Scale regularisation estimate
     show_hyperpar: bool = False  # Use matplotlib to visualise hyper-parameter estimates
     show_jtv: bool = False  # Show the joint total variation (JTV)
     tolerance: float = 1e-4  # Algorithm tolerance, if zero, run to max_iter
@@ -129,7 +130,13 @@ class NiiProc:
     """ Constructor
     """
     def __init__(self, pth_nii, sett=Settings()):
-        """ Constructor.
+        """ Model initialiser.
+
+            This is the entry point to the algorithm, it takes a bunch of nifti files
+            as a list of paths (.nii|.nii.gz) and initialises input, output and projection
+            operator objects. Settings are changed by editing the Settings() object and
+            providing it to this constructor. If not given, default settings are used
+            (see Settings() dataclass).
 
         Args:
             pth_nii (list of strings): Path(s) to nifti(s).
@@ -187,11 +194,6 @@ class NiiProc:
         # self._x[c][n].po.smo_ker
         # self._x[c][n].po.ratio
 
-        # Initial guess of reconstructed images (y)
-        self._init_y()
-        # Defines:
-        # self._y[c].dat
-
         if False:  # Check adjointness of A and At operators
             self.check_adjoint(po=self._x[0][0].po, method=self._method, dtype=torch.float64)
 
@@ -199,6 +201,15 @@ class NiiProc:
     """
     def fit(self):
         """ Fit model.
+
+            This runs the iterative denoising/super-resolution algorithm and,
+            at the end, writes the reconstructed images to disk. If the maximum number
+            of iterations are set to zero, the initial guesses of the reconstructed
+            images will be written to disk (acquired with b-spline interpolation), no
+            denoising/super-resolution will be applied.
+
+        Returns:
+            fnames_y ([str, ..]): Filenames of reconstructed images.
 
         """
         # Parse function settings/parameters
@@ -213,8 +224,14 @@ class NiiProc:
         tiny = torch.tensor(1e-7, dtype=dtype, device=device)
         one = torch.tensor(1, dtype=dtype, device=device)
 
-        # Get ADMM variables
-        z, w = self._alloc_admm_vars()
+        # Initial guess of reconstructed images (y)
+        self._init_y()
+        # Defines:
+        # self._y[c].dat
+
+        if self.sett.max_iter > 0:
+            # Get ADMM variables
+            z, w = self._alloc_admm_vars()
 
         # Init visualisation
         if self.sett.plot_conv:
@@ -285,8 +302,8 @@ class NiiProc:
                 rhs = rhs - self._y[c].lam * div
 
                 # Invert y = lhs\rhs by conjugate gradients
-                AtA = lambda y: self._proj('AtA', y, c, vx_y=vx_y, bound__DtD=bound_grad)  # lhs
-                self._y[c].dat = cg(A=AtA,
+                lhs = lambda y: self._proj('AtA', y, c, vx_y=vx_y, bound__DtD=bound_grad)
+                self._y[c].dat = cg(A=lhs,
                                     b=rhs, x=self._y[c].dat,
                                     verbose=self.sett.cgs_verbose,
                                     maxiter=self.sett.cgs_iter,
@@ -325,6 +342,7 @@ class NiiProc:
             dir_out = self._x[0][0].direc
         prefix_y = self.sett.prefix
         mat = self._y[0].mat
+        fnames_y = []
         for c in range(C):
             # Reconstructed images
             mn = torch.min(self._x[c][0].dat)
@@ -332,12 +350,15 @@ class NiiProc:
             dat[dat < mn] = 0
             fname = os.path.join(dir_out, prefix_y + self._x[c][0].nam)
             self.write_nifti_3d(dat, fname, mat=mat, header=self._x[c][0].head)
+            fnames_y.append(fname)
 
-        if self.sett.write_jtv:
+        if self.sett.write_jtv and (self.sett.max_iter > 0):
             # JTV
             fname = os.path.join(dir_out, 'jtv_' + self._x[c][0].nam)
             self.write_nifti_3d(jtv, fname, mat=mat)
-            
+
+        return fnames_y
+
     def _all_mat_dim_vx(self):
         """ Get all images affine matrices, dimensions and voxel sizes (as numpy arrays).
 
@@ -929,7 +950,7 @@ class NiiProc:
         Args:
             operator (string): Either 'A', 'At', 'AtA' or 'none'.
             method (string): Either 'denoising' or 'super-resolution'.
-            dat (torch.tensor()): Image data (1, 1, D_in, H_in, W_in).
+            dat (torch.tensor()): Image data (1, 1, X_in, Y_in, Z_in).
             po (ProjOp()): Encodes projection operator, has the following fields:
                 po.mat_x: Low-res affine matrix.
                 po.mat_y: High-res affine matrix.
@@ -942,7 +963,7 @@ class NiiProc:
             bound (str, optional): Bound for nitorch push/pull, defaults to 'dct2'.
 
         Returns:
-            dat (torch.tensor()): Projected image data (1, 1, D_out, H_out, W_out).
+            dat (torch.tensor()): Projected image data (1, 1, X_out, Y_out, Z_out).
 
         """
         # Sanity check
