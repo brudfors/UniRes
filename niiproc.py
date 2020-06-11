@@ -109,7 +109,7 @@ class Settings:
     dir_out: str = None  # Directory to write output, if None uses same as input (output is prefixed 'y_')
     gap: float = 0.0  # Slice gap, between 0 and 1
     has_ct: bool = True  # Data could be CT (but data must contain negative values)
-    max_iter: int = 256  # Max algorithm iterations
+    max_iter: int = 512  # Max algorithm iterations
     mod_prct: float = 0.0  # Amount to crop mean space, between 0 and 1 (faster, but could loss out on data)
     prefix: str = 'y_'  # Prefix for reconstructed image(s)
     print_info: int = 1  # Print progress to terminal (0, 1, 2)
