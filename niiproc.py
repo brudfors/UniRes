@@ -30,14 +30,12 @@ REFERENCES:
 from dataclasses import dataclass
 from datetime import datetime
 import math
-import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator
 import nibabel as nib
 from nitorch.kernels import smooth
 from nitorch.spatial import grid_pull, grid_push, voxsize
 from nitorch.spm import affine, mean_space, noise_estimate
 from nitorch.utils import gradient_3d, divergence_3d
-from nitorch.optim import cg, get_gain
+from nitorch.optim import cg, get_gain, plot_convergence
 import numpy as np
 import os
 from timeit import default_timer as timer
@@ -217,9 +215,11 @@ class NiiProc:
         # Get ADMM variables
         z, w = self._alloc_admm_vars()
 
-        # Init plotting
-        fig_nll, ax_nll = self._plot_convergence()
-        fig_jtv, ax_jtv = self._show_jtv()
+        # Init visualisation
+        if self.sett.plot_conv:
+            fig_ax_nll = plot_convergence(fig_num=98)
+        if self.sett.show_jtv:
+            fig_ax_jtv = self.show_im(fig_num=99)
 
         """ Start iterating:
             Updates y, z, w in alternating fashion, until a convergence threshold is met
@@ -258,8 +258,8 @@ class NiiProc:
                 jtv = jtv + torch.sum((w[c, ...]/self._rho + Dy)**2, dim=0)
             jtv = torch.sqrt(jtv)
             jtv = ((jtv - one/self._rho).clamp_min(0))/(jtv + tiny)
-            # Show computed JTV
-            _, _ = self._show_jtv(jtv, fig_jtv, ax_jtv)
+            if self.sett.show_jtv:  # Show computed JTV
+                _ = self.show_im(im=jtv, fig_ax=fig_ax_jtv, fig_title='JTV')
             for c in range(C):
                 Dy = self._y[c].lam * gradient_3d(self._y[c].dat, vx=vx_y, bound=bound_grad)
                 for d in range(Dy.shape[0]):
@@ -299,8 +299,8 @@ class NiiProc:
             """
             if self.sett.tolerance > 0:
                 nll[iter] = self._compute_nll(vx_y=vx_y, bound=bound_grad)
-            # Plot convergence (if sett.plot_conv = True)
-            _, _ = self._plot_convergence(nll[:iter + 1], fig_nll, ax_nll)
+            if self.sett.plot_conv:  # Plot algorithm convergence
+                _ = plot_convergence(vals=nll[:iter + 1], fig_ax=fig_ax_nll)
             # Check convergence
             gain = get_gain(nll, iter, monotonicity='decreasing')
             t_iter = self._print_info('fit-ll', iter, nll[iter], gain, t_iter)  # PRINT
@@ -693,40 +693,6 @@ class NiiProc:
 
         return x
 
-    def _plot_convergence(self, *argv):
-        """ Plots algorithm convergence.
-
-        """
-        if not self.sett.plot_conv:
-            return None, None
-        if len(argv) == 0:
-            fig, ax = plt.subplots(1, 2, num=99)
-            plt.ion()
-            fig.show()
-        else:
-            vals = argv[0]
-            fig = argv[1]
-            ax = argv[2]
-            vals = vals.cpu()  # To CPU
-
-            ax[0].clear()
-            x = torch.arange(0, len(vals)) + 1
-            ax[0].plot(x, vals)
-            ax[0].xaxis.set_major_locator(MaxNLocator(integer=True))
-            ax[0].grid()
-
-            ax[1].clear()
-            x = torch.arange(0, len(vals)) + 1
-            ax[1].plot(x[-3:], vals[-3:], 'r')
-            ax[1].xaxis.set_major_locator(MaxNLocator(integer=True))
-            ax[1].grid()
-
-            fig.suptitle('Negative log-likelihood')
-            fig.canvas.draw()
-            fig.canvas.flush_events()
-
-        return fig, ax
-
     def _print_info(self, info, *argv):
         """ Print algorithm info to terminal.
 
@@ -840,49 +806,6 @@ class NiiProc:
                                     prof_ip=prof_ip, prof_tp=prof_tp, gap=gap, device=device)
                 # Assign
                 self._x[c][n].po = po
-
-    def _show_jtv(self, *argv):
-        """ Show the joint total variation (JTV).
-
-        """
-        if not self.sett.show_jtv:
-            return None, None
-        if len(argv) == 0:
-            fig, ax = plt.subplots(1, 3, num=98)
-            plt.ion()
-            fig.show()
-            # fig_manager = plt.get_current_fig_manager()
-            # fig_manager.frame.Maximize(True)
-        else:
-            jtv = argv[0]
-            fig = argv[1]
-            ax = argv[2]
-            jtv = jtv.squeeze()
-            dm = torch.tensor(jtv.shape)
-            ix = torch.round(0.5 * dm).int().tolist()
-
-            cmap = 'coolwarm'
-            ax1 = ax[0]
-            ax1.clear()
-            im = jtv[:, :, ix[2]].cpu()
-            ax1.imshow(im, interpolation='None', cmap=cmap,  aspect='auto')
-            ax1.axis('off')
-            ax1 = ax[1]
-            ax1.clear()
-            im = jtv[:, ix[1], :].squeeze().cpu()
-            ax1.imshow(im, interpolation='None', cmap=cmap, aspect='auto')
-            ax1.axis('off')
-            ax1 = ax[2]
-            ax1.clear()
-            im = jtv[ix[0], :, :].squeeze().cpu()
-            ax1.imshow(im, interpolation='None', cmap=cmap, aspect='auto')
-            ax1.axis('off')
-
-            fig.suptitle('JTV')
-            fig.canvas.draw()
-            fig.canvas.flush_events()
-
-        return fig, ax
 
     def _step_size(self):
         """ ADMM step size (rho) from image statistics.
@@ -1193,3 +1116,61 @@ class NiiProc:
             header.set_slope_inter(slope=slope, inter=inter)
         # Write to  disk
         nib.save(nii, ofname)
+
+    @staticmethod
+    def show_im(im=None, fig_ax=None, fig_num=1, fig_title=''):
+        """ Show an image.
+
+        This allows for real-time plotting of an image. It is initialised by
+        called with no argument:
+
+        fig_ax = _show_im()
+
+        Subsequent calls are then performed as:
+
+        _ = _show_im(im=im, fig_ax=fig_ax)
+
+        Args:
+            im (torch.tensor, optional): Image as tensor.
+            fig_ax ([matplotlib.figure, matplotlib.axes])
+            fig_num (int, optional): Figure number to plot to, defaults to 1.
+            fig_title (str, optional): Figure title, defaults to ''.
+
+        Returns:
+            fig_ax ([matplotlib.figure, matplotlib.axes])
+
+        """
+        import matplotlib.pyplot as plt
+
+        if fig_ax is None:
+            fig, ax = plt.subplots(1, 3, num=fig_num)
+            fig_ax = [fig, ax]
+            plt.ion()
+            fig.show()
+        elif im is not None:
+            im = im.squeeze()
+            dm = torch.tensor(im.shape)
+            ix = torch.round(0.5 * dm).int().tolist()
+
+            cmap = 'coolwarm'
+            ax = fig_ax[1][0]
+            ax.clear()
+            im1 = im[:, :, ix[2]].cpu()
+            ax.imshow(im1, interpolation='None', cmap=cmap, aspect='auto')
+            ax.axis('off')
+            ax = fig_ax[1][1]
+            ax.clear()
+            im1 = im[:, ix[1], :].squeeze().cpu()
+            ax.imshow(im1, interpolation='None', cmap=cmap, aspect='auto')
+            ax.axis('off')
+            ax = fig_ax[1][2]
+            ax.clear()
+            im1 = im[ix[0], :, :].squeeze().cpu()
+            ax.imshow(im1, interpolation='None', cmap=cmap, aspect='auto')
+            ax.axis('off')
+
+            fig_ax[0].suptitle(fig_title)
+            fig_ax[0].canvas.draw()
+            fig_ax[0].canvas.flush_events()
+
+        return fig_ax
