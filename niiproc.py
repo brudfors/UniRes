@@ -9,6 +9,7 @@ TODO:
     . Deal with cross-talk? (http://www.mri-q.com/cross-talk.html)
     . Make A and At standalone functions
     . Test A and At using the gradcheck function in torch
+    . Enable reading/writing to file, when many observations.
 
     x Test for Nc > 1, seems to work (need better test data)
     x Artefacts when superres N=1 (seems to have been due to central difference?)
