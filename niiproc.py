@@ -275,23 +275,6 @@ class NiiProc:
             # self._rho = self._step_size()
             # # self._rho = torch.tensor(1, dtype=dtype, device=device)
 
-            """ UPDATE: z
-            """
-            t0 = self._print_info('fit-update', 'z', iter)  # PRINT
-            jtv = torch.zeros(dim_y, dtype=dtype, device=device)
-            for c in range(C):
-                Dy = self._y[c].lam * gradient_3d(self._y[c].dat, vx=vx_y, bound=bound_grad)
-                jtv = jtv + torch.sum((w[c, ...]/self._rho + Dy)**2, dim=0)
-            jtv = torch.sqrt(jtv)
-            jtv = ((jtv - one/self._rho).clamp_min(0))/(jtv + tiny)
-            if self.sett.show_jtv:  # Show computed JTV
-                _ = self.show_im(im=jtv, fig_ax=fig_ax_jtv, fig_title='JTV')
-            for c in range(C):
-                Dy = self._y[c].lam * gradient_3d(self._y[c].dat, vx=vx_y, bound=bound_grad)
-                for d in range(Dy.shape[0]):
-                    z[c, d, ...] = jtv*(w[c, d, ...]/self._rho + Dy[d, ...])
-            _ = self._print_info('fit-done', t0)  # PRINT
-
             """ UPDATE: y
             """
             t0 = self._print_info('fit-update', 'y', iter)  # PRINT
@@ -319,6 +302,23 @@ class NiiProc:
 
                 _ = self._print_info('int', c)  # PRINT
 
+            _ = self._print_info('fit-done', t0)  # PRINT
+
+            """ UPDATE: z
+            """
+            t0 = self._print_info('fit-update', 'z', iter)  # PRINT
+            jtv = torch.zeros(dim_y, dtype=dtype, device=device)
+            for c in range(C):
+                Dy = self._y[c].lam * gradient_3d(self._y[c].dat, vx=vx_y, bound=bound_grad)
+                jtv = jtv + torch.sum((w[c, ...]/self._rho + Dy)**2, dim=0)
+            jtv = torch.sqrt(jtv)
+            jtv = ((jtv - one/self._rho).clamp_min(0))/(jtv + tiny)
+            if self.sett.show_jtv:  # Show computed JTV
+                _ = self.show_im(im=jtv, fig_ax=fig_ax_jtv, fig_title='JTV')
+            for c in range(C):
+                Dy = self._y[c].lam * gradient_3d(self._y[c].dat, vx=vx_y, bound=bound_grad)
+                for d in range(Dy.shape[0]):
+                    z[c, d, ...] = jtv*(w[c, d, ...]/self._rho + Dy[d, ...])
             _ = self._print_info('fit-done', t0)  # PRINT
 
             """ Objective function and convergence related
