@@ -101,6 +101,7 @@ class Settings:
     """ Algorithm settings.
 
     """
+    alpha: float = 1.0  # Relaxation parameter 0 < alpha < 2, alpha < 1: under-relaxation, alpha > 2: over-relaxation
     cgs_iter: int = 4  # Conjugate gradient (CG) iterations for solving for y
     cgs_tol: float = 0  # CG tolerance for solving for y
     cgs_verbose: bool = False  # CG verbosity (0, 1)
@@ -223,6 +224,8 @@ class NiiProc:
         # Constants
         tiny = torch.tensor(1e-7, dtype=dtype, device=device)
         one = torch.tensor(1, dtype=dtype, device=device)
+        # Over/under-relaxation parameter
+        alpha = torch.tensor(self.sett.alpha, device=device, dtype=torch.float32)
 
         # Initial guess of reconstructed images (y)
         self._init_y()
@@ -306,19 +309,25 @@ class NiiProc:
 
             """ UPDATE: z
             """
+            if alpha != 1:  # Use over/under-relaxation
+                z_old = z.clone()
             t0 = self._print_info('fit-update', 'z', iter)  # PRINT
             jtv = torch.zeros(dim_y, dtype=dtype, device=device)
             for c in range(C):
                 Dy = self._y[c].lam * gradient_3d(self._y[c].dat, vx=vx_y, bound=bound_grad)
-                jtv = jtv + torch.sum((w[c, ...]/self._rho + Dy)**2, dim=0)
+                if alpha != 1:  # Use over/under-relaxation
+                    Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
+                jtv = jtv + torch.sum((w[c, ...] / self._rho + Dy) ** 2, dim=0)
             jtv = torch.sqrt(jtv)
             jtv = ((jtv - one/self._rho).clamp_min(0))/(jtv + tiny)
             if self.sett.show_jtv:  # Show computed JTV
                 _ = self.show_im(im=jtv, fig_ax=fig_ax_jtv, fig_title='JTV')
             for c in range(C):
                 Dy = self._y[c].lam * gradient_3d(self._y[c].dat, vx=vx_y, bound=bound_grad)
+                if alpha != 1:  # Use over/under-relaxation
+                    Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
                 for d in range(Dy.shape[0]):
-                    z[c, d, ...] = jtv*(w[c, d, ...]/self._rho + Dy[d, ...])
+                    z[c, d, ...] = jtv * (w[c, d, ...] / self._rho + Dy[d, ...])
             _ = self._print_info('fit-done', t0)  # PRINT
 
             """ Objective function and convergence related
@@ -339,6 +348,8 @@ class NiiProc:
             t0 = self._print_info('fit-update', 'w', iter)  # PRINT
             for c in range(C):  # Loop over channels
                 Dy = self._y[c].lam * gradient_3d(self._y[c].dat, vx=vx_y, bound=bound_grad)
+                if alpha != 1:  # Use over/under-relaxation
+                    Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
                 w[c, ...] = w[c, ...] + self._rho*(Dy - z[c, ...])
                 _ = self._print_info('int', c)  # PRINT
             _ = self._print_info('fit-done', t0)  # PRINT
@@ -359,7 +370,6 @@ class NiiProc:
             fname = os.path.join(dir_out, prefix_y + self._x[c][0].nam)
             self.write_nifti_3d(dat, fname, mat=mat, header=self._x[c][0].head)
             fnames_y.append(fname)
-
         if self.sett.write_jtv and (self.sett.max_iter > 0):
             # JTV
             fname = os.path.join(dir_out, 'jtv_' + self._x[c][0].nam)
