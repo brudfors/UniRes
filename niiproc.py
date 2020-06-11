@@ -606,9 +606,32 @@ class NiiProc:
         for c in range(C):
             Nc = len(x[c])
             for n in range(Nc):
+                # Get data
+                dat = x[c][n].dat
+                mat_x = x[c][n].mat
+                dim_x = torch.tensor(x[c][n].dim, device=dat.device, dtype=torch.float64)
+                vx_x = voxsize(mat_x)
+                vx1 = torch.tensor(3*(1,), device=dat.device, dtype=torch.float64)
+
+                # Reslice to 1 mm isotropic with nearest neighbour
+                D = torch.cat((vx1/vx_x, torch.ones(1, device=dat.device, dtype=torch.float64))).diag()
+                mat1 = torch.matmul(mat_x, D)
+                dim1 = torch.matmul(D.inverse()[:3, :3], dim_x.reshape((3, 1))).floor().squeeze()
+                dim1 = dim1.int().tolist()
+                # Make output grid
+                mat = mat1.solve(mat_x)[0]  # mat_x\mat1
+                grid = affine(dim1, mat, device=dat.device)
+                # Get image data
+                dat = dat[None, None, ...]
+                # Do interpolation
+                mn = torch.min(dat)
+                mx = torch.max(dat)
+                dat = grid_pull(dat, grid, bound='zero', extrapolate=False, interpolation=0)
+                dat[dat < mn] = mn
+                dat[dat > mx] = mx
+                dat = dat[0, 0, ...]
 
                 # Set options for spm.noise_estimate
-                dat = x[c][n].dat
                 mu_noise = None
                 num_class = 2
                 max_iter = 10000
@@ -657,13 +680,17 @@ class NiiProc:
             y = torch.zeros(dim_y, dtype=torch.float32, device=self.sett.device)
             Nc = len(self._x[c])
             for n in range(Nc):
-                # Make output grid
-                mat = mat_y.solve(self._x[c][n].po.mat_x)[0]  # mat_x\mat_y
-                grid = affine(self._x[c][n].po.dim_y, mat, device=self.sett.device)
                 # Get image data
                 dat = self._x[c][n].dat[None, None, ...]
+                # Make output grid
+                mat = mat_y.solve(self._x[c][n].po.mat_x)[0]  # mat_x\mat_y
+                grid = affine(self._x[c][n].po.dim_y, mat, device=dat.device, dtype=dat.dtype)
                 # Do interpolation
+                mn = torch.min(dat)
+                mx = torch.max(dat)
                 dat = grid_pull(dat, grid, bound='zero', extrapolate=False, interpolation=interpolation)
+                dat[dat < mn] = mn
+                dat[dat > mx] = mx
                 y = y + dat[0, 0, ...]
             self._y[c].dat = y / Nc
 
