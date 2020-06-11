@@ -623,7 +623,7 @@ class NiiProc:
                 vx_x = voxsize(mat_x)
                 vx1 = torch.tensor(3*(1,), device=dat.device, dtype=torch.float64)
 
-                # Reslice to 1 mm isotropic with nearest neighbour
+                # Reslice to 1 mm isotropic
                 D = torch.cat((vx1/vx_x, torch.ones(1, device=dat.device, dtype=torch.float64))).diag()
                 mat1 = torch.matmul(mat_x, D)
                 dim1 = torch.matmul(D.inverse()[:3, :3], dim_x.reshape((3, 1))).floor().squeeze()
@@ -636,7 +636,7 @@ class NiiProc:
                 # Do interpolation
                 mn = torch.min(dat)
                 mx = torch.max(dat)
-                dat = grid_pull(dat, grid, bound='zero', extrapolate=False, interpolation=0)
+                dat = grid_pull(dat, grid, bound='zero', extrapolate=False, interpolation=4)
                 dat[dat < mn] = mn
                 dat[dat > mx] = mx
                 dat = dat[0, 0, ...]
