@@ -11,6 +11,7 @@ TODO:
     . Make A and At layers instead, and import these
     . Why artefacts when using central difference?
     . Remove dependency on numpy
+    . Support read/write nifti when large number of observations.
 
 REFERENCES:
     Brudfors M, Balbastre Y, Nachev P, Ashburner J.
