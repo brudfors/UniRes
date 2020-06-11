@@ -12,6 +12,7 @@ TODO:
     . Why artefacts when using central difference?
     . Remove dependency on numpy
     . Support read/write nifti when large number of observations.
+    . Take tensor/ndarray as input, not only nifti files.
 
 REFERENCES:
     Brudfors M, Balbastre Y, Nachev P, Ashburner J.
@@ -131,7 +132,7 @@ class NiiProc:
         """ Constructor.
 
         Args:
-            pth_nii (list of strings): Paths to nifti MRIs of patient.
+            pth_nii (list of strings): Path(s) to nifti(s).
             sett (Settings(), optional): Algorithm settings. Described in Settings() class.
 
         """
@@ -252,7 +253,7 @@ class NiiProc:
             """ UPDATE: z
             """
             t0 = self._print_info('fit-update', 'z', iter)  # PRINT
-            jtv = torch.zeros(dim_y[::-1], dtype=dtype, device=device)
+            jtv = torch.zeros(dim_y, dtype=dtype, device=device)
             for c in range(C):
                 Dy = self._y[c].lam * gradient_3d(self._y[c].dat, vx=vx_y, bound=bound_grad)
                 jtv = jtv + torch.sum((w[c, ...]/self._rho + Dy)**2, dim=0)
@@ -273,7 +274,7 @@ class NiiProc:
                 Nc = len(self._x[c])
 
                 # RHS
-                rhs = torch.zeros(dim_y[::-1], device=device, dtype=dtype)
+                rhs = torch.zeros(dim_y, device=device, dtype=dtype)
                 for n in range(Nc):  # Loop over observations of channel 'c'
                     # _ = self._print_info('int', n)  # PRINT
                     rhs = rhs + self._x[c][n].tau*self._proj('At', self._x[c][n].dat, c, n)
@@ -286,10 +287,10 @@ class NiiProc:
                 # Invert y = lhs\rhs by conjugate gradients
                 AtA = lambda y: self._proj('AtA', y, c, vx_y=vx_y, bound__DtD=bound_grad)  # lhs
                 self._y[c].dat = cg(A=AtA,
-                                   b=rhs, x=self._y[c].dat,
-                                   verbose=self.sett.cgs_verbose,
-                                   maxiter=self.sett.cgs_iter,
-                                   tolerance=self.sett.cgs_tol)
+                                    b=rhs, x=self._y[c].dat,
+                                    verbose=self.sett.cgs_verbose,
+                                    maxiter=self.sett.cgs_iter,
+                                    tolerance=self.sett.cgs_tol)
 
                 _ = self._print_info('int', c)  # PRINT
 
@@ -330,12 +331,12 @@ class NiiProc:
             dat = self._y[c].dat
             dat[dat < mn] = 0
             fname = os.path.join(dir_out, prefix_y + self._x[c][0].nam)
-            self.save_nifti_3d(dat, fname, mat=mat, header=self._x[c][0].head)
+            self.write_nifti_3d(dat, fname, mat=mat, header=self._x[c][0].head)
 
         if self.sett.write_jtv:
             # JTV
             fname = os.path.join(dir_out, 'jtv_' + self._x[c][0].nam)
-            self.save_nifti_3d(jtv, fname, mat=mat)
+            self.write_nifti_3d(jtv, fname, mat=mat)
             
     def _all_mat_dim_vx(self):
         """ Get all images affine matrices, dimensions and voxel sizes (as numpy arrays).
@@ -376,8 +377,8 @@ class NiiProc:
         device = self.sett.device
         dtype = torch.float32
         C = len(self._y)
-        dim = self._y[0].dim
-        dim = (C, 3) + dim[::-1]
+        dim_y = self._y[0].dim
+        dim = (C, 3) + dim_y
         # Allocate
         z = torch.zeros(dim, dtype=dtype, device=device)
         w = torch.zeros(dim, dtype=dtype, device=device)
@@ -402,7 +403,7 @@ class NiiProc:
 
         C = len(self._y)
         nll_xy = torch.tensor(0, dtype=dtype, device=device)
-        nll_y = torch.zeros(self._y[0].dim[::-1], dtype=dtype, device=device)
+        nll_y = torch.zeros(self._y[0].dim, dtype=dtype, device=device)
         for c in range(C):
             Nc = len(self._x[c])
             for n in range(Nc):
@@ -421,13 +422,13 @@ class NiiProc:
         """ Computes the divergence of the gradient.
 
         Args:
-            dat (torch.tensor()): A tensor (D, H, W).
+            dat (torch.tensor()): A tensor (dim_y).
             vx_y (tuple(float)): Output voxel size.
             bound (str, optional): Bound for gradient/divergence calculation, defaults to
                 constant zero.
 
         Returns:
-              div (torch.tensor()): Laplacian (D, H, W).
+              div (torch.tensor()): Dt(D(dat)) (dim_y).
 
         """
         dat = gradient_3d(dat, vx=vx_y, bound=bound)
@@ -621,14 +622,15 @@ class NiiProc:
 
         """
         C = len(self._x)
-        dim_out = self._x[0][0].po.dim_y[::-1]
+        dim_y = self._x[0][0].po.dim_y
+        mat_y = self._x[0][0].po.mat_y
         for c in range(C):
-            y = torch.zeros(dim_out, dtype=torch.float32, device=self.sett.device)
+            y = torch.zeros(dim_y, dtype=torch.float32, device=self.sett.device)
             Nc = len(self._x[c])
             for n in range(Nc):
                 # Make output grid
-                mat = torch.matmul(torch.inverse(self._x[c][n].po.mat_x), self._x[c][n].po.mat_y)
-                grid = affine(self._x[c][n].po.dim_y[::-1], mat, device=self.sett.device)
+                mat = mat_y.solve(self._x[c][n].po.mat_x)[0]  # mat_x\mat_y
+                grid = affine(self._x[c][n].po.dim_y, mat, device=self.sett.device)
                 # Get image data
                 dat = self._x[c][n].dat[None, None, ...]
                 # Do interpolation
@@ -665,7 +667,7 @@ class NiiProc:
                     x[c].append(Input())
                     # Get data
                     dat, dim, mat, fname, direc, nam, head, is_ct, _ = \
-                        self.load_nifti_3d(pth_nii[c][n], device, is_ct=is_ct)
+                        self.read_nifti_3d(pth_nii[c][n], device, is_ct=is_ct)
                     # Assign
                     x[c][n].dat = dat
                     x[c][n].dim = dim
@@ -680,7 +682,7 @@ class NiiProc:
                 n = 0
                 # Get data
                 dat, dim, mat, fname, direc, nam, head, is_ct, _ = \
-                    self.load_nifti_3d(pth_nii[c], device, is_ct=is_ct)
+                    self.read_nifti_3d(pth_nii[c], device, is_ct=is_ct)
                 # Assign
                 x[c][n].dat = dat
                 x[c][n].dim = dim
@@ -751,7 +753,7 @@ class NiiProc:
 
         Args:
             operator (string): Either 'A', 'At ' or 'AtA'.
-            dat (torch.tensor()): Image data (dim_x/dim_y).
+            dat (torch.tensor()): Image data (dim_x|dim_y).
             c (int): Channel index, defaults to 0.
             n (int): Observation index, defaults to 0.
             vx_y (tuple(float)): Output voxel size.
@@ -759,7 +761,7 @@ class NiiProc:
                 constant zero.
 
         Returns:
-            dat (torch.tensor()): Projected image data (dim_y/dim_x).
+            dat (torch.tensor()): Projected image data (dim_y|dim_x).
 
         """
         # Parse function parameters/settings
@@ -847,8 +849,8 @@ class NiiProc:
             dtype (torch.dtype, optional)
 
         """
-        dim_x = po.dim_x[::-1]
-        dim_y = po.dim_y[::-1]
+        dim_x = po.dim_x
+        dim_y = po.dim_y
         device = po.smo_ker.device
         torch.manual_seed(0)
         x = torch.rand((1, 1, ) + dim_x, dtype=dtype, device=device)
@@ -863,8 +865,8 @@ class NiiProc:
         print('<Ay, x> - <Atx, y> = {}'.format(val))
 
     @staticmethod
-    def load_nifti_3d(pth_nii, device='cpu', as_float=True, is_ct=False):
-        """ Loads 3D nifti data using nibabel.
+    def read_nifti_3d(pth_nii, device='cpu', as_float=True, is_ct=False):
+        """ Reads 3D nifti data using nibabel.
 
         Args:
             pth_nii (string): Path to nifti file.
@@ -904,8 +906,6 @@ class NiiProc:
         mat = torch.from_numpy(mat).double().to(device)
         # Get dimensions
         dim = tuple(dat.shape)
-        # Make PyTorch form
-        dat = dat.permute(2, 1, 0)
         # Get observation uncertainty
         slope = nii.dataobj.slope
         dtype = nii.get_data_dtype()
@@ -970,7 +970,7 @@ class NiiProc:
             """ Super-resolution
             """
             mat = mat_yx.solve(mat_y)[0]  # mat_y\mat_yx
-            grid = affine(dim_yx[::-1], mat, device=device, dtype=dtype)
+            grid = affine(dim_yx, mat, device=device, dtype=dtype)
             if operator == 'A':
                 dat = grid_pull(dat, grid, bound=bound)
                 dat = F.conv3d(dat, smo_ker, stride=ratio)
@@ -986,7 +986,7 @@ class NiiProc:
             """ Denoising
             """
             mat = mat_x.solve(mat_y)[0]  # mat_y\mat_x
-            grid = affine(dim_x[::-1], mat, device=device)
+            grid = affine(dim_x, mat, device=device)
             if operator == 'A':
                 dat = grid_pull(dat, grid, bound=bound, extrapolate=False)
             elif operator == 'At':
@@ -1048,7 +1048,7 @@ class NiiProc:
         smo_ker = smooth(profile_cn, fwhm, sep=False, dtype=dtype_smo_ker, device=device)
         po.smo_ker = smo_ker
         # Add offset to intermediate space
-        off = torch.tensor(smo_ker.shape[5:1:-1], dtype=dtype, device=device)
+        off = torch.tensor(smo_ker.shape[-3:], dtype=dtype, device=device)
         off = -(off - 1) // 2  # set offset
         mat_off = torch.eye(4, dtype=torch.float64, device=device)
         mat_off[:3, -1] = off
@@ -1057,15 +1057,15 @@ class NiiProc:
         # To tuple of ints
         po.dim_yx = tuple(po.dim_yx.int().tolist())
         po.dim_x = tuple(po.dim_x.int().tolist())
-        po.ratio = tuple(ratio.int().tolist()[::-1])
+        po.ratio = tuple(ratio.int().tolist())
         return po
 
     @staticmethod
-    def save_nifti_3d(dat, ofname, mat=torch.eye(4), header=None, dtype='float32'):
-        """ Save 3D nifti data using nibabel.
+    def write_nifti_3d(dat, ofname, mat=torch.eye(4), header=None, dtype='float32'):
+        """ Writes 3D nifti data using nibabel.
 
         Args:
-            dat (torch.tensor): Image data.
+            dat (torch.tensor): Image data (W, H, D).
             ofname (str): Output filename.
             mat (torch.tensor, optional): Affine matrix (4, 4), defaults to identity.
             header (nibabel.nifti1.Nifti1Header, optional): nibabel header, defaults to None.
@@ -1076,8 +1076,6 @@ class NiiProc:
         # Sanity check
         if dtype not in ['float32', 'uint8', 'int16', 'uint16']:
             raise ValueError('Undefined data type')
-        # Permute back to nifti form
-        dat = dat.permute(2, 1, 0)
         # Get min and max
         mn = torch.min(dat)
         mx = torch.max(dat)
@@ -1131,7 +1129,7 @@ class NiiProc:
         _ = _show_im(im=im, fig_ax=fig_ax)
 
         Args:
-            im (torch.tensor, optional): Image as tensor.
+            im (torch.tensor, optional): Image as tensor (W, H, D).
             fig_ax ([matplotlib.figure, matplotlib.axes])
             fig_num (int, optional): Figure number to plot to, defaults to 1.
             fig_title (str, optional): Figure title, defaults to ''.
