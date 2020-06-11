@@ -101,7 +101,7 @@ class Settings:
     """ Algorithm settings.
 
     """
-    alpha: float = 1.0  # Relaxation parameter 0 < alpha < 2, alpha < 1: under-relaxation, alpha > 2: over-relaxation
+    alpha: float = 1.0  # Relaxation parameter 0 < alpha < 2, alpha < 1: under-relaxation, alpha > 1: over-relaxation
     cgs_iter: int = 4  # Conjugate gradient (CG) iterations for solving for y
     cgs_tol: float = 0  # CG tolerance for solving for y
     cgs_verbose: bool = False  # CG verbosity (0, 1)
@@ -124,6 +124,8 @@ class Settings:
     write_jtv: bool = False  # Write JTV to nifti
 
 
+""" NiiProc class
+"""
 class NiiProc:
     """ NIfTI processing class
     """
@@ -474,6 +476,85 @@ class NiiProc:
         dat = divergence_3d(dat, vx=vx_y, bound=bound)
         return dat
 
+    def _estimate_hyperpar(self, x):
+        """ Estimate noise precision (tau) and mean brain
+            intensity (mu) of each observed image.
+
+        Args:
+            x (Input()): Input data.
+
+        Returns:
+            tau (list): List of C torch.tensor(float) with noise precision of each MR image.
+            lam (torch.tensor(float)): The parameter lambda (1, C).
+
+        """
+        # Parse function settings
+        show_hyperpar = self.sett.show_hyperpar
+
+        # Print info to screen
+        t0 = self._print_info('hyper_par')
+
+        # Do estimation
+        cnt = 0
+        C = len(x)
+        for c in range(C):
+            Nc = len(x[c])
+            for n in range(Nc):
+                # Get data
+                dat = x[c][n].dat
+                mat_x = x[c][n].mat
+                dim_x = torch.tensor(x[c][n].dim, device=dat.device, dtype=torch.float64)
+                vx_x = voxsize(mat_x)
+                vx1 = torch.tensor(3*(1,), device=dat.device, dtype=torch.float64)
+
+                # Reslice to 1 mm isotropic
+                D = torch.cat((vx1/vx_x, torch.ones(1, device=dat.device, dtype=torch.float64))).diag()
+                mat1 = torch.matmul(mat_x, D)
+                dim1 = torch.matmul(D.inverse()[:3, :3], dim_x.reshape((3, 1))).floor().squeeze()
+                dim1 = dim1.int().tolist()
+                # Make output grid
+                mat = mat1.solve(mat_x)[0]  # mat_x\mat1
+                grid = affine(dim1, mat, device=dat.device)
+                # Get image data
+                dat = dat[None, None, ...]
+                # Do interpolation
+                mn = torch.min(dat)
+                mx = torch.max(dat)
+                dat = grid_pull(dat, grid, bound='zero', extrapolate=False, interpolation=4)
+                dat[dat < mn] = mn
+                dat[dat > mx] = mx
+                dat = dat[0, 0, ...]
+
+                # Set options for spm.noise_estimate
+                mu_noise = None
+                num_class = 2
+                max_iter = 10000
+                if x[c][n].ct:
+                    # Get mean intensity of CT foreground
+                    mu_fg = torch.mean(dat[(dat >= -100) & (dat <= 3071)])
+                    # Get CT noise statistics
+                    mu_noise = -1000
+                    dat = dat[(dat >= -1023) & (dat < -900)]
+                    num_class = 3
+                    sd_bg, _, mu_bg, _ = noise_estimate(dat,
+                        num_class=num_class, show_fit=show_hyperpar,
+                        fig_num=100 + cnt,
+                        mu_noise=mu_noise, max_iter=max_iter)
+                else:
+                    # Get noise and foreground statistics
+                    sd_bg, sd_fg, mu_bg, mu_fg = noise_estimate(dat,
+                        num_class=num_class, show_fit=show_hyperpar, fig_num=100 + cnt,
+                        mu_noise=mu_noise, max_iter=max_iter)
+                x[c][n].sd = sd_bg.float()
+                x[c][n].tau = 1/sd_bg.float()**2
+                x[c][n].mu = torch.abs(mu_fg.float() - mu_bg.float())
+                cnt += 1
+
+        # Print info to screen
+        self._print_info('hyper_par', x, t0)
+
+        return x
+
     def _format_input(self, pth_nii):
         """ Construct algorithm input struct.
 
@@ -499,7 +580,7 @@ class NiiProc:
         # x[c][n].tau
         # x[c][n].mu
         # x[c][n].sd
-        x = self._image_statistics(x)
+        x = self._estimate_hyperpar(x)
 
         return x
 
@@ -591,89 +672,6 @@ class NiiProc:
             y[c].mat = mat.double().to(device)
 
         return y
-
-    def _image_statistics(self, x):
-        """ Estimate noise precision (tau) and mean brain
-            intensity (mu) of each observed image.
-
-        Args:
-            x (Input()): Input data.
-
-        Returns:
-            tau (list): List of C torch.tensor(float) with noise precision of each MR image.
-            lam (torch.tensor(float)): The parameter lambda (1, C).
-
-        """
-        # Parse function settings
-        show_hyperpar = self.sett.show_hyperpar
-
-        # Print info to screen
-        t0 = self._print_info('hyper_par')
-
-        # Do estimation
-        cnt = 0
-        C = len(x)
-        for c in range(C):
-            Nc = len(x[c])
-            for n in range(Nc):
-                # Get data
-                dat = x[c][n].dat
-                mat_x = x[c][n].mat
-                dim_x = torch.tensor(x[c][n].dim, device=dat.device, dtype=torch.float64)
-                vx_x = voxsize(mat_x)
-                vx1 = torch.tensor(3*(1,), device=dat.device, dtype=torch.float64)
-
-                # Reslice to 1 mm isotropic
-                D = torch.cat((vx1/vx_x, torch.ones(1, device=dat.device, dtype=torch.float64))).diag()
-                mat1 = torch.matmul(mat_x, D)
-                dim1 = torch.matmul(D.inverse()[:3, :3], dim_x.reshape((3, 1))).floor().squeeze()
-                dim1 = dim1.int().tolist()
-                # Make output grid
-                mat = mat1.solve(mat_x)[0]  # mat_x\mat1
-                grid = affine(dim1, mat, device=dat.device)
-                # Get image data
-                dat = dat[None, None, ...]
-                # Do interpolation
-                mn = torch.min(dat)
-                mx = torch.max(dat)
-                dat = grid_pull(dat, grid, bound='zero', extrapolate=False, interpolation=4)
-                dat[dat < mn] = mn
-                dat[dat > mx] = mx
-                dat = dat[0, 0, ...]
-
-                # Set options for spm.noise_estimate
-                mu_noise = None
-                num_class = 2
-                max_iter = 10000
-                if x[c][n].ct:
-                    # Get CT foreground
-                    mu_noise = -1000
-                    num_class = 10
-                    _, sd_fg, _, mu_fg = noise_estimate(dat,
-                                                        num_class=num_class, show_fit=show_hyperpar,
-                                                        fig_num=100 + cnt,
-                                                        mu_noise=mu_noise, max_iter=max_iter)
-                    # Get CT noise
-                    dat = dat[(dat >= -1020) & (dat < -900)]
-                    num_class = 2
-                    sd_bg, _, mu_bg, _ = noise_estimate(dat,
-                                                        num_class=num_class, show_fit=show_hyperpar,
-                                                        fig_num=100 + cnt + C,
-                                                        mu_noise=mu_noise, max_iter=max_iter)
-                else:
-                    # Get noise and foreground statistics
-                    sd_bg, sd_fg, mu_bg, mu_fg = noise_estimate(dat,
-                        num_class=num_class, show_fit=show_hyperpar, fig_num=100 + cnt,
-                        mu_noise=mu_noise, max_iter=max_iter)
-                x[c][n].sd = sd_bg.float()
-                x[c][n].tau = 1/sd_bg.float()**2
-                x[c][n].mu = mu_fg.float() - mu_bg.float()
-                cnt += 1
-
-        # Print info to screen
-        self._print_info('hyper_par', x, t0)
-
-        return x
 
     def _init_y(self, interpolation=4):
         """ Make initial guesses of reconstucted image(s) using b-spline interpolation,
