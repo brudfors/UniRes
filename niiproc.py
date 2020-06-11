@@ -56,7 +56,7 @@ class Input:
     """
     dat = None
     dim = None
-    is_ct = None
+    ct = None
     mat = None
     mu = None
     po = None
@@ -101,13 +101,13 @@ class Settings:
     """ Algorithm settings.
 
     """
-    cgs_iter: int = 2  # Conjugate gradient (CG) iterations for solving for y
+    cgs_iter: int = 4  # Conjugate gradient (CG) iterations for solving for y
     cgs_tol: float = 0  # CG tolerance for solving for y
     cgs_verbose: bool = False  # CG verbosity (0, 1)
     device: str = None  # PyTorch device name
     dir_out: str = None  # Directory to write output, if None uses same as input (output is prefixed 'y_')
     gap: float = 0.0  # Slice gap, between 0 and 1
-    is_ct: bool = False  # Is CT data? (data also needs to have negative values)
+    has_ct: bool = True  # Data could be CT (but data must contain negative values)
     max_iter: int = 256  # Max algorithm iterations
     mod_prct: float = 0.0  # Amount to crop mean space, between 0 and 1 (faster, but could loss out on data)
     prefix: str = 'y_'  # Prefix for reconstructed image(s)
@@ -233,6 +233,14 @@ class NiiProc:
             # Get ADMM variables
             z, w = self._alloc_admm_vars()
 
+        # Scale lambda
+        for c in range(C):
+            self._y[c].lam = self.sett.reg_scl * self._y[c].lam0
+
+        # Get ADMM step-size (depends on lam and tau)
+        self._rho = self._step_size()
+        # self._rho = torch.tensor(1, dtype=dtype, device=device)
+
         # Init visualisation
         if self.sett.plot_conv:
             fig_ax_nll = plot_convergence(fig_num=98)
@@ -251,21 +259,21 @@ class NiiProc:
                 t00 = self._print_info('fit-start', C, N, device,
                     self.sett.max_iter, self.sett.tolerance)  # PRINT
 
-            """ Scale lambda
-            """
-            for c in range(C):
-                if type(self.sett.reg_scl) is list:  # coarse-to-fine scaling
-                    if iter >= len(self.sett.reg_scl):
-                        self._y[c].lam = self.sett.reg_scl[-1] * self._y[c].lam0
-                    else:
-                        self._y[c].lam = self.sett.reg_scl[iter] * self._y[c].lam0
-                else:
-                    self._y[c].lam = self.sett.reg_scl * self._y[c].lam0
-
-            """ Get ADMM step-size (depends on lam and tau)
-            """
-            self._rho = self._step_size()
-            # self._rho = torch.tensor(1, dtype=dtype, device=device)
+            # """ Scale lambda
+            # """
+            # for c in range(C):
+            #     if type(self.sett.reg_scl) is list:  # coarse-to-fine scaling
+            #         if iter >= len(self.sett.reg_scl):
+            #             self._y[c].lam = self.sett.reg_scl[-1] * self._y[c].lam0
+            #         else:
+            #             self._y[c].lam = self.sett.reg_scl[iter] * self._y[c].lam0
+            #     else:
+            #         self._y[c].lam = self.sett.reg_scl * self._y[c].lam0
+            #
+            # """ Get ADMM step-size (depends on lam and tau)
+            # """
+            # self._rho = self._step_size()
+            # # self._rho = torch.tensor(1, dtype=dtype, device=device)
 
             """ UPDATE: z
             """
@@ -470,7 +478,7 @@ class NiiProc:
         # x[c][n].dat
         # x[c][n].dim
         # x[c][n].mat
-        # x[c][n].is_ct
+        # x[c][n].ct
         # x[c][n].fname
         # x[c][n].direc
         # x[c][n].nam
@@ -604,7 +612,7 @@ class NiiProc:
                 mu_noise = None
                 num_class = 2
                 max_iter = 10000
-                if x[c][n].is_ct:
+                if x[c][n].ct:
                     # Get CT foreground
                     mu_noise = -1000
                     num_class = 10
@@ -671,7 +679,7 @@ class NiiProc:
         """
         # Parse function settings
         device = self.sett.device
-        is_ct = self.sett.is_ct
+        has_ct = self.sett.has_ct
 
         if type(pth_nii) is str:
             pth_nii = [pth_nii]
@@ -687,8 +695,8 @@ class NiiProc:
                 for n in range(Nc):  # Loop over observations of channel c
                     x[c].append(Input())
                     # Get data
-                    dat, dim, mat, fname, direc, nam, head, is_ct, _ = \
-                        self.read_nifti_3d(pth_nii[c][n], device, is_ct=is_ct)
+                    dat, dim, mat, fname, direc, nam, head, ct, _ = \
+                        self.read_nifti_3d(pth_nii[c][n], device, is_ct=has_ct)
                     # Assign
                     x[c][n].dat = dat
                     x[c][n].dim = dim
@@ -697,13 +705,13 @@ class NiiProc:
                     x[c][n].direc = direc
                     x[c][n].nam = nam
                     x[c][n].head = head
-                    x[c][n].is_ct = is_ct
+                    x[c][n].ct = ct
             else:
                 x[c].append(Input())
                 n = 0
                 # Get data
-                dat, dim, mat, fname, direc, nam, head, is_ct, _ = \
-                    self.read_nifti_3d(pth_nii[c], device, is_ct=is_ct)
+                dat, dim, mat, fname, direc, nam, head, ct, _ = \
+                    self.read_nifti_3d(pth_nii[c], device, is_ct=has_ct)
                 # Assign
                 x[c][n].dat = dat
                 x[c][n].dim = dim
@@ -712,7 +720,7 @@ class NiiProc:
                 x[c][n].direc = direc
                 x[c][n].nam = nam
                 x[c][n].head = head
-                x[c][n].is_ct = is_ct
+                x[c][n].ct = ct
 
         return x
 
@@ -752,6 +760,9 @@ class NiiProc:
                         print('| mu='.format(c, argv[0][c]), end='')
                         for n in range(len(argv[0][c])):
                             print('{:0.7f}'.format(argv[0][c][n].mu), end=' ')
+                        print('| ct='.format(c, argv[0][c]), end='')
+                        for n in range(len(argv[0][c])):
+                            print('{}'.format(argv[0][c][n].ct), end=' ')
                         print()
                 else:
                     print('\nEstimating model hyper-parameters...', end='')
@@ -854,7 +865,7 @@ class NiiProc:
                 cnt += 1
 
         rho = torch.sqrt(torch.mean(all_tau))/torch.mean(all_lam)
-        # _ = self._print_info('step_size', rho)
+        _ = self._print_info('step_size', rho)
         return rho
 
     """ Static methods
@@ -903,7 +914,7 @@ class NiiProc:
             direc (string): File directory path
             nam (string): Filename
             head (nibabel.nifti1.Nifti1Header)
-            is_ct (bool): Is data CT?
+            ct (bool): Is data CT?
             var (torch.tensor(float)): Observation uncertainty.
 
         """
@@ -916,12 +927,14 @@ class NiiProc:
             dat = torch.tensor(nii.get_fdata()).double().to(device)
         # Remove NaNs
         dat[~torch.isfinite(dat)] = 0
-        if torch.min(dat) >= 0:
-            is_ct = False
-        if is_ct:
+        if is_ct and (torch.min(dat) < 0):
+            # Input data is CT
+            ct = True
             # Winsorize CT
             dat[dat < -1024] = -1024
             dat[dat > 3071] = 3071
+        else:
+            ct = False
         # Get affine matrix
         mat = nii.affine
         mat = torch.from_numpy(mat).double().to(device)
@@ -941,10 +954,10 @@ class NiiProc:
         fname = nii.get_filename()
         direc, nam = os.path.split(fname)
 
-        return dat, dim, mat, fname, direc, nam, head, is_ct, var
+        return dat, dim, mat, fname, direc, nam, head, ct, var
 
     @staticmethod
-    def proj_apply(operator, method, dat, po, bound='dct2'):
+    def proj_apply(operator, method, dat, po, bound='zero'):
         """ Applies operator A, At  or AtA (for denoising or super-resolution).
 
         Args:
@@ -960,7 +973,7 @@ class NiiProc:
                 po.dim_yx: Intermediate image dimensions.
                 po.ratio: The ratio (low-res voxsize)/(high-res voxsize).
                 po.smo_ker: Smoothing kernel (slice-profile).
-            bound (str, optional): Bound for nitorch push/pull, defaults to 'dct2'.
+            bound (str, optional): Bound for nitorch push/pull, defaults to 'zero'.
 
         Returns:
             dat (torch.tensor()): Projected image data (1, 1, X_out, Y_out, Z_out).
