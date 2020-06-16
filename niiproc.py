@@ -34,10 +34,10 @@ from datetime import datetime
 import math
 import nibabel as nib
 from nitorch.kernels import smooth
-from nitorch.spatial import grid_pull, grid_push, voxsize
+from nitorch.spatial import grid_pull, grid_push, voxsize, im_gradient, im_divergence
 from nitorch.spm import affine, mean_space, noise_estimate
-from nitorch.utils import gradient_3d, divergence_3d
 from nitorch.optim import cg, get_gain, plot_convergence
+from nitorch.utils import show_slices
 import numpy as np
 import os
 from timeit import default_timer as timer
@@ -247,10 +247,8 @@ class NiiProc:
         # self._rho = torch.tensor(1, dtype=dtype, device=device)
 
         # Init visualisation
-        if self.sett.plot_conv:
-            fig_ax_nll = plot_convergence(fig_num=98)
-        if self.sett.show_jtv:
-            fig_ax_jtv = self.show_im(fig_num=99)
+        fig_ax_nll = None
+        fig_ax_jtv = None
 
         """ Start iterating:
             Updates y, z, w in alternating fashion, until a convergence threshold is met
@@ -294,7 +292,7 @@ class NiiProc:
 
                 # Divergence
                 div = w[c, ...] - self._rho*z[c, ...]
-                div = divergence_3d(div, vx=vx_y, bound=bound_grad)
+                div = im_divergence(div, vx=vx_y, bound=bound_grad)
                 rhs = rhs - self._y[c].lam * div
 
                 # Invert y = lhs\rhs by conjugate gradients
@@ -316,16 +314,19 @@ class NiiProc:
             t0 = self._print_info('fit-update', 'z', iter)  # PRINT
             jtv = torch.zeros(dim_y, dtype=dtype, device=device)
             for c in range(C):
-                Dy = self._y[c].lam * gradient_3d(self._y[c].dat, vx=vx_y, bound=bound_grad)
+                Dy = self._y[c].lam * im_gradient(self._y[c].dat, vx=vx_y, bound=bound_grad)
                 if alpha != 1:  # Use over/under-relaxation
                     Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
                 jtv = jtv + torch.sum((w[c, ...] / self._rho + Dy) ** 2, dim=0)
             jtv = torch.sqrt(jtv)
             jtv = ((jtv - one/self._rho).clamp_min(0))/(jtv + tiny)
+
             if self.sett.show_jtv:  # Show computed JTV
-                _ = self.show_im(im=jtv, fig_ax=fig_ax_jtv, fig_title='JTV')
+                fig_ax_jtv = show_slices(img=jtv, fig_ax=fig_ax_jtv, title='JTV',
+                                         cmap='coolwarm', fig_num=98)
+
             for c in range(C):
-                Dy = self._y[c].lam * gradient_3d(self._y[c].dat, vx=vx_y, bound=bound_grad)
+                Dy = self._y[c].lam * im_gradient(self._y[c].dat, vx=vx_y, bound=bound_grad)
                 if alpha != 1:  # Use over/under-relaxation
                     Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
                 for d in range(Dy.shape[0]):
@@ -336,8 +337,11 @@ class NiiProc:
             """
             if self.sett.tolerance > 0:
                 nll[iter] = self._compute_nll(vx_y=vx_y, bound=bound_grad)
+
             if self.sett.plot_conv:  # Plot algorithm convergence
-                _ = plot_convergence(vals=nll[:iter + 1], fig_ax=fig_ax_nll)
+                fig_ax_nll = plot_convergence(vals=nll[:iter + 1], fig_ax=fig_ax_nll,
+                                              fig_num=99)
+
             # Check convergence
             gain = get_gain(nll, iter, monotonicity='decreasing')
             t_iter = self._print_info('fit-ll', iter, nll[iter], gain, t_iter)  # PRINT
@@ -349,7 +353,7 @@ class NiiProc:
             """
             t0 = self._print_info('fit-update', 'w', iter)  # PRINT
             for c in range(C):  # Loop over channels
-                Dy = self._y[c].lam * gradient_3d(self._y[c].dat, vx=vx_y, bound=bound_grad)
+                Dy = self._y[c].lam * im_gradient(self._y[c].dat, vx=vx_y, bound=bound_grad)
                 if alpha != 1:  # Use over/under-relaxation
                     Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
                 w[c, ...] = w[c, ...] + self._rho*(Dy - z[c, ...])
@@ -452,7 +456,7 @@ class NiiProc:
                     self._x[c][n].tau/2*torch.sum((self._proj('A', self._y[c].dat, c, n)
                                                   - self._x[c][n].dat)**2, dtype=sum_dtype)
 
-            Dy = self._y[c].lam * gradient_3d(self._y[c].dat, vx=vx_y, bound=bound)
+            Dy = self._y[c].lam * im_gradient(self._y[c].dat, vx=vx_y, bound=bound)
             nll_y = nll_y + torch.sum(Dy**2, dim=0, dtype=dtype)
 
         nll_y = torch.sum(torch.sqrt(nll_y), dtype=sum_dtype)
@@ -472,8 +476,8 @@ class NiiProc:
               div (torch.tensor()): Dt(D(dat)) (dim_y).
 
         """
-        dat = gradient_3d(dat, vx=vx_y, bound=bound)
-        dat = divergence_3d(dat, vx=vx_y, bound=bound)
+        dat = im_gradient(dat, vx=vx_y, bound=bound)
+        dat = im_divergence(dat, vx=vx_y, bound=bound)
         return dat
 
     def _estimate_hyperpar(self, x):
@@ -507,39 +511,43 @@ class NiiProc:
                 vx_x = voxsize(mat_x)
                 vx1 = torch.tensor(3*(1,), device=dat.device, dtype=torch.float64)
 
-                # Reslice to 1 mm isotropic
-                D = torch.cat((vx1/vx_x, torch.ones(1, device=dat.device, dtype=torch.float64))).diag()
-                mat1 = torch.matmul(mat_x, D)
-                dim1 = torch.matmul(D.inverse()[:3, :3], dim_x.reshape((3, 1))).floor().squeeze()
-                dim1 = dim1.int().tolist()
-                # Make output grid
-                mat = mat1.solve(mat_x)[0]  # mat_x\mat1
-                grid = affine(dim1, mat, device=dat.device)
-                # Get image data
-                dat = dat[None, None, ...]
-                # Do interpolation
-                mn = torch.min(dat)
-                mx = torch.max(dat)
-                dat = grid_pull(dat, grid, bound='zero', extrapolate=False, interpolation=4)
-                dat[dat < mn] = mn
-                dat[dat > mx] = mx
-                dat = dat[0, 0, ...]
+                # # Reslice to 1 mm isotropic
+                # D = torch.cat((vx1/vx_x, torch.ones(1, device=dat.device, dtype=torch.float64))).diag()
+                # mat1 = torch.matmul(mat_x, D)
+                # dim1 = torch.matmul(D.inverse()[:3, :3], dim_x.reshape((3, 1))).floor().squeeze()
+                # dim1 = dim1.int().tolist()
+                # # Make output grid
+                # mat = mat1.solve(mat_x)[0]  # mat_x\mat1
+                # grid = affine(dim1, mat, device=dat.device)
+                # # Get image data
+                # dat = dat[None, None, ...]
+                # # Do interpolation
+                # mn = torch.min(dat)
+                # mx = torch.max(dat)
+                # dat = grid_pull(dat, grid, bound='zero', extrapolate=False, interpolation=4)
+                # dat[dat < mn] = mn
+                # dat[dat > mx] = mx
+                # dat = dat[0, 0, ...]
 
                 # Set options for spm.noise_estimate
                 mu_noise = None
                 num_class = 2
                 max_iter = 10000
+                ff_ct_sd = 1.5
                 if x[c][n].ct:
                     # Get mean intensity of CT foreground
                     mu_fg = torch.mean(dat[(dat >= -100) & (dat <= 3071)])
                     # Get CT noise statistics
-                    mu_noise = -1000
-                    dat = dat[(dat >= -1023) & (dat < -900)]
-                    num_class = 3
-                    sd_bg, _, mu_bg, _ = noise_estimate(dat,
-                        num_class=num_class, show_fit=show_hyperpar,
-                        fig_num=100 + cnt,
-                        mu_noise=mu_noise, max_iter=max_iter)
+                    mu_bg = torch.mean(dat[(dat >= -1023) & (dat < -980)])
+                    sd_bg = torch.std(dat[(dat >= -1023) & (dat < -980)])
+                    sd_bg = ff_ct_sd*sd_bg
+                    # mu_noise = -1000
+                    # num_class = 1
+                    # dat = dat[(dat >= -1023) & (dat < -980)]
+                    # sd_bg, _, mu_bg, _ = noise_estimate(dat,
+                    #     num_class=num_class, show_fit=show_hyperpar,
+                    #     fig_num=100 + cnt,
+                    #     mu_noise=mu_noise, max_iter=max_iter)
                 else:
                     # Get noise and foreground statistics
                     sd_bg, sd_fg, mu_bg, mu_fg = noise_estimate(dat,
@@ -1183,61 +1191,3 @@ class NiiProc:
             header.set_slope_inter(slope=slope, inter=inter)
         # Write to  disk
         nib.save(nii, ofname)
-
-    @staticmethod
-    def show_im(im=None, fig_ax=None, fig_num=1, fig_title=''):
-        """ Show an image.
-
-        This allows for real-time plotting of an image. It is initialised by
-        called with no argument:
-
-        fig_ax = _show_im()
-
-        Subsequent calls are then performed as:
-
-        _ = _show_im(im=im, fig_ax=fig_ax)
-
-        Args:
-            im (torch.tensor, optional): Image as tensor (W, H, D).
-            fig_ax ([matplotlib.figure, matplotlib.axes])
-            fig_num (int, optional): Figure number to plot to, defaults to 1.
-            fig_title (str, optional): Figure title, defaults to ''.
-
-        Returns:
-            fig_ax ([matplotlib.figure, matplotlib.axes])
-
-        """
-        import matplotlib.pyplot as plt
-
-        if fig_ax is None:
-            fig, ax = plt.subplots(1, 3, num=fig_num)
-            fig_ax = [fig, ax]
-            plt.ion()
-            fig.show()
-        elif im is not None:
-            im = im.squeeze()
-            dm = torch.tensor(im.shape)
-            ix = torch.round(0.5 * dm).int().tolist()
-
-            cmap = 'coolwarm'
-            ax = fig_ax[1][0]
-            ax.clear()
-            im1 = im[:, :, ix[2]].cpu()
-            ax.imshow(im1, interpolation='None', cmap=cmap, aspect='auto')
-            ax.axis('off')
-            ax = fig_ax[1][1]
-            ax.clear()
-            im1 = im[:, ix[1], :].squeeze().cpu()
-            ax.imshow(im1, interpolation='None', cmap=cmap, aspect='auto')
-            ax.axis('off')
-            ax = fig_ax[1][2]
-            ax.clear()
-            im1 = im[ix[0], :, :].squeeze().cpu()
-            ax.imshow(im1, interpolation='None', cmap=cmap, aspect='auto')
-            ax.axis('off')
-
-            fig_ax[0].suptitle(fig_title)
-            fig_ax[0].canvas.draw()
-            fig_ax[0].canvas.flush_events()
-
-        return fig_ax
