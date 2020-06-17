@@ -246,7 +246,6 @@ class NiiProc:
 
         # Get ADMM step-size (depends on lam and tau)
         self._rho = self._step_size()
-        # self._rho = torch.tensor(1, dtype=dtype, device=device)
 
         # Init visualisation
         fig_ax_nll = None
@@ -886,8 +885,12 @@ class NiiProc:
                 # Assign
                 self._x[c][n].po = po
 
-    def _step_size(self):
+    def _step_size(self, rho=None):
         """ ADMM step size (rho) from image statistics.
+
+        Args:
+            rho (float, optional): Step size, default to None (will then be
+            estimated).
 
         Returns:
             rho (torch.tensor()): Step size.
@@ -897,20 +900,23 @@ class NiiProc:
         device = self.sett.device
         dtype = torch.float32
 
-        C = len(self._y)
-        N = sum([len(x) for x in self._x])
+        if rho is not None:
+            rho = torch.tensor(rho, dtype=dtype, device=device)
+        else:
+            C = len(self._y)
+            N = sum([len(x) for x in self._x])
 
-        all_lam = torch.zeros(C, dtype=dtype, device=device)
-        all_tau = torch.zeros(N, dtype=dtype, device=device)
-        cnt = 0
-        for c in range(len(self._x)):
-            all_lam[c] = self._y[c].lam
-            for n in range(len(self._x[c])):
-                all_tau[cnt] = self._x[c][n].tau
-                cnt += 1
+            all_lam = torch.zeros(C, dtype=dtype, device=device)
+            all_tau = torch.zeros(N, dtype=dtype, device=device)
+            cnt = 0
+            for c in range(len(self._x)):
+                all_lam[c] = self._y[c].lam
+                for n in range(len(self._x[c])):
+                    all_tau[cnt] = self._x[c][n].tau
+                    cnt += 1
 
-        rho = torch.sqrt(torch.mean(all_tau))/torch.mean(all_lam)
-        _ = self._print_info('step_size', rho)
+            rho = torch.sqrt(torch.mean(all_tau))/torch.mean(all_lam)
+        _ = self._print_info('step_size', rho)  # PRINT
         return rho
 
     """ Static methods
