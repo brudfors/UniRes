@@ -534,7 +534,7 @@ class NiiProc:
                 mu_noise = None
                 num_class = 2
                 max_iter = 10000
-                ff_ct_sd = 1.5
+                ff_ct_sd = 1.25
                 if x[c][n].ct:
                     # Get mean intensity of CT foreground
                     mu_fg = torch.mean(dat[(dat >= -100) & (dat <= 3071)])
