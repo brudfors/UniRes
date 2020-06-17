@@ -11,6 +11,8 @@ TODO:
     . Make A and At layers instead, and import these
     . Remove dependency on numpy
     . Support read/write nifti when large number of observations.
+    . You would write x = exp(s) Ay for odd slices and x = exp(-s) Ay for even slices
+    . Check if noise std is accurate?
 
 WHY:
     . Artefacts when using central difference?
