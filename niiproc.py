@@ -118,11 +118,12 @@ class Settings:
     plot_conv: bool = False  # Use matplotlib to plot convergence in real-time
     profile_ip: int = 0  # In-plane slice profile (0=rect|1=tri|2=gauss)
     profile_tp: int = 0  # Through-plane slice profile (0=rect|1=tri|2=gauss)
-    reg_scl: float = 20.0  # Scale regularisation estimate
+    reg_scl: float = 10.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
+    rho_scl: float = None  # Scaling of ADMM step-size
     show_hyperpar: bool = False  # Use matplotlib to visualise hyper-parameter estimates
     show_jtv: bool = False  # Show the joint total variation (JTV)
     tolerance: float = 1e-4  # Algorithm tolerance, if zero, run to max_iter
-    vx: float = None  # Reconstruction voxel size (if None, set automatically)
+    vx: float = 1.0  # Reconstruction voxel size (if None, set automatically)
     write_jtv: bool = False  # Write JTV to nifti
 
 
@@ -153,6 +154,8 @@ class NiiProc:
         self._rho = None  # Infamous ADMM step-size
         self._do_proj = None  # Use projection matrices (set in _format_output())
         self._method = None  # Method name (super-resolution|denoising)
+        if not isinstance(self.sett.reg_scl, list):  # For coarse-to-fine scaling of regularisation
+            self.sett.reg_scl = [self.sett.reg_scl]
 
         # Read and format input
         self._x = self._format_input(pth_nii)
@@ -242,12 +245,12 @@ class NiiProc:
 
         # Scale lambda
         for c in range(C):
-            self._y[c].lam = self.sett.reg_scl * self._y[c].lam0
+            self._y[c].lam = self.sett.reg_scl[0] * self._y[c].lam0
 
         # Get ADMM step-size (depends on lam and tau)
         self._rho = self._step_size()
 
-        # Init visualisation
+        # For visualisation
         fig_ax_nll = None
         fig_ax_jtv = None
 
@@ -263,21 +266,13 @@ class NiiProc:
                 t00 = self._print_info('fit-start', C, N, device,
                     self.sett.max_iter, self.sett.tolerance)  # PRINT
 
-            # """ Scale lambda
-            # """
-            # for c in range(C):
-            #     if type(self.sett.reg_scl) is list:  # coarse-to-fine scaling
-            #         if iter >= len(self.sett.reg_scl):
-            #             self._y[c].lam = self.sett.reg_scl[-1] * self._y[c].lam0
-            #         else:
-            #             self._y[c].lam = self.sett.reg_scl[iter] * self._y[c].lam0
-            #     else:
-            #         self._y[c].lam = self.sett.reg_scl * self._y[c].lam0
-            #
-            # """ Get ADMM step-size (depends on lam and tau)
-            # """
-            # self._rho = self._step_size()
-            # # self._rho = torch.tensor(1, dtype=dtype, device=device)
+            """ Coarse-to-fine scaling of lambda
+            """
+            if iter < len(self.sett.reg_scl):
+                for c in range(C):
+                    self._y[c].lam = self.sett.reg_scl[iter] * self._y[c].lam0
+                # Update ADMM step-size
+                self._rho = self._step_size(verbose=False)
 
             """ UPDATE: y
             """
@@ -286,15 +281,15 @@ class NiiProc:
                 Nc = len(self._x[c])
 
                 # RHS
-                rhs = torch.zeros(dim_y, device=device, dtype=dtype)
+                rhs = torch.zeros_like(self._y[0].dat)
                 for n in range(Nc):  # Loop over observations of channel 'c'
                     # _ = self._print_info('int', n)  # PRINT
-                    rhs = rhs + self._x[c][n].tau*self._proj('At', self._x[c][n].dat, c, n)
+                    rhs += self._x[c][n].tau*self._proj('At', self._x[c][n].dat, c, n)
 
                 # Divergence
                 div = w[c, ...] - self._rho*z[c, ...]
                 div = im_divergence(div, vx=vx_y, bound=bound_grad)
-                rhs = rhs - self._y[c].lam * div
+                rhs -= self._y[c].lam * div
 
                 # Invert y = lhs\rhs by conjugate gradients
                 lhs = lambda y: self._proj('AtA', y, c, vx_y=vx_y, bound__DtD=bound_grad)
@@ -313,13 +308,13 @@ class NiiProc:
             if alpha != 1:  # Use over/under-relaxation
                 z_old = z.clone()
             t0 = self._print_info('fit-update', 'z', iter)  # PRINT
-            jtv = torch.zeros(dim_y, dtype=dtype, device=device)
+            jtv = torch.zeros_like(self._y[0].dat)
             for c in range(C):
                 Dy = self._y[c].lam * im_gradient(self._y[c].dat, vx=vx_y, bound=bound_grad)
                 if alpha != 1:  # Use over/under-relaxation
                     Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
-                jtv = jtv + torch.sum((w[c, ...] / self._rho + Dy) ** 2, dim=0)
-            jtv = torch.sqrt(jtv)
+                jtv += torch.sum((w[c, ...] / self._rho + Dy) ** 2, dim=0)
+            jtv.sqrt_()  # in-place
             jtv = ((jtv - one/self._rho).clamp_min(0))/(jtv + tiny)
 
             if self.sett.show_jtv:  # Show computed JTV
@@ -357,7 +352,7 @@ class NiiProc:
                 Dy = self._y[c].lam * im_gradient(self._y[c].dat, vx=vx_y, bound=bound_grad)
                 if alpha != 1:  # Use over/under-relaxation
                     Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
-                w[c, ...] = w[c, ...] + self._rho*(Dy - z[c, ...])
+                w[c, ...] += self._rho*(Dy - z[c, ...])
                 _ = self._print_info('int', c)  # PRINT
             _ = self._print_info('fit-done', t0)  # PRINT
 
@@ -449,7 +444,7 @@ class NiiProc:
 
         C = len(self._y)
         nll_xy = torch.tensor(0, dtype=dtype, device=device)
-        nll_y = torch.zeros(self._y[0].dim, dtype=dtype, device=device)
+        nll_y = torch.zeros_like(self._y[0].dat)
         for c in range(C):
             Nc = len(self._x[c])
             for n in range(Nc):
@@ -534,7 +529,7 @@ class NiiProc:
                 mu_noise = None
                 num_class = 2
                 max_iter = 10000
-                ff_ct_sd = 1.25
+                ff_ct_sd = 1.5
                 if x[c][n].ct:
                     # Get mean intensity of CT foreground
                     mu_fg = torch.mean(dat[(dat >= -100) & (dat <= 3071)])
@@ -608,9 +603,9 @@ class NiiProc:
         vx_y = self.sett.vx  # output voxel size
         if vx_y is not None:
             # Format voxel size as np.array()
-            if type(vx_y) is int:
+            if isinstance(vx_y, int):
                 vx_y = float(vx_y)
-            if type(vx_y) is float:
+            if isinstance(vx_y, float):
                 vx_y = (vx_y,) * 3
             vx_y = np.asarray(vx_y)
 
@@ -725,7 +720,7 @@ class NiiProc:
         device = self.sett.device
         has_ct = self.sett.has_ct
 
-        if type(pth_nii) is str:
+        if isinstance(pth_nii, str):
             pth_nii = [pth_nii]
 
         C = len(pth_nii)  # Number of channels
@@ -734,7 +729,7 @@ class NiiProc:
             x.append([])
             x[c] = []
 
-            if type(pth_nii[c]) is list:
+            if isinstance(pth_nii[c], list):
                 Nc = len(pth_nii[c])  # Number of observations of channel c
                 for n in range(Nc):  # Loop over observations of channel c
                     x[c].append(Input())
@@ -854,7 +849,7 @@ class NiiProc:
             for n1 in range(1, Nc):
                 dat = dat + self._x[c][n1].tau * self.proj_apply(operator, method, dat, self._x[c][n1].po)
             dat = dat[0, 0, ...]
-            dat = dat + dat1
+            dat += dat1
         else:  # A, At
             if not do_proj:  operator = 'none'  # self.proj_apply returns dat
             dat = dat[None, None, ...]
@@ -885,12 +880,11 @@ class NiiProc:
                 # Assign
                 self._x[c][n].po = po
 
-    def _step_size(self, rho=None):
+    def _step_size(self, verbose=True):
         """ ADMM step size (rho) from image statistics.
 
         Args:
-            rho (float, optional): Step size, default to None (will then be
-            estimated).
+            verbose (bool, optional): Defaults to True.
 
         Returns:
             rho (torch.tensor()): Step size.
@@ -898,25 +892,24 @@ class NiiProc:
         """
         # Parse function settings
         device = self.sett.device
+        scl = self.sett.rho
         dtype = torch.float32
 
-        if rho is not None:
-            rho = torch.tensor(rho, dtype=dtype, device=device)
-        else:
-            C = len(self._y)
-            N = sum([len(x) for x in self._x])
+        C = len(self._y)
+        N = sum([len(x) for x in self._x])
 
-            all_lam = torch.zeros(C, dtype=dtype, device=device)
-            all_tau = torch.zeros(N, dtype=dtype, device=device)
-            cnt = 0
-            for c in range(len(self._x)):
-                all_lam[c] = self._y[c].lam
-                for n in range(len(self._x[c])):
-                    all_tau[cnt] = self._x[c][n].tau
-                    cnt += 1
+        all_lam = torch.zeros(C, dtype=dtype, device=device)
+        all_tau = torch.zeros(N, dtype=dtype, device=device)
+        cnt = 0
+        for c in range(len(self._x)):
+            all_lam[c] = self._y[c].lam
+            for n in range(len(self._x[c])):
+                all_tau[cnt] = self._x[c][n].tau
+                cnt += 1
 
-            rho = torch.sqrt(torch.mean(all_tau))/torch.mean(all_lam)
-        _ = self._print_info('step_size', rho)  # PRINT
+        rho = scl*torch.sqrt(torch.mean(all_tau))/torch.mean(all_lam)
+        if verbose:
+            _ = self._print_info('step_size', rho)  # PRINT
         return rho
 
     """ Static methods
@@ -1008,7 +1001,7 @@ class NiiProc:
         return dat, dim, mat, fname, direc, nam, head, ct, var
 
     @staticmethod
-    def proj_apply(operator, method, dat, po, bound='zero'):
+    def proj_apply(operator, method, dat, po, bound='dct2'):
         """ Applies operator A, At  or AtA (for denoising or super-resolution).
 
         Args:
