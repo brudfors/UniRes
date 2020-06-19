@@ -39,8 +39,7 @@ from nitorch.kernels import smooth
 from nitorch.spatial import grid_pull, grid_push, voxsize, im_gradient, im_divergence
 from nitorch.spm import affine, mean_space, noise_estimate
 from nitorch.optim import cg, get_gain, plot_convergence
-from nitorch.utils import show_slices
-import numpy as np
+from nitorch.utils import show_slices, round
 import os
 from timeit import default_timer as timer
 import torch
@@ -104,7 +103,7 @@ class Settings:
 
     """
     alpha: float = 1.0  # Relaxation parameter 0 < alpha < 2, alpha < 1: under-relaxation, alpha > 1: over-relaxation
-    cgs_iter: int = 4  # Conjugate gradient (CG) iterations for solving for y
+    cgs_max_iter: int = 4  # Max conjugate gradient (CG) iterations for solving for y
     cgs_tol: float = 0  # CG tolerance for solving for y
     cgs_verbose: bool = False  # CG verbosity (0, 1)
     device: str = None  # PyTorch device name
@@ -260,23 +259,23 @@ class NiiProc:
         """
         nll = torch.zeros(self.sett.max_iter, dtype=dtype, device=device)
         t_iter = timer() if self.sett.print_info else 0
-        for iter in range(self.sett.max_iter):
+        for n_iter in range(self.sett.max_iter):
 
-            if iter == 0:
+            if n_iter == 0:
                 t00 = self._print_info('fit-start', C, N, device,
                     self.sett.max_iter, self.sett.tolerance)  # PRINT
 
             """ Coarse-to-fine scaling of lambda
             """
-            if iter < len(self.sett.reg_scl):
+            if n_iter < len(self.sett.reg_scl):
                 for c in range(C):
-                    self._y[c].lam = self.sett.reg_scl[iter] * self._y[c].lam0
+                    self._y[c].lam = self.sett.reg_scl[n_iter] * self._y[c].lam0
                 # Update ADMM step-size
                 self._rho = self._step_size(verbose=False)
 
             """ UPDATE: y
             """
-            t0 = self._print_info('fit-update', 'y', iter)  # PRINT
+            t0 = self._print_info('fit-update', 'y', n_iter)  # PRINT
             for c in range(C):  # Loop over channels
                 Nc = len(self._x[c])
 
@@ -296,7 +295,7 @@ class NiiProc:
                 self._y[c].dat = cg(A=lhs,
                                     b=rhs, x=self._y[c].dat,
                                     verbose=self.sett.cgs_verbose,
-                                    maxiter=self.sett.cgs_iter,
+                                    max_iter=self.sett.cgs_max_iter,
                                     tolerance=self.sett.cgs_tol)
 
                 _ = self._print_info('int', c)  # PRINT
@@ -307,7 +306,7 @@ class NiiProc:
             """
             if alpha != 1:  # Use over/under-relaxation
                 z_old = z.clone()
-            t0 = self._print_info('fit-update', 'z', iter)  # PRINT
+            t0 = self._print_info('fit-update', 'z', n_iter)  # PRINT
             jtv = torch.zeros_like(self._y[0].dat)
             for c in range(C):
                 Dy = self._y[c].lam * im_gradient(self._y[c].dat, vx=vx_y, bound=bound_grad)
@@ -332,22 +331,22 @@ class NiiProc:
             """ Objective function and convergence related
             """
             if self.sett.tolerance > 0:
-                nll[iter] = self._compute_nll(vx_y=vx_y, bound=bound_grad)
+                nll[n_iter] = self._compute_nll(vx_y=vx_y, bound=bound_grad)
 
             if self.sett.plot_conv:  # Plot algorithm convergence
-                fig_ax_nll = plot_convergence(vals=nll[:iter + 1], fig_ax=fig_ax_nll,
+                fig_ax_nll = plot_convergence(vals=nll[:n_iter + 1], fig_ax=fig_ax_nll,
                                               fig_num=99)
 
             # Check convergence
-            gain = get_gain(nll, iter, monotonicity='decreasing')
-            t_iter = self._print_info('fit-ll', iter, nll[iter], gain, t_iter)  # PRINT
-            if (gain < self.sett.tolerance) or (iter >= (self.sett.max_iter - 1)):
-                _ = self._print_info('fit-finish', t00, iter)  # PRINT
+            gain = get_gain(nll, n_iter, monotonicity='decreasing')
+            t_iter = self._print_info('fit-ll', n_iter, nll[n_iter], gain, t_iter)  # PRINT
+            if (gain < self.sett.tolerance) or (n_iter >= (self.sett.max_iter - 1)):
+                _ = self._print_info('fit-finish', t00, n_iter)  # PRINT
                 break  # Finished
 
             """ UPDATE: w
             """
-            t0 = self._print_info('fit-update', 'w', iter)  # PRINT
+            t0 = self._print_info('fit-update', 'w', n_iter)  # PRINT
             for c in range(C):  # Loop over channels
                 Dy = self._y[c].lam * im_gradient(self._y[c].dat, vx=vx_y, bound=bound_grad)
                 if alpha != 1:  # Use over/under-relaxation
@@ -383,25 +382,26 @@ class NiiProc:
         """ Get all images affine matrices, dimensions and voxel sizes (as numpy arrays).
 
         Returns:
-            all_mat (np.array()): Image orientation matrices (4, 4, N).
-            Dim (np.array()): Image dimensions (3, N).
-            all_vx (np.array()): Image voxel sizes (3, N).
+            all_mat (torch.tensor): Image orientation matrices (4, 4, N).
+            Dim (torch.tensor): Image dimensions (3, N).
+            all_vx (torch.tensor): Image voxel sizes (3, N).
 
         """
         # Parse function settings
         device = self.sett.device
+        dtype = torch.float64
 
         N = sum([len(x) for x in self._x])
-        all_mat = np.zeros((4, 4, N))
-        all_dim = np.zeros((3, N))
-        all_vx = np.zeros((3, N))
+        all_mat = torch.zeros((4, 4, N), device=device, dtype=dtype)
+        all_dim = torch.zeros((3, N), device=device, dtype=dtype)
+        all_vx = torch.zeros((3, N), device=device, dtype=dtype)
 
         cnt = 0
         for c in range(len(self._x)):
             for n in range(len(self._x[c])):
-                all_mat[..., cnt] = self._x[c][n].mat.cpu()
-                all_dim[..., cnt] = self._x[c][n].dim
-                all_vx[..., cnt] = voxsize(self._x[c][n].mat).cpu()
+                all_mat[..., cnt] = self._x[c][n].mat
+                all_dim[..., cnt] = torch.tensor(self._x[c][n].dim, device=device, dtype=dtype)
+                all_vx[..., cnt] = voxsize(self._x[c][n].mat)
                 cnt += 1
 
         return all_mat, all_dim, all_vx
@@ -598,16 +598,15 @@ class NiiProc:
         # Parse function settings
         C = len(self._x)  # Number of channels
         device = self.sett.device
-        dtype = torch.float32
         mod_prct = self.sett.mod_prct
+        one = torch.tensor(1.0, device=device, dtype=torch.float64)
         vx_y = self.sett.vx  # output voxel size
         if vx_y is not None:
-            # Format voxel size as np.array()
             if isinstance(vx_y, int):
                 vx_y = float(vx_y)
             if isinstance(vx_y, float):
                 vx_y = (vx_y,) * 3
-            vx_y = np.asarray(vx_y)
+            vx_y = torch.tensor(vx_y, dtype=torch.float64, device=device)
 
         # Get all orientation matrices and dimensions
         all_mat, all_dim, all_vx = self._all_mat_dim_vx()
@@ -618,21 +617,19 @@ class NiiProc:
         dim_same = True
         vx_same = True
         for n in range(1, all_mat.shape[2]):
-            mat_same = mat_same & \
-                np.all(np.equal(np.round(all_mat[..., n - 1], 3), np.round(all_mat[..., n], 3)))
-            dim_same = dim_same & \
-                np.all(np.equal(np.round(all_dim[..., n - 1], 3), np.round(all_dim[..., n], 3)))
-            vx_same = vx_same & \
-                np.all(np.equal(np.round(all_vx[..., n - 1], 3), np.round(all_vx[..., n], 3)))
+            mat_same = mat_same & torch.equal(round(all_mat[..., n - 1], 3), round(all_mat[..., n], 3))
+            dim_same = dim_same & torch.equal(round(all_dim[..., n - 1], 3), round(all_dim[..., n], 3))
+            vx_same = vx_same & torch.equal(round(all_vx[..., n - 1], 3), round(all_vx[..., n], 3))
 
         """
         Decide if super-resolving and/or projection is necessary
         """
         do_sr = True
         self._do_proj = True
-        if vx_y is None and ((N == 1) or vx_same):  vx_y = all_vx[..., 0]  # One image, voxel size not given
+        if vx_y is None and ((N == 1) or vx_same):  # One image, voxel size not given
+            vx_y = all_vx[..., 0]
 
-        if vx_same and (np.abs(all_vx[..., 0] - vx_y) < 1e-3).all():
+        if vx_same and (torch.abs(all_vx[..., 0] - vx_y) < 1e-3).all():
             # All input images have same voxel size, and output voxel size is the also the same
             do_sr = False
             if mat_same and dim_same:
@@ -644,9 +641,9 @@ class NiiProc:
         if do_sr or self._do_proj:
             # Get FOV of mean space
             if N == 1 and do_sr:
-                D = np.diag([vx_y[0]/all_vx[0, 0], vx_y[1]/all_vx[1, 0], vx_y[2]/all_vx[2, 0], 1])
-                mat = np.matmul(all_mat[..., 0], D)
-                dim = np.squeeze(np.floor(np.matmul(np.linalg.inv(D)[:3, :3], np.reshape(all_dim[:, 0], (3, 1)))))
+                D = torch.diag(torch.cat((vx_y/all_vx[:, 0], one[..., None])))
+                mat = all_mat[..., 0].mm(D)
+                dim = D.inverse()[:3, :3].mm(all_dim[:, 0].reshape((3, 1))).floor().squeeze()
             else:
                 # Mean space from several images
                 dim, mat, _ = mean_space(all_mat, all_dim, vx=vx_y, mod_prct=-mod_prct)
@@ -655,8 +652,7 @@ class NiiProc:
         else:
             self._method = 'denoising'
 
-        mat = torch.from_numpy(mat)
-        dim = tuple(dim.astype(np.int).tolist())
+        dim = tuple(dim.int().tolist())
         _ = self._print_info('mean-space', dim, mat)
 
         """ Assign output
@@ -666,7 +662,7 @@ class NiiProc:
             y.append(Output())
             # Regularisation (lambda) for channel c
             Nc = len(self._x[c])
-            mu_c = torch.zeros(Nc, dtype=dtype, device=device)
+            mu_c = torch.zeros(Nc, dtype=torch.float32, device=device)
             for n in range(Nc):
                 mu_c[n] = self._x[c][n].mu
             y[c].lam0 = 1/torch.mean(mu_c)
@@ -782,7 +778,7 @@ class NiiProc:
                       'gain={:0.7f}'.format(argv[0] + 1, timer() - argv[3], argv[1], argv[2]))
             elif info == 'fit-start':
                 print('\nStarting {} \n{} | C={} | N={} | device={} | '
-                      'maxiter={} | tol={}'.format(self._method, datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                      'max_iter={} | tol={}'.format(self._method, datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                                                    argv[0], argv[1], argv[2], argv[3], argv[4]))
             elif info in 'step_size':
                 print('\nADMM step-size={:0.4f}'.format(argv[0]))
