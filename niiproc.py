@@ -9,7 +9,6 @@ TODO:
     . Deal with cross-talk? (http://www.mri-q.com/cross-talk.html)
     . Test A and At using the gradcheck function in torch
     . Make A and At layers instead, and import these
-    . Remove dependency on numpy
     . Support read/write nifti when large number of observations.
     . You would write x = exp(s) Ay for odd slices and x = exp(-s) Ay for even slices
     . Check if noise std is accurate?
@@ -29,15 +28,13 @@ REFERENCES:
 """
 
 
-""" Imports
-"""
 from dataclasses import dataclass
 from datetime import datetime
 import math
 import nibabel as nib
 from nitorch.kernels import smooth
 from nitorch.spatial import grid_pull, grid_push, voxsize, im_gradient, im_divergence
-from nitorch.spm import affine, mean_space, noise_estimate
+from nitorch.spm import affine, mean_space, noise_estimate, affine_basis, dexpm, identity
 from nitorch.optim import cg, get_gain, plot_convergence
 from nitorch.utils import show_slices, round
 import os
@@ -48,8 +45,6 @@ from torch.nn import functional as F
 torch.backends.cudnn.benchmark = True
 
 
-""" Data classes
-"""
 @dataclass
 class Input:
     """ Algorithm input.
@@ -67,6 +62,7 @@ class Input:
     fname = None
     direc = None
     nam = None
+    rigid_q = None
 
 
 @dataclass
@@ -95,6 +91,7 @@ class ProjOp:
     mat_yx = None
     ratio = None
     smo_ker = None
+    rigid = None
 
 
 @dataclass
@@ -108,6 +105,7 @@ class Settings:
     cgs_verbose: bool = False  # CG verbosity (0, 1)
     device: str = None  # PyTorch device name
     dir_out: str = None  # Directory to write output, if None uses same as input (output is prefixed 'y_')
+    unified_rigid: bool = True  # Do unified rigid registration
     gap: float = 0.0  # Slice gap, between 0 and 1
     has_ct: bool = True  # Data could be CT (but data must contain negative values)
     max_iter: int = 512  # Max algorithm iterations
@@ -117,6 +115,7 @@ class Settings:
     plot_conv: bool = False  # Use matplotlib to plot convergence in real-time
     profile_ip: int = 0  # In-plane slice profile (0=rect|1=tri|2=gauss)
     profile_tp: int = 0  # Through-plane slice profile (0=rect|1=tri|2=gauss)
+    reg_ix_fix: int = 0  # Index of fixed image in initial co-reg (if zero, pick image with largest FOV)
     reg_scl: float = 10.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
     rho_scl: float = None  # Scaling of ADMM step-size
     show_hyperpar: bool = False  # Use matplotlib to visualise hyper-parameter estimates
@@ -126,14 +125,11 @@ class Settings:
     write_jtv: bool = False  # Write JTV to nifti
 
 
-""" NiiProc class
-"""
 class NiiProc:
     """ NIfTI processing class
     """
 
-    """ Constructor
-    """
+    # Constructor
     def __init__(self, pth_nii, sett=Settings()):
         """ Model initialiser.
 
@@ -153,6 +149,7 @@ class NiiProc:
         self._rho = None  # Infamous ADMM step-size
         self._do_proj = None  # Use projection matrices (set in _format_output())
         self._method = None  # Method name (super-resolution|denoising)
+        self._rigid_basis = None  # Rigid transformation basis
         if not isinstance(self.sett.reg_scl, list):  # For coarse-to-fine scaling of regularisation
             self.sett.reg_scl = [self.sett.reg_scl]
 
@@ -171,6 +168,14 @@ class NiiProc:
         # self._x[c][n].nam
         # self._x[c][n].direc
         # self._x[c][n].head
+
+        # Init registration
+        self._init_reg()
+        # Defines:
+        # self._rigid_basis
+        # self._x[c][n].rigid_q
+        # and modifies:
+        # self._x[c][n].mat
 
         # Format output
         # self._y is of class Output()
@@ -200,12 +205,12 @@ class NiiProc:
         # self._x[c][n].po.mat_yx
         # self._x[c][n].po.smo_ker
         # self._x[c][n].po.ratio
+        # self._x[c][n].po.rigid
 
         if False:  # Check adjointness of A and At operators
             self.check_adjoint(po=self._x[0][0].po, method=self._method, dtype=torch.float64)
 
-    """ Class methods
-    """
+    # Class methods
     def fit(self):
         """ Fit model.
 
@@ -219,9 +224,11 @@ class NiiProc:
             fnames_y ([str, ..]): Filenames of reconstructed images.
 
         """
-        # Parse function settings/parameters
+        # Parse function settings
         device = self.sett.device
         dtype = torch.float32
+        unified_rigid = self.sett.unified_rigid
+        # Parameters
         C = len(self._y)  # Number of channels
         N = sum([len(x) for x in self._x])  # Number of observations
         dim_y = self._y[0].dim  # Output dimensions
@@ -253,11 +260,11 @@ class NiiProc:
         fig_ax_nll = None
         fig_ax_jtv = None
 
-        """ Start iterating:
-            Updates y, z, w in alternating fashion, until a convergence threshold is met
-            on the model negative log-likelihood.
-        """
-        nll = torch.zeros(self.sett.max_iter, dtype=dtype, device=device)
+        # Start iterating:
+        # Updates y, z, w in alternating fashion, until a convergence threshold is met
+        # on the model negative log-likelihood.
+        nll = torch.zeros(2*self.sett.max_iter, dtype=dtype, device=device)
+        cnt_nll = 0
         t_iter = timer() if self.sett.print_info else 0
         for n_iter in range(self.sett.max_iter):
 
@@ -265,23 +272,20 @@ class NiiProc:
                 t00 = self._print_info('fit-start', C, N, device,
                     self.sett.max_iter, self.sett.tolerance)  # PRINT
 
-            """ Coarse-to-fine scaling of lambda
-            """
+            # Coarse-to-fine scaling of lambda
             if n_iter < len(self.sett.reg_scl):
                 for c in range(C):
                     self._y[c].lam = self.sett.reg_scl[n_iter] * self._y[c].lam0
                 # Update ADMM step-size
                 self._rho = self._step_size(verbose=False)
 
-            """ UPDATE: y
-            """
+            # UPDATE: y
             t0 = self._print_info('fit-update', 'y', n_iter)  # PRINT
             for c in range(C):  # Loop over channels
-                Nc = len(self._x[c])
-
                 # RHS
+                num_x = len(self._x[c])
                 rhs = torch.zeros_like(self._y[0].dat)
-                for n in range(Nc):  # Loop over observations of channel 'c'
+                for n in range(num_x):  # Loop over observations of channel 'c'
                     # _ = self._print_info('int', n)  # PRINT
                     rhs += self._x[c][n].tau*self._proj('At', self._x[c][n].dat, c, n)
 
@@ -302,8 +306,7 @@ class NiiProc:
 
             _ = self._print_info('fit-done', t0)  # PRINT
 
-            """ UPDATE: z
-            """
+            # UPDATE: z
             if alpha != 1:  # Use over/under-relaxation
                 z_old = z.clone()
             t0 = self._print_info('fit-update', 'z', n_iter)  # PRINT
@@ -328,24 +331,19 @@ class NiiProc:
                     z[c, d, ...] = jtv * (w[c, d, ...] / self._rho + Dy[d, ...])
             _ = self._print_info('fit-done', t0)  # PRINT
 
-            """ Objective function and convergence related
-            """
+            # Compute model objective function
             if self.sett.tolerance > 0:
-                nll[n_iter] = self._compute_nll(vx_y=vx_y, bound=bound_grad)
-
+                nll[cnt_nll] = self._compute_nll(vx_y=vx_y, bound=bound_grad)
+                cnt_nll += 1
             if self.sett.plot_conv:  # Plot algorithm convergence
-                fig_ax_nll = plot_convergence(vals=nll[:n_iter + 1], fig_ax=fig_ax_nll,
-                                              fig_num=99)
-
-            # Check convergence
-            gain = get_gain(nll, n_iter, monotonicity='decreasing')
-            t_iter = self._print_info('fit-ll', n_iter, nll[n_iter], gain, t_iter)  # PRINT
+                fig_ax_nll = plot_convergence(vals=nll[:cnt_nll], fig_ax=fig_ax_nll, fig_num=99)
+            gain = get_gain(nll, cnt_nll - 1, monotonicity='decreasing')
+            t_iter = self._print_info('fit-ll', 'y', n_iter, nll[n_iter], gain, t_iter)  # PRINT
             if (gain < self.sett.tolerance) or (n_iter >= (self.sett.max_iter - 1)):
                 _ = self._print_info('fit-finish', t00, n_iter)  # PRINT
                 break  # Finished
 
-            """ UPDATE: w
-            """
+            # UPDATE: w
             t0 = self._print_info('fit-update', 'w', n_iter)  # PRINT
             for c in range(C):  # Loop over channels
                 Dy = self._y[c].lam * im_gradient(self._y[c].dat, vx=vx_y, bound=bound_grad)
@@ -355,8 +353,22 @@ class NiiProc:
                 _ = self._print_info('int', c)  # PRINT
             _ = self._print_info('fit-done', t0)  # PRINT
 
-        """ Write results to disk
-        """
+            if unified_rigid:
+                # UPDATE: rigid
+                t0 = self._print_info('fit-update', 'rigid', n_iter)  # PRINT
+                # Do update
+                self._update_rigid()
+                _ = self._print_info('fit-done', t0)  # PRINT
+                # Compute model objective function
+                if self.sett.tolerance > 0:
+                    nll[cnt_nll] = self._compute_nll(vx_y=vx_y, bound=bound_grad)
+                    cnt_nll += 1
+                if self.sett.plot_conv:  # Plot algorithm convergence
+                    fig_ax_nll = plot_convergence(vals=nll[:cnt_nll], fig_ax=fig_ax_nll, fig_num=99)
+                gain = get_gain(nll, cnt_nll - 1, monotonicity='decreasing')
+                t_iter = self._print_info('fit-ll', 'q', n_iter, nll[n_iter], gain, t_iter)  # PRINT
+
+        # Write results to disk
         if self.sett.dir_out is None:
             # No output directory given, use directory of input data
             dir_out = self._x[0][0].direc
@@ -446,8 +458,8 @@ class NiiProc:
         nll_xy = torch.tensor(0, dtype=dtype, device=device)
         nll_y = torch.zeros_like(self._y[0].dat)
         for c in range(C):
-            Nc = len(self._x[c])
-            for n in range(Nc):
+            num_x = len(self._x[c])
+            for n in range(num_x):
                 nll_xy = nll_xy + \
                     self._x[c][n].tau/2*torch.sum((self._proj('A', self._y[c].dat, c, n)
                                                   - self._x[c][n].dat)**2, dtype=sum_dtype)
@@ -498,8 +510,8 @@ class NiiProc:
         cnt = 0
         C = len(x)
         for c in range(C):
-            Nc = len(x[c])
-            for n in range(Nc):
+            num_x = len(x[c])
+            for n in range(num_x):
                 # Get data
                 dat = x[c][n].dat
                 mat_x = x[c][n].mat
@@ -599,6 +611,8 @@ class NiiProc:
         C = len(self._x)  # Number of channels
         device = self.sett.device
         mod_prct = self.sett.mod_prct
+        unified_rigid = self.sett.unified_rigid
+
         one = torch.tensor(1.0, device=device, dtype=torch.float64)
         vx_y = self.sett.vx  # output voxel size
         if vx_y is not None:
@@ -621,9 +635,7 @@ class NiiProc:
             dim_same = dim_same & torch.equal(round(all_dim[..., n - 1], 3), round(all_dim[..., n], 3))
             vx_same = vx_same & torch.equal(round(all_vx[..., n - 1], 3), round(all_vx[..., n], 3))
 
-        """
-        Decide if super-resolving and/or projection is necessary
-        """
+        # Decide if super-resolving and/or projection is necessary
         do_sr = True
         self._do_proj = True
         if vx_y is None and ((N == 1) or vx_same):  # One image, voxel size not given
@@ -632,7 +644,7 @@ class NiiProc:
         if vx_same and (torch.abs(all_vx[..., 0] - vx_y) < 1e-3).all():
             # All input images have same voxel size, and output voxel size is the also the same
             do_sr = False
-            if mat_same and dim_same:
+            if mat_same and dim_same and not unified_rigid:
                 # All input images have the same FOV
                 mat = all_mat[..., 0]
                 dim = all_dim[..., 0]
@@ -655,15 +667,14 @@ class NiiProc:
         dim = tuple(dim.int().tolist())
         _ = self._print_info('mean-space', dim, mat)
 
-        """ Assign output
-        """
+        # Assign output
         y = []
         for c in range(C):
             y.append(Output())
             # Regularisation (lambda) for channel c
-            Nc = len(self._x[c])
-            mu_c = torch.zeros(Nc, dtype=torch.float32, device=device)
-            for n in range(Nc):
+            num_x = len(self._x[c])
+            mu_c = torch.zeros(num_x, dtype=torch.float32, device=device)
+            for n in range(num_x):
                 mu_c[n] = self._x[c][n].mu
             y[c].lam0 = 1/torch.mean(mu_c)
             y[c].lam = 1/torch.mean(mu_c)  # To facilitate rescaling
@@ -672,6 +683,29 @@ class NiiProc:
             y[c].mat = mat.double().to(device)
 
         return y
+
+    def _init_reg(self):
+        """ Initialise rigid registration.
+
+        """
+        ix_fix = self.sett.reg_ix_fix
+        device = self.sett.device
+        # Init rigid basis
+        rigid_basis = affine_basis('SE', 3, device=device, dtype=torch.float64)
+        self._rigid_basis = rigid_basis
+        # Coreg images
+        # TODO
+        # Init parameterisation of rigid transformation and apply initial coreg
+        rigid_q = torch.zeros(6, device=device, dtype=torch.float64)
+        # rigid_q = torch.tensor([[15, 0, 0 ,0 ,0 ,0],
+        #                         [0, 15, 0 ,0 ,0 ,0],
+        #                         [0, 0, 15 ,0 ,0 ,0]], device=device, dtype=torch.float64)
+        C = len(self._x)  # Number of channels
+        for c in range(C):  # Loop over channels
+                num_x = len(self._x[c])  # Number of observations of channel c
+                for n in range(num_x):  # Loop over observations of channel c
+                    self._x[c][n].rigid_q = rigid_q
+                    # self._x[c][n].mat = mat.solve(R[c][n])  # TODO: Apply rigid transformation
 
     def _init_y(self, interpolation=4):
         """ Make initial guesses of reconstucted image(s) using b-spline interpolation,
@@ -686,8 +720,8 @@ class NiiProc:
         mat_y = self._x[0][0].po.mat_y
         for c in range(C):
             y = torch.zeros(dim_y, dtype=torch.float32, device=self.sett.device)
-            Nc = len(self._x[c])
-            for n in range(Nc):
+            num_x = len(self._x[c])
+            for n in range(num_x):
                 # Get image data
                 dat = self._x[c][n].dat[None, None, ...]
                 # Make output grid
@@ -700,7 +734,7 @@ class NiiProc:
                 dat[dat < mn] = mn
                 dat[dat > mx] = mx
                 y = y + dat[0, 0, ...]
-            self._y[c].dat = y / Nc
+            self._y[c].dat = y / num_x
 
     def _load_data(self, pth_nii):
         """ Parse nifti files into algorithm input struct(s).
@@ -726,8 +760,8 @@ class NiiProc:
             x[c] = []
 
             if isinstance(pth_nii[c], list):
-                Nc = len(pth_nii[c])  # Number of observations of channel c
-                for n in range(Nc):  # Loop over observations of channel c
+                num_x = len(pth_nii[c])  # Number of observations of channel c
+                for n in range(num_x):  # Loop over observations of channel c
                     x[c].append(Input())
                     # Get data
                     dat, dim, mat, fname, direc, nam, head, ct, _ = \
@@ -774,8 +808,8 @@ class NiiProc:
                 print(' {} finished in {:0.5f} seconds and '
                       '{} iterations\n'.format(self._method, timer() - argv[0], argv[1] + 1))
             elif info in 'fit-ll':
-                print('{:3} - Convergence ({:0.1f} s)  | nll={:0.4f}, '
-                      'gain={:0.7f}'.format(argv[0] + 1, timer() - argv[3], argv[1], argv[2]))
+                print('{:3} - Convergence ({} | {:0.1f} s)  | nll={:0.4f}, '
+                      'gain={:0.7f}'.format(argv[1] + 1, argv[0], timer() - argv[4], argv[2], argv[3]))
             elif info == 'fit-start':
                 print('\nStarting {} \n{} | C={} | N={} | device={} | '
                       'max_iter={} | tol={}'.format(self._method, datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
@@ -841,8 +875,8 @@ class NiiProc:
             dat1 = rho * self._y[c].lam ** 2 * self._DtD(dat, vx_y=vx_y, bound=bound__DtD)
             dat = dat[None, None, ...]
             dat = self._x[c][n].tau * self.proj_apply(operator, method, dat, self._x[c][n].po)
-            Nc = len(self._x[c])
-            for n1 in range(1, Nc):
+            num_x = len(self._x[c])
+            for n1 in range(1, num_x):
                 dat = dat + self._x[c][n1].tau * self.proj_apply(operator, method, dat, self._x[c][n1].po)
             dat = dat[0, 0, ...]
             dat += dat1
@@ -863,16 +897,20 @@ class NiiProc:
         gap = self.sett.gap
         prof_ip = self.sett.profile_ip
         prof_tp = self.sett.profile_tp
+        rigid_basis = self._rigid_basis
         C = len(self._x)
         # Build each projection operator
         for c in range(C):
             dim_y = self._y[c].dim
             mat_y = self._y[c].mat
-            Nc = len(self._x[c])
-            for n in range(Nc):
+            num_x = len(self._x[c])
+            for n in range(num_x):
+                # Get rigid matrix
+                rigid = dexpm(self._x[c][n].rigid_q, rigid_basis, requires_grad=False)[0]
                 # Define projection operator
                 po = self.proj_info(dim_y, mat_y, self._x[c][n].dim, self._x[c][n].mat,
-                                    prof_ip=prof_ip, prof_tp=prof_tp, gap=gap, device=device)
+                                    prof_ip=prof_ip, prof_tp=prof_tp, gap=gap, device=device,
+                                    rigid=rigid)
                 # Assign
                 self._x[c][n].po = po
 
@@ -908,8 +946,227 @@ class NiiProc:
             _ = self._print_info('step_size', rho)  # PRINT
         return rho
 
-    """ Static methods
-    """
+    def _update_rigid(self, mean_correct=True):
+        """ Updates each input image's specific registration parameters:
+                self._x[c][n].rigid_q
+            using a Gauss-Newton optimisation. After the parameters have
+            been updated also the rigid matrix:
+                self._x[c][n].po.rigid
+            is updated
+
+        Args:
+            mean_correct (bool, optional): Mean-correct rigid parameters,
+                defaults to True.
+
+        """
+        # Parameters
+        device = self.sett.device
+        rigid_basis = self._rigid_basis
+        C = len(self._y)
+        num_q = rigid_basis.shape[2]  # Number of registration parameters
+
+        # Update rigid parameters, for all input images (self._x[c][n])
+        for c in range(C):  # Loop over channels
+            self._update_rigid_channel(c, rigid_basis)
+
+        # Mean correct the rigid-body transforms
+        if mean_correct:
+            sum_q = torch.zeros(num_q, device=device, dtype=torch.float64)
+            num_q = 0.0
+            # Sum q parameters
+            for c in range(C):  # Loop over channels
+                num_x = len(self._x[c])  # Number of observations of channel c
+                for n in range(num_x):  # Loop over observations of channel c
+                    sum_q += self._x[c][n].rigid_q
+                    num_q += 1
+            # Compute mean
+            mean_q = sum_q/num_q
+            # Subtract mean (mean correct)
+            for c in range(C):  # Loop over channels
+                num_x = len(self._x[c])  # Number of observations of channel c
+                for n in range(num_x):  # Loop over observations of channel c
+                    self._x[c][n].rigid_q -= mean_q
+
+        # Update rigid transformations
+        for c in range(C):  # Loop over channels
+            num_x = len(self._x[c])  # Number of observations of channel c
+            for n in range(num_x):  # Loop over observations of channel c
+                rigid = dexpm(self._x[c][n].rigid_q, rigid_basis, requires_grad=False)[0]
+                self._x[c][n].po.rigid = rigid
+
+    def _update_rigid_channel(self, c, rigid_basis, max_niter_gn=3, num_linesearch=12):
+        """ Updates the rigid parameters for all images of one channel.
+
+        Args:
+            c (int): Channel index.
+            rigid_basis (torch.tensor)
+            max_niter_gn (int, optional): Max Gauss-Newton iterations, defaults to 3.
+            num_linesearch (int, optional): Max line-search iterations, defaults to 12.
+
+        """
+        # Parameters
+        device = self._y[c].dat.device
+        num_x = len(self._x[c])
+        mat_y = self._y[c].mat
+        num_q = rigid_basis.shape[2]
+        lkp = torch.tensor([[1, 4, 5], [4, 2, 6], [5, 6, 3]], device=device)
+
+        for n in range(num_x):  # Loop over observed images
+            # Get projection info
+            po = self._x[c][n].po
+            mat_x = self._x[c][n].mat
+            q = self._x[c][n].rigid_q
+
+            for n_gn in range(max_niter_gn):  # Loop over Gauss-Newton iterations
+                # Differentiate Rq w.r.t. q (store in dRq)
+                R, dR = dexpm(q, rigid_basis)
+                dRq = torch.zeros(4, 4, num_q, device=device, dtype=torch.float64)
+                for i in range(num_q):
+                    dRq[:, :, i] = dR[:, :, i].mm(mat_x).solve(mat_y)[0]  # mat_y\rigid*mat_x
+
+                # --------------------------------
+                # Compute gradient and Hessian
+                # --------------------------------
+
+                # Compute matching-term part (log-likelihood)
+                ll = self._rigid_match(c, n, requires_grad=False)[0]
+                ll, gr, Hes = self._rigid_match(c, n)
+
+                # Get identity grid
+                id_x = identity(self._x[c][n].dim, dtype=torch.float64, device=device)
+
+                # Multiply with dRq (chain-rule)
+                dAff = [None] * 3
+                dAff = [dAff] * num_q
+                for i in range(num_q):
+                    for d in range(3):
+                        tmp = dRq[d, 0, i] * id_x[:, :, :, 0] +\
+                              dRq[d, 1, i] * id_x[:, :, :, 1] +\
+                              dRq[d, 2, i] * id_x[:, :, :, 2] +\
+                              dRq[d, 3, i]
+                        dAff[i, d] = tmp.flatten()
+
+                # Add dRq to gradient
+                for d in range(3):
+                    tmp = gr[:, :, d]
+                    tmp = tmp.flatten().t()
+                    for i in range(num_q):
+                        gr[i] = tmp.mm(dAff[i, d])
+
+                # Add dRq to Hessian
+                for d1 in range(3):
+                    for d2 in range(3):
+                        tmp1 = Hess[:, :, lkp[d1, d2]]
+                        tmp1 = tmp1.flatten()  # OK?!
+                        for i1 in range(num_q):
+                            tmp2 = tmp1 * dAff[i1, d1]
+                            tmp2 = tmp2.t()
+                            for i2 in range(i1, num_q):
+                                Hes[i1, i2] = tmp2.mm(dAff[i2, d2])
+
+                # Fill in missing triangle
+                for i1 in range(num_q):
+                    for i2 in range(i1 + 1, num_q):
+                        Hes[i2, i1] = Hes[i1, i2]
+
+                # Regularise diagonal of Hessian
+                H += 1e-5*H.diag().max()*torch.eye(num_q)
+
+                # --------------------------------
+                # Update rigid parameters by Gauss-Newton optimisation
+                # --------------------------------
+
+                # Compute update step
+                Update = gr.solve(Hes)[0][:, 0]
+
+                # Start line-search
+                old_ll = ll.clone()
+                old_q = q.clone()
+                old_rigid = dexpm(q, rigid_basis, requires_grad=False)[0]
+                armijo = torch.tensor(1, device=device, dtype=torch.float64)
+                for n_ls in range(num_linesearch):
+                    # Take step
+                    q = old_q - armijo*Update
+                    # Compute matching term
+                    rigid = dexpm(q, rigid_basis, requires_grad=False)[0]
+                    po.rigid = rigid
+                    ll = self._rigid_match(c, n, requires_grad=False)[0]
+                    # Matching improved?
+                    if ll > old_ll:
+                        # Better fit!
+                        break
+                    else:
+                        # Reset parameters
+                        q = old_q.clone()
+                        po.rigid = old_rigid
+                        armijo *= 0.5
+
+    def _rigid_match(self, c, n, requires_grad=True):
+        """ Computes the rigid matching term, and its gradient and Hessian.
+
+        Args:
+            c (int): Channel index.
+            n (int): Observation index.
+            require_grad (bool, optional): Compute derivatives, defaults to True.
+
+        Returns:
+            ll (torch.tensor): Log-likelihood.
+            gr (torch.tensor): Gradient (dim_x, 3).
+            Hes (torch.tensor): Hessian (dim_x, 6).
+
+        """
+        # Parameters
+        device = self.sett.device
+        method = self._method
+        dim_x = self._x[c][n].dim
+        dat_y = self._y[c].dat
+        dat_x = self._x[c][n].dat
+        po = self._x[c][n].po
+        tau = self._x[c][n].tau
+
+        # Init output
+        ll = None
+        gr = None
+        Hes = None
+
+        # Move y to x space
+        if requires_grad:
+            dyx = [None]*3
+            dyx[0] = dyx[0].double()
+            dyx[1] = dyx[1].double()
+            dyx[2] = dyx[2].double()
+        else:
+            dat_yx = self.proj_apply('A', method, dat_y[None, None, ...], po)
+            dat_yx = dat_yx[0, 0, ...]
+
+        # Double and mask
+        dat_yx = dat_yx.double()
+        msk = torch.isfinite(dat_yx)
+        dat_yx[~msk] = 0
+
+        # Compute matching term
+        ll = -0.5*tau*torch.sum((dat_x[msk].double() - dat_yx[msk])**2)
+
+        if requires_grad:
+            # Gradient
+            gr = torch.zeros(dim_x + (3,), device=device, dtype=torch.float64)
+            diff = dat_yx - dat_x.double()
+            diff[~msk] = 0
+            for d in range(3):
+                dyx[d][~msk] = 0
+                g[:, :, :, d] = diff1*dyx[d]
+            # Hessian
+            H = torch.zeros(dim_x + (6,), device=device, dtype=torch.float64)
+            H[:, :, :, 0] = dyx[0] * dyx[0]
+            H[:, :, :, 1] = dyx[1] * dyx[1]
+            H[:, :, :, 2] = dyx[2] * dyx[2]
+            H[:, :, :, 3] = dyx[0] * dyx[1]
+            H[:, :, :, 4] = dyx[0] * dyx[2]
+            H[:, :, :, 5] = dyx[1] * dyx[2]
+
+        return ll, gr, Hes
+
+    # Static methods
     @staticmethod
     def check_adjoint(po, method, dtype=torch.float32):
         """ Print adjointness of A and At operators:
@@ -1034,6 +1291,7 @@ class NiiProc:
         mat_x = po.mat_x
         mat_y = po.mat_y
         mat_yx = po.mat_yx
+        rigid = po.rigid
         dim_x = po.dim_x
         dim_y = po.dim_y
         dim_yx = po.dim_yx
@@ -1041,9 +1299,7 @@ class NiiProc:
         smo_ker = po.smo_ker
         # Apply projection
         if method == 'super-resolution':
-            """ Super-resolution
-            """
-            mat = mat_yx.solve(mat_y)[0]  # mat_y\mat_yx
+            mat = rigid.mm(mat_yx).solve(mat_y)[0]  # mat_y\rigid*mat_yx
             grid = affine(dim_yx, mat, device=device, dtype=dtype)
             if operator == 'A':
                 dat = grid_pull(dat, grid, bound=bound)
@@ -1057,9 +1313,7 @@ class NiiProc:
                 dat = F.conv_transpose3d(dat, smo_ker, stride=ratio)
                 dat = grid_push(dat, grid, shape=dim_y, bound=bound)
         elif method == 'denoising':
-            """ Denoising
-            """
-            mat = mat_x.solve(mat_y)[0]  # mat_y\mat_x
+            mat = rigid.mm(mat_x).solve(mat_y)[0]  # mat_y\rigid*mat_x
             grid = affine(dim_x, mat, device=device)
             if operator == 'A':
                 dat = grid_pull(dat, grid, bound=bound, extrapolate=False)
@@ -1071,7 +1325,8 @@ class NiiProc:
         return dat
 
     @staticmethod
-    def proj_info(dim_y, mat_y, dim_x, mat_x, prof_ip=0, prof_tp=0, gap=0.0, device='cpu'):
+    def proj_info(dim_y, mat_y, dim_x, mat_x, rigid=None,
+                  prof_ip=0, prof_tp=0, gap=0.0, device='cpu'):
         """ Define projection operator object, to be used with proj_apply.
 
         Args:
@@ -1079,6 +1334,7 @@ class NiiProc:
             mat_y (torch.tensor): High-res affine matrix (4, 4).
             dim_x ((int, int, int))): Low-res image dimensions (3,).
             mat_x (torch.tensor): Low-res affine matrix (4, 4).
+            rigid (torch.tensor): Rigid transformation aligning x to y (4, 4), defaults to eye(4).
             prof_ip (int, optional): In-plane slice profile (0=rect|1=tri|2=gauss), defaults to 0.
             prof_tp (int, optional): Through-plane slice profile (0=rect|1=tri|2=gauss), defaults to 0.
             gap (float, optional): Slice-gap between 0 and 1, defaults to 0.
@@ -1101,6 +1357,10 @@ class NiiProc:
         po.dim_x = torch.tensor(dim_x, device=device, dtype=dtype)
         po.mat_x = mat_x
         po.vx_x = voxsize(mat_x)
+        if rigid is None:
+            po.rigid = torch.eye(4, device=device, dtype=dtype)
+        else:
+            po.rigid = rigid.type(dtype).to(device)
         # Slice-profile
         gap_cn = torch.zeros(3, device=device, dtype=dtype)
         profile_cn = torch.tensor((prof_ip,) * 3, device=device, dtype=dtype)
