@@ -17,15 +17,15 @@ The implementation is written in PyTorch and should therefore run fast on the GP
 
 ## A simple example
 
-The `'nitorch`' package is required to fit the model; simply follow the quickstart guide on its GitHub page. Once the nitroch environment has been activated, simply do:
+The `nitorch` package is required to fit the model; simply follow the quickstart guide on its GitHub page. Once the `nitroch` environment has been activated, simply do:
 ```
-python fit image1.nii image2.nii image3.nii ... --vx 1.0
+(nitorch):/nires$ python fit image1.nii image2.nii image3.nii ... --vx 1.0
 ```
-The 1 mm isotropic images are written to the same folder as the input images, prefixed `'y'`.
+The 1 mm isotropic images are written to the same folder as the input images, prefixed `y`.
 
 ## Further customisation
 
-The algorithm estimates the necessary parameters from the input data, so it should, hopefully, work well out-the-box. However, a user might want to change some of the defaults, like slice-profile, slice-gap, or scale the regularisation a bit. Furthermore, instead of giving, e.g., nifti files via the command line tool (`'fit.py`') it might be more desirable to interact with the nires code directly (maybe as part of some pipeline), working with the image data as torch.tensor. The following code snippet shows an example of how to do this:
+The algorithm estimates the necessary parameters from the input data, so it should, hopefully, work well out-the-box. However, a user might want to change some of the defaults, like slice-profile, slice-gap, or scale the regularisation a bit. Furthermore, instead of giving, e.g., nifti files via the command line tool (`fit.py`) it might be more desirable to interact with the nires code directly (maybe as part of some pipeline), working with the image data as `torch.tensor`. The following code snippet shows an example of how to do this:
 ```
 import nibabel as nib
 from nires import Model
@@ -63,4 +63,4 @@ model = Model(data, s)
 y, mat, p_y = model.fit()
 # Outputs are: reconstructed data (y), output affine (mat), paths to reconstructions (p_y)
 ```
-More details of the algorithm settings can be found in the declaration of the dataclass `'Settings()`' in `'nires.py`'.
+More details of algorithm settings can be found in the declaration of the dataclass `Settings()` in `nires.py`.
