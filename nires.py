@@ -962,10 +962,13 @@ class Model:
 
         # Update rigid parameters, for all input images (self._x[c][n])
         for c in range(C):  # Loop over channels
-            # self._y[c].mat[0, 3] = self._y[c].mat[0, 3] - 8
-            # self._y[c].mat[1, 3] = self._y[c].mat[1, 3] + 6
-            # self._y[c].mat[2, 3] = self._y[c].mat[2, 3] - 3
-            self._update_rigid_channel(c, rigid_basis, verbose=True)
+            # FOR TESTING
+            # from nitorch.spm import matrix
+            # mat = matrix(torch.tensor([-8, 6, -3, 0.05, -0.05, 0.1], device=device, dtype=torch.float64))
+            # self._y[c].mat[:3, 3] = self._y[c].mat[:3, 3] +  mat[:3, 3]
+            # self._y[c].mat[:3, :3] = mat[:3, :3].mm(self._y[c].mat[:3, :3])
+            # self._update_rigid_channel(c, rigid_basis, verbose=True, max_niter_gn=32)
+            self._update_rigid_channel(c, rigid_basis)
 
         # Mean correct the rigid-body transforms
         if mean_correct:
@@ -1126,12 +1129,19 @@ class Model:
         # Parameters
         device = self.sett.device
         method = self._method
-        dim_x = self._x[c][n].dim
+        # Projection info
+        po = self._x[c][n].po
+        mat_x = po.mat_x
+        mat_y = po.mat_y
+        mat_yx = po.mat_yx
+        dim_x = po.dim_x
+        dim_y = po.dim_y
+        dim_yx = po.dim_yx
+        ratio = po.ratio
+        smo_ker = po.smo_ker
+        # Image data
         dat_y = self._y[c].dat[None, None, ...]
         dat_x = self._x[c][n].dat
-        mat_x = self._x[c][n].mat
-        mat_y = self._y[c].mat
-        po = self._x[c][n].po
         tau = self._x[c][n].tau
 
         # Init output
@@ -1142,10 +1152,14 @@ class Model:
         # Warp y and compute spatial derivatives
         bound = 'dct2'
         if method == 'super-resolution':
-            AssertionError('Not yet implemented!')
+            pass
+            # mat = rigid.mm(mat_yx).solve(mat_y)[0]  # mat_yx\rigid*mat_yx
+            # grid = affine(dim_yx, mat, device=device, dtype=torch.float32)
+            # dat = grid_pull(dat, grid, bound=bound)
+            # dat = F.conv3d(dat, smo_ker, stride=ratio)
         elif method == 'denoising':
             mat = rigid.mm(mat_x).solve(mat_y)[0]  # mat_y\rigid*mat_x
-            grid = affine(dim_x, mat, device=device)
+            grid = affine(dim_x, mat, device=device, dtype=torch.float32)
             if requires_grad:
                 dat_yx = grid_pull(dat_y, grid, bound=bound, extrapolate=True)[0, 0, ...]
                 gr_yx = grid_grad(dat_y, grid, bound=bound, extrapolate=True)[0, 0, ...]
@@ -1313,7 +1327,7 @@ class Model:
         smo_ker = po.smo_ker
         # Apply projection
         if method == 'super-resolution':
-            mat = rigid.mm(mat_yx).solve(mat_y)[0]  # mat_y\rigid*mat_yx
+            mat = rigid.mm(mat_yx).solve(mat_y)[0]  # mat_yx\rigid*mat_yx
             grid = affine(dim_yx, mat, device=device, dtype=dtype)
             if operator == 'A':
                 dat = grid_pull(dat, grid, bound=bound)
