@@ -1,0 +1,12 @@
+name: nires
+channels:
+  - conda-forge
+  - pytorch
+dependencies:
+  - python=3.7
+  - pytorch=1.4
+  - cudatoolkit=10.1
+  - nitorch
+  - nibabel
+  - pip
+  - matplotlib

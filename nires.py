@@ -1,22 +1,7 @@
 # -*- coding: utf-8 -*-
-""" A model for processing NIfTI images.
+""" A model for denoising and super-resolving neuroimaging data.
 
-TODO:
-    . STEPS:
-        1 Rigid to mean space
-        2 Coreg
-        3 SuperRes w bounding box (vx is set here)
-    . Deal with cross-talk? (http://www.mri-q.com/cross-talk.html)
-    . Test A and At using the gradcheck function in torch
-    . Make A and At layers instead, and import these
-    . Support read/write nifti when large number of observations.
-    . You would write x = exp(s) Ay for odd slices and x = exp(-s) Ay for even slices
-    . Check if noise std is accurate?
-
-WHY:
-    . Artefacts when using central difference?
-
-REFERENCES:
+References:
     Brudfors M, Balbastre Y, Nachev P, Ashburner J.
     A Tool for Super-Resolving Multimodal Clinical MRI.
     2019 arXiv preprint arXiv:1909.01140.
@@ -25,6 +10,8 @@ REFERENCES:
     MRI Super-Resolution Using Multi-channel Total Variation.
     In Annual Conference on Medical Image Understanding and Analysis
     2018 Jul 9 (pp. 217-228). Springer, Cham.
+
+@author: brudfors@gmail.com
 """
 
 
@@ -33,7 +20,7 @@ from datetime import datetime
 import math
 import nibabel as nib
 from nitorch.kernels import smooth
-from nitorch.spatial import grid_pull, grid_push, voxsize, im_gradient, im_divergence
+from nitorch.spatial import grid_pull, grid_push, voxsize, im_gradient, im_divergence, grid_grad
 from nitorch.spm import affine, mean_space, noise_estimate, affine_basis, dexpm, identity
 from nitorch.optim import cg, get_gain, plot_convergence
 from nitorch.utils import show_slices, round
@@ -100,12 +87,12 @@ class Settings:
 
     """
     alpha: float = 1.0  # Relaxation parameter 0 < alpha < 2, alpha < 1: under-relaxation, alpha > 1: over-relaxation
-    cgs_max_iter: int = 4  # Max conjugate gradient (CG) iterations for solving for y
+    cgs_max_iter: int = 10  # Max conjugate gradient (CG) iterations for solving for y
     cgs_tol: float = 0  # CG tolerance for solving for y
     cgs_verbose: bool = False  # CG verbosity (0, 1)
     device: str = None  # PyTorch device name
+    gr_diff: str = 'forward'  # Gradient difference operator (forward|backward|central)
     dir_out: str = None  # Directory to write output, if None uses same as input (output is prefixed 'y_')
-    unified_rigid: bool = True  # Do unified rigid registration
     gap: float = 0.0  # Slice gap, between 0 and 1
     has_ct: bool = True  # Data could be CT (but data must contain negative values)
     max_iter: int = 512  # Max algorithm iterations
@@ -117,20 +104,22 @@ class Settings:
     profile_tp: int = 0  # Through-plane slice profile (0=rect|1=tri|2=gauss)
     reg_ix_fix: int = 0  # Index of fixed image in initial co-reg (if zero, pick image with largest FOV)
     reg_scl: float = 10.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
-    rho_scl: float = None  # Scaling of ADMM step-size
+    rho_scl: float = 1e-1  # Scaling of ADMM step-size
     show_hyperpar: bool = False  # Use matplotlib to visualise hyper-parameter estimates
     show_jtv: bool = False  # Show the joint total variation (JTV)
     tolerance: float = 1e-4  # Algorithm tolerance, if zero, run to max_iter
+    unified_rigid: bool = False  # Do unified rigid registration
     vx: float = 1.0  # Reconstruction voxel size (if None, set automatically)
     write_jtv: bool = False  # Write JTV to nifti
+    write_out: bool = True  # Write reconstructed output images
 
 
-class NiiProc:
-    """ NIfTI processing class
+class Model:
+    """ Model class
     """
 
     # Constructor
-    def __init__(self, pth_nii, sett=Settings()):
+    def __init__(self, data, sett=Settings()):
         """ Model initialiser.
 
             This is the entry point to the algorithm, it takes a bunch of nifti files
@@ -140,7 +129,20 @@ class NiiProc:
             (see Settings() dataclass).
 
         Args:
-            pth_nii (list of strings): Path(s) to nifti(s).
+            data
+                (list): Path(s) to data, e.g:
+                    [*/T1.nii, */T2.nii, ...]
+                    or if multiple repeats:
+                    [[*/T1_1.nii, */T1_2.nii, ...],
+                     [*/T2_1.nii, */T2_2.nii, ...], ...]
+                (list): Image data and affine matrix(ces), e.g:
+                    [[T1_dat, T1_mat], [T2_dat, T2_mat], ...]
+                    where T1_dat is a array|torch.tensor with the image data and T1_mat
+                    is the image's corresponding affine matrix (array|torch.tensor).
+                    If multiple repeats:
+                    [[[T1_1_dat, T1_1_mat], [T1_2_dat, T1_2_mat]],
+                     [[T2_1_dat, T2_1_mat], [T2_2_dat, T2_2_mat]], ...]
+
             sett (Settings(), optional): Algorithm settings. Described in Settings() class.
 
         """
@@ -153,8 +155,9 @@ class NiiProc:
         if not isinstance(self.sett.reg_scl, list):  # For coarse-to-fine scaling of regularisation
             self.sett.reg_scl = [self.sett.reg_scl]
 
-        # Read and format input
-        self._x = self._format_input(pth_nii)
+        # Read and format data
+        self._x = self._format_input(data)
+        del data
         # Defines
         # self._x[c][n] = Input()
         # with fields:
@@ -221,13 +224,16 @@ class NiiProc:
             denoising/super-resolution will be applied.
 
         Returns:
-            fnames_y ([str, ..]): Filenames of reconstructed images.
+            y (torch.tensor): Reconstructed image data as float32, (dim_y, C).
+            mat (torch.tensor): Reconstructed affine matrix, (4, 4).
+            pth_y ([str, ...]): Paths to reconstructed images.
 
         """
         # Parse function settings
         device = self.sett.device
         dtype = torch.float32
         unified_rigid = self.sett.unified_rigid
+        gr_diff = self.sett.gr_diff
         # Parameters
         C = len(self._y)  # Number of channels
         N = sum([len(x) for x in self._x])  # Number of observations
@@ -265,6 +271,7 @@ class NiiProc:
         # on the model negative log-likelihood.
         nll = torch.zeros(2*self.sett.max_iter, dtype=dtype, device=device)
         cnt_nll = 0
+        jtv = None
         t_iter = timer() if self.sett.print_info else 0
         for n_iter in range(self.sett.max_iter):
 
@@ -291,11 +298,11 @@ class NiiProc:
 
                 # Divergence
                 div = w[c, ...] - self._rho*z[c, ...]
-                div = im_divergence(div, vx=vx_y, bound=bound_grad)
+                div = im_divergence(div, vx=vx_y, bound=bound_grad, which=gr_diff)
                 rhs -= self._y[c].lam * div
 
                 # Invert y = lhs\rhs by conjugate gradients
-                lhs = lambda y: self._proj('AtA', y, c, vx_y=vx_y, bound__DtD=bound_grad)
+                lhs = lambda y: self._proj('AtA', y, c, vx_y=vx_y, bound__DtD=bound_grad, gr_diff=gr_diff)
                 self._y[c].dat = cg(A=lhs,
                                     b=rhs, x=self._y[c].dat,
                                     verbose=self.sett.cgs_verbose,
@@ -312,7 +319,7 @@ class NiiProc:
             t0 = self._print_info('fit-update', 'z', n_iter)  # PRINT
             jtv = torch.zeros_like(self._y[0].dat)
             for c in range(C):
-                Dy = self._y[c].lam * im_gradient(self._y[c].dat, vx=vx_y, bound=bound_grad)
+                Dy = self._y[c].lam * im_gradient(self._y[c].dat, vx=vx_y, bound=bound_grad, which=gr_diff)
                 if alpha != 1:  # Use over/under-relaxation
                     Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
                 jtv += torch.sum((w[c, ...] / self._rho + Dy) ** 2, dim=0)
@@ -324,7 +331,7 @@ class NiiProc:
                                          cmap='coolwarm', fig_num=98)
 
             for c in range(C):
-                Dy = self._y[c].lam * im_gradient(self._y[c].dat, vx=vx_y, bound=bound_grad)
+                Dy = self._y[c].lam * im_gradient(self._y[c].dat, vx=vx_y, bound=bound_grad, which=gr_diff)
                 if alpha != 1:  # Use over/under-relaxation
                     Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
                 for d in range(Dy.shape[0]):
@@ -333,7 +340,7 @@ class NiiProc:
 
             # Compute model objective function
             if self.sett.tolerance > 0:
-                nll[cnt_nll] = self._compute_nll(vx_y=vx_y, bound=bound_grad)
+                nll[cnt_nll] = self._compute_nll(vx_y=vx_y, bound=bound_grad, gr_diff=gr_diff)
                 cnt_nll += 1
             if self.sett.plot_conv:  # Plot algorithm convergence
                 fig_ax_nll = plot_convergence(vals=nll[:cnt_nll], fig_ax=fig_ax_nll, fig_num=99)
@@ -346,7 +353,7 @@ class NiiProc:
             # UPDATE: w
             t0 = self._print_info('fit-update', 'w', n_iter)  # PRINT
             for c in range(C):  # Loop over channels
-                Dy = self._y[c].lam * im_gradient(self._y[c].dat, vx=vx_y, bound=bound_grad)
+                Dy = self._y[c].lam * im_gradient(self._y[c].dat, vx=vx_y, bound=bound_grad, which=gr_diff)
                 if alpha != 1:  # Use over/under-relaxation
                     Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
                 w[c, ...] += self._rho*(Dy - z[c, ...])
@@ -357,38 +364,21 @@ class NiiProc:
                 # UPDATE: rigid
                 t0 = self._print_info('fit-update', 'rigid', n_iter)  # PRINT
                 # Do update
-                self._update_rigid()
+                self._update_rigid(verbose=True)
                 _ = self._print_info('fit-done', t0)  # PRINT
                 # Compute model objective function
                 if self.sett.tolerance > 0:
-                    nll[cnt_nll] = self._compute_nll(vx_y=vx_y, bound=bound_grad)
+                    nll[cnt_nll] = self._compute_nll(vx_y=vx_y, bound=bound_grad, gr_diff=gr_diff)
                     cnt_nll += 1
                 if self.sett.plot_conv:  # Plot algorithm convergence
                     fig_ax_nll = plot_convergence(vals=nll[:cnt_nll], fig_ax=fig_ax_nll, fig_num=99)
                 gain = get_gain(nll, cnt_nll - 1, monotonicity='decreasing')
                 t_iter = self._print_info('fit-ll', 'q', n_iter, nll[n_iter], gain, t_iter)  # PRINT
 
-        # Write results to disk
-        if self.sett.dir_out is None:
-            # No output directory given, use directory of input data
-            dir_out = self._x[0][0].direc
-        prefix_y = self.sett.prefix
-        mat = self._y[0].mat
-        fnames_y = []
-        for c in range(C):
-            # Reconstructed images
-            mn = torch.min(self._x[c][0].dat)
-            dat = self._y[c].dat
-            dat[dat < mn] = 0
-            fname = os.path.join(dir_out, prefix_y + self._x[c][0].nam)
-            self.write_nifti_3d(dat, fname, mat=mat, header=self._x[c][0].head)
-            fnames_y.append(fname)
-        if self.sett.write_jtv and (self.sett.max_iter > 0):
-            # JTV
-            fname = os.path.join(dir_out, 'jtv_' + self._x[c][0].nam)
-            self.write_nifti_3d(jtv, fname, mat=mat)
+        # Process reconstruction results
+        y, mat, pth_y = self._write_data(jtv=jtv)
 
-        return fnames_y
+        return y, mat, pth_y
 
     def _all_mat_dim_vx(self):
         """ Get all images affine matrices, dimensions and voxel sizes (as numpy arrays).
@@ -438,7 +428,7 @@ class NiiProc:
 
         return z, w
 
-    def _compute_nll(self, vx_y, sum_dtype=torch.float64, bound='constant'):
+    def _compute_nll(self, vx_y, sum_dtype=torch.float64, bound='constant', gr_diff='forward'):
         """ Compute negative model log-likelihood.
 
         Args:
@@ -446,6 +436,7 @@ class NiiProc:
             sum_dtype (torch.dtype): Defaults to torch.float64.
             bound (str, optional): Bound for gradient/divergence calculation, defaults to
                 constant zero.
+            gr_diff (str, optional): Gradient difference operator, defaults to 'forward'.
 
         Returns:
             nll (torch.tensor()): Negative log-likelihood.
@@ -464,14 +455,14 @@ class NiiProc:
                     self._x[c][n].tau/2*torch.sum((self._proj('A', self._y[c].dat, c, n)
                                                   - self._x[c][n].dat)**2, dtype=sum_dtype)
 
-            Dy = self._y[c].lam * im_gradient(self._y[c].dat, vx=vx_y, bound=bound)
+            Dy = self._y[c].lam * im_gradient(self._y[c].dat, vx=vx_y, bound=bound, which=gr_diff)
             nll_y = nll_y + torch.sum(Dy**2, dim=0, dtype=dtype)
 
         nll_y = torch.sum(torch.sqrt(nll_y), dtype=sum_dtype)
 
         return nll_xy + nll_y
 
-    def _DtD(self, dat, vx_y, bound='constant'):
+    def _DtD(self, dat, vx_y, bound='constant', gr_diff='forward'):
         """ Computes the divergence of the gradient.
 
         Args:
@@ -479,13 +470,14 @@ class NiiProc:
             vx_y (tuple(float)): Output voxel size.
             bound (str, optional): Bound for gradient/divergence calculation, defaults to
                 constant zero.
+            gr_diff (str, optional): Gradient difference operator, defaults to 'forward'.
 
         Returns:
               div (torch.tensor()): Dt(D(dat)) (dim_y).
 
         """
-        dat = im_gradient(dat, vx=vx_y, bound=bound)
-        dat = im_divergence(dat, vx=vx_y, bound=bound)
+        dat = im_gradient(dat, vx=vx_y, bound=bound, which=gr_diff)
+        dat = im_divergence(dat, vx=vx_y, bound=bound, which=gr_diff)
         return dat
 
     def _estimate_hyperpar(self, x):
@@ -571,17 +563,17 @@ class NiiProc:
 
         return x
 
-    def _format_input(self, pth_nii):
+    def _format_input(self, data):
         """ Construct algorithm input struct.
 
         Args:
-            pth_nii (list): List of path(s) to nifti file.
+            data
 
         Returns:
-            x (Input()): Algorithm input struct(s).
+            x (Input()): Formatted algorithm input struct(s).
 
         """
-        # Parse input niftis into Input() object, filling the following fields:
+        # Parse input data into Input() object, filling the following fields:
         # x[c][n].dat
         # x[c][n].dim
         # x[c][n].mat
@@ -590,7 +582,7 @@ class NiiProc:
         # x[c][n].direc
         # x[c][n].nam
         # x[c][n].head
-        x = self._load_data(pth_nii)
+        x = self._read_data(data)
 
         # Estimate input image statistics, filling the following fields of Input():
         # x[c][n].tau
@@ -611,7 +603,6 @@ class NiiProc:
         C = len(self._x)  # Number of channels
         device = self.sett.device
         mod_prct = self.sett.mod_prct
-        unified_rigid = self.sett.unified_rigid
 
         one = torch.tensor(1.0, device=device, dtype=torch.float64)
         vx_y = self.sett.vx  # output voxel size
@@ -625,6 +616,11 @@ class NiiProc:
         # Get all orientation matrices and dimensions
         all_mat, all_dim, all_vx = self._all_mat_dim_vx()
         N = all_mat.shape[-1]  # Total number of observations
+
+        # Do unified rigid registration?
+        if N == 1:
+            self.sett.unified_rigid = False
+        unified_rigid = self.sett.unified_rigid
 
         # Check if all input images have the same fov/vx
         mat_same = True
@@ -736,63 +732,6 @@ class NiiProc:
                 y = y + dat[0, 0, ...]
             self._y[c].dat = y / num_x
 
-    def _load_data(self, pth_nii):
-        """ Parse nifti files into algorithm input struct(s).
-
-        Args:
-            pth_nii (list): List of path(s) to nifti file.
-
-        Returns:
-            x (Input()): Algorithm input struct(s).
-
-        """
-        # Parse function settings
-        device = self.sett.device
-        has_ct = self.sett.has_ct
-
-        if isinstance(pth_nii, str):
-            pth_nii = [pth_nii]
-
-        C = len(pth_nii)  # Number of channels
-        x = []
-        for c in range(C):  # Loop over channels
-            x.append([])
-            x[c] = []
-
-            if isinstance(pth_nii[c], list):
-                num_x = len(pth_nii[c])  # Number of observations of channel c
-                for n in range(num_x):  # Loop over observations of channel c
-                    x[c].append(Input())
-                    # Get data
-                    dat, dim, mat, fname, direc, nam, head, ct, _ = \
-                        self.read_nifti_3d(pth_nii[c][n], device, is_ct=has_ct)
-                    # Assign
-                    x[c][n].dat = dat
-                    x[c][n].dim = dim
-                    x[c][n].mat = mat
-                    x[c][n].fname = fname
-                    x[c][n].direc = direc
-                    x[c][n].nam = nam
-                    x[c][n].head = head
-                    x[c][n].ct = ct
-            else:
-                x[c].append(Input())
-                n = 0
-                # Get data
-                dat, dim, mat, fname, direc, nam, head, ct, _ = \
-                    self.read_nifti_3d(pth_nii[c], device, is_ct=has_ct)
-                # Assign
-                x[c][n].dat = dat
-                x[c][n].dim = dim
-                x[c][n].mat = mat
-                x[c][n].fname = fname
-                x[c][n].direc = direc
-                x[c][n].nam = nam
-                x[c][n].head = head
-                x[c][n].ct = ct
-
-        return x
-
     def _print_info(self, info, *argv):
         """ Print algorithm info to terminal.
 
@@ -849,7 +788,7 @@ class NiiProc:
 
         return timer()
 
-    def _proj(self, operator, dat, c=0, n=0, vx_y=None, bound__DtD='constant'):
+    def _proj(self, operator, dat, c=0, n=0, vx_y=None, bound__DtD='constant', gr_diff='forward'):
         """ Projects image data by A, At or AtA.
 
         Args:
@@ -860,6 +799,7 @@ class NiiProc:
             vx_y (tuple(float)): Output voxel size.
             bound__DtD (str, optional): Bound for gradient/divergence calculation, defaults to
                 constant zero.
+            gr_diff (str, optional): Gradient difference operator, defaults to 'forward'.
 
         Returns:
             dat (torch.tensor()): Projected image data (dim_y|dim_x).
@@ -872,7 +812,7 @@ class NiiProc:
         # Project
         if operator == 'AtA':
             if not do_proj:  operator = 'none'  # self.proj_apply returns dat
-            dat1 = rho * self._y[c].lam ** 2 * self._DtD(dat, vx_y=vx_y, bound=bound__DtD)
+            dat1 = rho * self._y[c].lam ** 2 * self._DtD(dat, vx_y=vx_y, bound=bound__DtD, gr_diff=gr_diff)
             dat = dat[None, None, ...]
             dat = self._x[c][n].tau * self.proj_apply(operator, method, dat, self._x[c][n].po)
             num_x = len(self._x[c])
@@ -906,13 +846,68 @@ class NiiProc:
             num_x = len(self._x[c])
             for n in range(num_x):
                 # Get rigid matrix
-                rigid = dexpm(self._x[c][n].rigid_q, rigid_basis, requires_grad=False)[0]
+                rigid = dexpm(self._x[c][n].rigid_q, rigid_basis)[0]
                 # Define projection operator
                 po = self.proj_info(dim_y, mat_y, self._x[c][n].dim, self._x[c][n].mat,
                                     prof_ip=prof_ip, prof_tp=prof_tp, gap=gap, device=device,
                                     rigid=rigid)
                 # Assign
                 self._x[c][n].po = po
+
+    def _read_data(self, data):
+        """ Parse input data into algorithm input struct(s).
+
+        Args:
+            data
+
+        Returns:
+            x (Input()): Algorithm input struct(s).
+
+        """
+        # Parse function settings
+        device = self.sett.device
+        has_ct = self.sett.has_ct
+
+        if isinstance(data, str):
+            data = [data]
+        C = len(data)  # Number of channels
+
+        x = []
+        for c in range(C):  # Loop over channels
+            x.append([])
+            x[c] = []
+            if isinstance(data[c], list) and (isinstance(data[c][0], str) or isinstance(data[c][0], list)):
+                num_x = len(data[c])  # Number of observations of channel c
+                for n in range(num_x):  # Loop over observations of channel c
+                    x[c].append(Input())
+                    # Get data
+                    dat, dim, mat, fname, direc, nam, head, ct, _ = \
+                        self.read_image(data[c][n], device, is_ct=has_ct)
+                    # Assign
+                    x[c][n].dat = dat
+                    x[c][n].dim = dim
+                    x[c][n].mat = mat
+                    x[c][n].fname = fname
+                    x[c][n].direc = direc
+                    x[c][n].nam = nam
+                    x[c][n].head = head
+                    x[c][n].ct = ct
+            else:
+                x[c].append(Input())
+                n = 0  # One repeat per channel
+                # Get data
+                dat, dim, mat, fname, direc, nam, head, ct, _ = \
+                    self.read_image(data[c], device, is_ct=has_ct)
+                # Assign
+                x[c][n].dat = dat
+                x[c][n].dim = dim
+                x[c][n].mat = mat
+                x[c][n].fname = fname
+                x[c][n].direc = direc
+                x[c][n].nam = nam
+                x[c][n].head = head
+                x[c][n].ct = ct
+        return x
 
     def _step_size(self, verbose=True):
         """ ADMM step size (rho) from image statistics.
@@ -926,7 +921,7 @@ class NiiProc:
         """
         # Parse function settings
         device = self.sett.device
-        scl = self.sett.rho
+        scl = self.sett.rho_scl
         dtype = torch.float32
 
         C = len(self._y)
@@ -946,7 +941,7 @@ class NiiProc:
             _ = self._print_info('step_size', rho)  # PRINT
         return rho
 
-    def _update_rigid(self, mean_correct=True):
+    def _update_rigid(self, mean_correct=True, verbose=False):
         """ Updates each input image's specific registration parameters:
                 self._x[c][n].rigid_q
             using a Gauss-Newton optimisation. After the parameters have
@@ -957,6 +952,7 @@ class NiiProc:
         Args:
             mean_correct (bool, optional): Mean-correct rigid parameters,
                 defaults to True.
+            verbose (bool, optional): Show registration results, defaults to False.
 
         """
         # Parameters
@@ -967,7 +963,11 @@ class NiiProc:
 
         # Update rigid parameters, for all input images (self._x[c][n])
         for c in range(C):  # Loop over channels
-            self._update_rigid_channel(c, rigid_basis)
+            self._x[c][0].mat[0, 3] = self._x[c][0].mat[0, 3] - 8
+            self._x[c][0].mat[1, 3] = self._x[c][0].mat[1, 3] + 6
+            self._x[c][0].mat[2, 3] = self._x[c][0].mat[2, 3] - 3
+            self._update_rigid_channel(c, rigid_basis, verbose=verbose)
+            continue
 
         # Mean correct the rigid-body transforms
         if mean_correct:
@@ -991,17 +991,19 @@ class NiiProc:
         for c in range(C):  # Loop over channels
             num_x = len(self._x[c])  # Number of observations of channel c
             for n in range(num_x):  # Loop over observations of channel c
-                rigid = dexpm(self._x[c][n].rigid_q, rigid_basis, requires_grad=False)[0]
+                rigid = dexpm(self._x[c][n].rigid_q, rigid_basis)[0]
                 self._x[c][n].po.rigid = rigid
 
-    def _update_rigid_channel(self, c, rigid_basis, max_niter_gn=3, num_linesearch=12):
+    def _update_rigid_channel(self, c, rigid_basis, max_niter_gn=12, num_linesearch=16,
+                              verbose=False):
         """ Updates the rigid parameters for all images of one channel.
 
         Args:
             c (int): Channel index.
             rigid_basis (torch.tensor)
-            max_niter_gn (int, optional): Max Gauss-Newton iterations, defaults to 3.
-            num_linesearch (int, optional): Max line-search iterations, defaults to 12.
+            max_niter_gn (int, optional): Max Gauss-Newton iterations, defaults to 1.
+            num_linesearch (int, optional): Max line-search iterations, defaults to 16.
+            verbose (bool, optional): Show registration results, defaults to False.
 
         """
         # Parameters
@@ -1009,60 +1011,60 @@ class NiiProc:
         num_x = len(self._x[c])
         mat_y = self._y[c].mat
         num_q = rigid_basis.shape[2]
-        lkp = torch.tensor([[1, 4, 5], [4, 2, 6], [5, 6, 3]], device=device)
+        lkp = [[0, 3, 4], [3, 1, 5], [4, 5, 2]]
 
         for n in range(num_x):  # Loop over observed images
             # Get projection info
-            po = self._x[c][n].po
             mat_x = self._x[c][n].mat
+            dim_x = self._x[c][n].dim
             q = self._x[c][n].rigid_q
 
+            # Get identity grid
+            id_x = identity(dim_x, dtype=torch.float32, device=device)
+
             for n_gn in range(max_niter_gn):  # Loop over Gauss-Newton iterations
-                # Differentiate Rq w.r.t. q (store in dRq)
-                R, dR = dexpm(q, rigid_basis)
-                dRq = torch.zeros(4, 4, num_q, device=device, dtype=torch.float64)
+                # Differentiate Rq w.r.t. q (store in d_rigid_q)
+                rigid, d_rigid = dexpm(q, rigid_basis, requires_grad=True)
+                d_rigid_q = torch.zeros(4, 4, num_q, device=device, dtype=torch.float64)
                 for i in range(num_q):
-                    dRq[:, :, i] = dR[:, :, i].mm(mat_x).solve(mat_y)[0]  # mat_y\rigid*mat_x
+                    d_rigid_q[:, :, i] = d_rigid[:, :, i].mm(mat_x).solve(mat_y)[0]  # mat_y\d_rigid*mat_x
 
                 # --------------------------------
                 # Compute gradient and Hessian
                 # --------------------------------
+                gr = torch.zeros(num_q, 1, device=device, dtype=torch.float64)
+                Hes = torch.zeros(num_q, num_q, device=device, dtype=torch.float64)
 
                 # Compute matching-term part (log-likelihood)
-                ll = self._rigid_match(c, n, requires_grad=False)[0]
-                ll, gr, Hes = self._rigid_match(c, n)
+                ll, gr_m, Hes_m = self._rigid_match(c, n, rigid, requires_grad=True,
+                                                    verbose=verbose)
 
-                # Get identity grid
-                id_x = identity(self._x[c][n].dim, dtype=torch.float64, device=device)
-
-                # Multiply with dRq (chain-rule)
+                # Multiply with d_rigid_q (chain-rule)
                 dAff = [None] * 3
                 dAff = [dAff] * num_q
                 for i in range(num_q):
                     for d in range(3):
-                        tmp = dRq[d, 0, i] * id_x[:, :, :, 0] +\
-                              dRq[d, 1, i] * id_x[:, :, :, 1] +\
-                              dRq[d, 2, i] * id_x[:, :, :, 2] +\
-                              dRq[d, 3, i]
-                        dAff[i, d] = tmp.flatten()
+                        tmp = d_rigid_q[d, 0, i] * id_x[:, :, :, 0] +\
+                              d_rigid_q[d, 1, i] * id_x[:, :, :, 1] +\
+                              d_rigid_q[d, 2, i] * id_x[:, :, :, 2] +\
+                              d_rigid_q[d, 3, i]
+                        dAff[i][d] = tmp.flatten()[..., None]  # (N, 1)
 
-                # Add dRq to gradient
+                # Add d_rigid_q to gradient
                 for d in range(3):
-                    tmp = gr[:, :, d]
-                    tmp = tmp.flatten().t()
+                    tmp = gr_m[:, :, :, d].flatten()[None, ...]  # (1, N)
                     for i in range(num_q):
-                        gr[i] = tmp.mm(dAff[i, d])
+                        gr[i] += tmp.mm(dAff[i][d])[0, 0]  # TODO: double (OK to use sum(prod)?)
 
-                # Add dRq to Hessian
+                # Add d_rigid_q to Hessian
                 for d1 in range(3):
                     for d2 in range(3):
-                        tmp1 = Hess[:, :, lkp[d1, d2]]
-                        tmp1 = tmp1.flatten()  # OK?!
+                        tmp1 = Hes_m[:, :, :, lkp[d1][d2]].flatten()[..., None]  # (N, 1)
                         for i1 in range(num_q):
-                            tmp2 = tmp1 * dAff[i1, d1]
-                            tmp2 = tmp2.t()
+                            tmp2 = tmp1 * dAff[i1][d1]
+                            tmp2 = tmp2.t()  # (1, N)
                             for i2 in range(i1, num_q):
-                                Hes[i1, i2] = tmp2.mm(dAff[i2, d2])
+                                Hes[i1, i2] += tmp2.mm(dAff[i2][d2])[0, 0]  # TODO: double (OK to use sum(prod)?)
 
                 # Fill in missing triangle
                 for i1 in range(num_q):
@@ -1070,7 +1072,7 @@ class NiiProc:
                         Hes[i2, i1] = Hes[i1, i2]
 
                 # Regularise diagonal of Hessian
-                H += 1e-5*H.diag().max()*torch.eye(num_q)
+                Hes += 1e-5*Hes.diag().max()*torch.eye(num_q, dtype=Hes.dtype, device=device)
 
                 # --------------------------------
                 # Update rigid parameters by Gauss-Newton optimisation
@@ -1082,32 +1084,44 @@ class NiiProc:
                 # Start line-search
                 old_ll = ll.clone()
                 old_q = q.clone()
-                old_rigid = dexpm(q, rigid_basis, requires_grad=False)[0]
+                old_rigid = rigid.clone()
                 armijo = torch.tensor(1, device=device, dtype=torch.float64)
                 for n_ls in range(num_linesearch):
                     # Take step
                     q = old_q - armijo*Update
                     # Compute matching term
-                    rigid = dexpm(q, rigid_basis, requires_grad=False)[0]
-                    po.rigid = rigid
-                    ll = self._rigid_match(c, n, requires_grad=False)[0]
+                    rigid = dexpm(q, rigid_basis)[0]
+                    ll = self._rigid_match(c, n, rigid, verbose=verbose)[0]
                     # Matching improved?
                     if ll > old_ll:
                         # Better fit!
+                        if verbose:
+                            print('c={}, n={}, gn={}, ls={} | :) ll={:0.2f}, oll-ll={:0.2f} | q={}'
+                                  .format(c, n, n_gn, n_ls, ll, old_ll - ll, round(q, 4).tolist()))
                         break
                     else:
                         # Reset parameters
+                        if verbose:
+                            print('c={}, n={}, gn={}, ls={} | :( ll={:0.2f}, oll-ll={:0.2f} | q={}'
+                                  .format(c, n, n_gn, n_ls, ll, old_ll - ll, round(q, 4).tolist()))
                         q = old_q.clone()
-                        po.rigid = old_rigid
+                        rigid = old_rigid.clone()
                         armijo *= 0.5
+            # Assign
+            self._x[c][n].rigid_q = q
+            self._x[c][n].po.rigid = rigid
 
-    def _rigid_match(self, c, n, requires_grad=True):
+        return
+
+    def _rigid_match(self, c, n, rigid, requires_grad=False, verbose=False):
         """ Computes the rigid matching term, and its gradient and Hessian.
 
         Args:
             c (int): Channel index.
             n (int): Observation index.
-            require_grad (bool, optional): Compute derivatives, defaults to True.
+            rigid (torch.tensor): Rigid transformation matrix (4, 4).
+            require_grad (bool, optional): Compute derivatives, defaults to False.
+            verbose (bool, optional): Show registration results, defaults to False.
 
         Returns:
             ll (torch.tensor): Log-likelihood.
@@ -1119,8 +1133,10 @@ class NiiProc:
         device = self.sett.device
         method = self._method
         dim_x = self._x[c][n].dim
-        dat_y = self._y[c].dat
+        dat_y = self._y[c].dat[None, None, ...]
         dat_x = self._x[c][n].dat
+        mat_x = self._x[c][n].mat
+        mat_y = self._y[c].mat
         po = self._x[c][n].po
         tau = self._x[c][n].tau
 
@@ -1129,42 +1145,106 @@ class NiiProc:
         gr = None
         Hes = None
 
-        # Move y to x space
-        if requires_grad:
-            dyx = [None]*3
-            dyx[0] = dyx[0].double()
-            dyx[1] = dyx[1].double()
-            dyx[2] = dyx[2].double()
-        else:
-            dat_yx = self.proj_apply('A', method, dat_y[None, None, ...], po)
-            dat_yx = dat_yx[0, 0, ...]
+        # Warp y and compute spatial derivatives
+        bound = 'dct2'
+        if method == 'super-resolution':
+            AssertionError('Not yet implemented!')
+        elif method == 'denoising':
+            mat = rigid.mm(mat_x).solve(mat_y)[0]  # mat_y\rigid*mat_x
+            grid = affine(dim_x, mat, device=device)
+            if requires_grad:
+                dat_yx = grid_pull(dat_y, grid, bound=bound, extrapolate=True)[0, 0, ...]
+                gr_yx = grid_grad(dat_y, grid, bound=bound, extrapolate=True)[0, 0, ...]
+            else:
+                dat_yx = grid_pull(dat_y, grid, bound=bound, extrapolate=True)[0, 0, ...]
+
+        if verbose:  # Show registration result
+            show_slices(torch.stack((dat_x, dat_yx, dat_x - dat_yx), 3),
+                        fig_num=666, colorbar=False)
 
         # Double and mask
-        dat_yx = dat_yx.double()
         msk = torch.isfinite(dat_yx)
         dat_yx[~msk] = 0
 
         # Compute matching term
-        ll = -0.5*tau*torch.sum((dat_x[msk].double() - dat_yx[msk])**2)
+        ll = -0.5*tau*torch.sum((dat_x[msk] - dat_yx[msk])**2, dtype=torch.float64)
 
         if requires_grad:
             # Gradient
-            gr = torch.zeros(dim_x + (3,), device=device, dtype=torch.float64)
-            diff = dat_yx - dat_x.double()
+            gr = torch.zeros(dim_x + (3,), device=device, dtype=torch.float32)
+            diff = dat_yx - dat_x
             diff[~msk] = 0
             for d in range(3):
-                dyx[d][~msk] = 0
-                g[:, :, :, d] = diff1*dyx[d]
+                gr_yx[:, :, :, d][~msk] = 0
+                gr[:, :, :, d] = diff*gr_yx[:, :, :, d]
             # Hessian
-            H = torch.zeros(dim_x + (6,), device=device, dtype=torch.float64)
-            H[:, :, :, 0] = dyx[0] * dyx[0]
-            H[:, :, :, 1] = dyx[1] * dyx[1]
-            H[:, :, :, 2] = dyx[2] * dyx[2]
-            H[:, :, :, 3] = dyx[0] * dyx[1]
-            H[:, :, :, 4] = dyx[0] * dyx[2]
-            H[:, :, :, 5] = dyx[1] * dyx[2]
+            Hes = torch.zeros(dim_x + (6,), device=device, dtype=torch.float32)
+            Hes[:, :, :, 0] = gr_yx[:, :, :, 0] * gr_yx[:, :, :, 0]
+            Hes[:, :, :, 1] = gr_yx[:, :, :, 1] * gr_yx[:, :, :, 1]
+            Hes[:, :, :, 2] = gr_yx[:, :, :, 2] * gr_yx[:, :, :, 2]
+            Hes[:, :, :, 3] = gr_yx[:, :, :, 0] * gr_yx[:, :, :, 1]
+            Hes[:, :, :, 4] = gr_yx[:, :, :, 0] * gr_yx[:, :, :, 2]
+            Hes[:, :, :, 5] = gr_yx[:, :, :, 1] * gr_yx[:, :, :, 2]
 
         return ll, gr, Hes
+
+    def _write_data(self, jtv=None):
+        """ Format algorithm output.
+
+        Args:
+            jtv (torch.tensor, optional): Joint-total variation image, defaults to None.
+
+        Returns:
+            y (torch.tensor): Reconstructed image data, (dim_y, C).
+            mat (torch.tensor): Reconstructed affine matrix, (4, 4).
+            pth_y ([str, ...]): Paths to reconstructed images.
+
+        """
+        # Parse function settings
+        write_out = self.sett.write_out
+        write_jtv = self.sett.write_jtv
+        # Output data
+        dim_y = self._y[0].dim + (3,)
+        # Output orientation matrix
+        mat = self._y[0].mat
+        if self.sett.dir_out is None:
+            # No output directory given, use directory of input data
+            if self._x[0][0].direc is None:
+                dir_out = 'nires-output'
+                if not os.path.isdir(dir_out):
+                    os.mkdir(dir_out)
+            else:
+                dir_out = self._x[0][0].direc
+        # Reconstructed images
+        C = len(self._y)
+        prefix_y = self.sett.prefix
+        pth_y = []
+        for c in range(C):
+            mn = torch.min(self._x[c][0].dat)
+            dat = self._y[c].dat
+            dat[dat < mn] = 0
+            if write_out:
+                # Write reconstructed images
+                if self._x[c][0].nam is None:
+                    nam = str(c) + '.nii'
+                else:
+                    nam = self._x[c][0].nam
+                fname = os.path.join(dir_out, prefix_y + nam)
+                pth_y.append(fname)
+                self.write_image(dat, fname, mat=mat, header=self._x[c][0].head)
+            if c == 0:
+                y = dat[:, :, :, None]
+            else:
+                y = torch.cat((y, dat[:, :, :, None]), dim=3)
+        if write_jtv and jtv is not None:
+            # Write JTV
+            if self._x[c][0].nam is None:
+                nam = str(c) + '.nii'
+            else:
+                nam = self._x[c][0].nam
+            fname = os.path.join(dir_out, 'jtv_' + nam)
+            self.write_image(jtv, fname, mat=mat)
+        return y, mat, pth_y
 
     # Static methods
     @staticmethod
@@ -1186,72 +1266,12 @@ class NiiProc:
         y = torch.rand((1, 1, ) + dim_y, dtype=dtype, device=device)
         po.smo_ker = po.smo_ker.type(dtype)
         # Apply A and At operators
-        Ay = NiiProc.proj_apply('A', method, y, po)
-        Atx = NiiProc.proj_apply('At', method, x, po)
+        Ay = Model.proj_apply('A', method, y, po)
+        Atx = Model.proj_apply('At', method, x, po)
         # Check okay
         val = torch.sum(Ay * x, dtype=torch.float64) - torch.sum(Atx * y, dtype=torch.float64)
         # Print okay
         print('<Ay, x> - <Atx, y> = {}'.format(val))
-
-    @staticmethod
-    def read_nifti_3d(pth_nii, device='cpu', as_float=True, is_ct=False):
-        """ Reads 3D nifti data using nibabel.
-
-        Args:
-            pth_nii (string): Path to nifti file.
-            device (string, optional): PyTorch on CPU or GPU? Defaults to 'cpu'.
-            as_float (bool, optional): Load image data as float (else double), defaults to True.
-            is_ct (bool, optional): Is the image a CT scan?
-
-        Returns:
-            dat (torch.tensor()): Image data.
-            dim (tuple(int)): Image dimensions.
-            mat (torch.tensor(double)): Affine matrix.
-            fname (string): File path
-            direc (string): File directory path
-            nam (string): Filename
-            head (nibabel.nifti1.Nifti1Header)
-            ct (bool): Is data CT?
-            var (torch.tensor(float)): Observation uncertainty.
-
-        """
-        # Load nifti
-        nii = nib.load(pth_nii)
-        # Get image data
-        if as_float:
-            dat = torch.tensor(nii.get_fdata()).float().to(device)
-        else:
-            dat = torch.tensor(nii.get_fdata()).double().to(device)
-        # Remove NaNs
-        dat[~torch.isfinite(dat)] = 0
-        if is_ct and (torch.min(dat) < 0):
-            # Input data is CT
-            ct = True
-            # Winsorize CT
-            dat[dat < -1024] = -1024
-            dat[dat > 3071] = 3071
-        else:
-            ct = False
-        # Get affine matrix
-        mat = nii.affine
-        mat = torch.from_numpy(mat).double().to(device)
-        # Get dimensions
-        dim = tuple(dat.shape)
-        # Get observation uncertainty
-        slope = nii.dataobj.slope
-        dtype = nii.get_data_dtype()
-        dtypes = ['int8', 'uint8', 'int16', 'uint16', 'int32', 'uint32', 'int64', 'uint64']
-        if dtype in dtypes:
-            var = torch.tensor(slope, dtype=torch.float32, device=device)
-            var = var ** 2 / 12
-        else:
-            var = torch.tensor(0, dtype=torch.float32, device=device)
-        # Get header, filename, etc
-        head = nii.get_header()
-        fname = nii.get_filename()
-        direc, nam = os.path.split(fname)
-
-        return dat, dim, mat, fname, direc, nam, head, ct, var
 
     @staticmethod
     def proj_apply(operator, method, dat, po, bound='dct2'):
@@ -1395,7 +1415,85 @@ class NiiProc:
         return po
 
     @staticmethod
-    def write_nifti_3d(dat, ofname, mat=torch.eye(4), header=None, dtype='float32'):
+    def read_image(data, device='cpu', is_ct=False):
+        """ Reads image data.
+
+        Args:
+            data (string|list): Path to file, or list with image data and affine matrix.
+            device (string, optional): PyTorch on CPU or GPU? Defaults to 'cpu'.
+            is_ct (bool, optional): Is the image a CT scan?
+
+        Returns:
+            dat (torch.tensor()): Image data.
+            dim (tuple(int)): Image dimensions.
+            mat (torch.tensor(double)): Affine matrix.
+            fname (string): File path
+            direc (string): File directory path
+            nam (string): Filename
+            head (nibabel.nifti1.Nifti1Header)
+            ct (bool): Is data CT?
+            var (torch.tensor(float)): Observation uncertainty.
+
+        """
+        var = torch.tensor(0, dtype=torch.float32, device=device)  # Observation uncertainty
+        if isinstance(data, str):
+            # =================================
+            # Load from file
+            # =================================
+            nii = nib.load(data)
+            # Get affine matrix
+            mat = nii.affine
+            mat = torch.from_numpy(mat).double().to(device)
+            # Get image data
+            dat = torch.tensor(nii.get_fdata()).float().to(device)
+            # Get header, filename, etc
+            head = nii.get_header()
+            fname = nii.get_filename()
+            # Get input directory and filename
+            direc, nam = os.path.split(fname)
+            # Get observation uncertainty
+            slope = nii.dataobj.slope
+            dtype = nii.get_data_dtype()
+            dtypes = ['int8', 'uint8', 'int16', 'uint16', 'int32', 'uint32', 'int64', 'uint64']
+            if dtype in dtypes:
+                var = torch.tensor(slope, dtype=torch.float32, device=device)
+                var = var ** 2 / 12
+        else:
+            # =================================
+            # Data and matrix given as list
+            # =================================
+            # Image data
+            dat = data[0]
+            if not isinstance(dat, torch.Tensor):
+                dat = torch.tensor(dat)
+            dat = dat.float()
+            dat = dat.to(device)
+            # Affine matrix
+            mat = data[1]
+            if not isinstance(mat, torch.Tensor):
+                mat = torch.from_numpy(mat)
+            mat = mat.double().to(device)
+            head = None
+            fname = None
+            direc = None
+            nam = None
+        # Get dimensions
+        dim = tuple(dat.shape)
+        # Remove NaNs
+        dat[~torch.isfinite(dat)] = 0
+        if is_ct and (torch.min(dat) < 0):
+            # Input data is CT
+            ct = True
+            # Winsorize CT
+            dat[dat < -1024] = -1024
+            dat[dat > 3071] = 3071
+        else:
+            ct = False
+
+        return dat, dim, mat, fname, direc, nam, head, ct, var
+
+    @staticmethod
+    def write_image(dat, ofname, mat=torch.eye(4), header=None, dtype='float32'):
         """ Writes 3D nifti data using nibabel.
 
         Args:
@@ -1405,7 +1503,6 @@ class NiiProc:
             header (nibabel.nifti1.Nifti1Header, optional): nibabel header, defaults to None.
             dtype (str, optional): Output data type, defaults to 'float32', but uses the data type
                 in the header (if given).
-
         """
         # Sanity check
         if dtype not in ['float32', 'uint8', 'int16', 'uint16']:
@@ -1419,10 +1516,8 @@ class NiiProc:
             dtypes = ['int8', 'uint8', 'int16', 'uint16', 'int32', 'uint32', 'int64', 'uint64']
             if dtype in dtypes:
                 dat = dat.int()
-        # To CPU -> Numpy (because nibable cannot deal with torch.tensor)
-        dat = dat.cpu().numpy()
         # Make nii object
-        nii = nib.Nifti1Image(dat, header=header, affine=mat.cpu().numpy())
+        nii = nib.Nifti1Image(dat.cpu().numpy(), header=header, affine=mat.cpu().numpy())
         if header is None:
             # Set data type
             header = nii.get_header()

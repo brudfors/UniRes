@@ -1,20 +1,23 @@
-
 """
-Script to process MRI or CT scans (as nifti files) with mriqplus.
+Script to process MRI or CT scans with nires.
 
 Example usage:
-    python run_mriqplus.py T1.nii T2.nii Flair.nii --do_sr=True
+    python fit.py T1.nii T2.nii Flair.nii
 
+Results will be written in the same folder, prefixed 'y_'.
+Default settings should work well.
+
+@author: brudfors@gmail.com
 """
 
 
 from argparse import ArgumentParser
-from niiproc import NiiProc
-from niiproc import Settings
+from nires import Model
+from nires import Settings
 import sys
 import torch
 
-def run(pth, device, dir_out, dir_nitorch, plot_conv, print_info,
+def fit(pth, device, dir_out, dir_nitorch, plot_conv, print_info,
         reg_scl, show_hyperpar, tolerance, vx):
 
     # CPU/GPU?
@@ -30,6 +33,7 @@ def run(pth, device, dir_out, dir_nitorch, plot_conv, print_info,
     if reg_scl is not None: s.reg_scl = reg_scl
     if show_hyperpar is not None: s.show_hyperpar = show_hyperpar
     if tolerance is not None: s.tolerance = tolerance
+    if unified_rigid is not None: s.unified_rigid = unified_rigid
     if vx is not None: s.vx = vx
 
     if dir_nitorch:
@@ -37,7 +41,7 @@ def run(pth, device, dir_out, dir_nitorch, plot_conv, print_info,
         sys.path.append(dir_nitorch)
 
     # Init algorithm
-    model = NiiProc(pth, s)
+    model = Model(pth, s)
 
     # Start algorithm
     model.fit()
@@ -68,6 +72,10 @@ if __name__ == "__main__":
                         type=bool,
                         default=None,
                         help="Use matplotlib to plot convergence in real-time")
+    parser.add_argument("--unified_rigid",
+                        type=bool,
+                        default=None,
+                        help="Do unified rigid registration")
     parser.add_argument("--print_info",
                         type=int,
                         default=None,
