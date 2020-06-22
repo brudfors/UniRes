@@ -364,7 +364,7 @@ class Model:
                 # UPDATE: rigid
                 t0 = self._print_info('fit-update', 'rigid', n_iter)  # PRINT
                 # Do update
-                self._update_rigid(verbose=True)
+                self._update_rigid()
                 _ = self._print_info('fit-done', t0)  # PRINT
                 # Compute model objective function
                 if self.sett.tolerance > 0:
@@ -941,7 +941,7 @@ class Model:
             _ = self._print_info('step_size', rho)  # PRINT
         return rho
 
-    def _update_rigid(self, mean_correct=True, verbose=False):
+    def _update_rigid(self, mean_correct=True):
         """ Updates each input image's specific registration parameters:
                 self._x[c][n].rigid_q
             using a Gauss-Newton optimisation. After the parameters have
@@ -952,7 +952,6 @@ class Model:
         Args:
             mean_correct (bool, optional): Mean-correct rigid parameters,
                 defaults to True.
-            verbose (bool, optional): Show registration results, defaults to False.
 
         """
         # Parameters
@@ -963,11 +962,10 @@ class Model:
 
         # Update rigid parameters, for all input images (self._x[c][n])
         for c in range(C):  # Loop over channels
-            self._x[c][0].mat[0, 3] = self._x[c][0].mat[0, 3] - 8
-            self._x[c][0].mat[1, 3] = self._x[c][0].mat[1, 3] + 6
-            self._x[c][0].mat[2, 3] = self._x[c][0].mat[2, 3] - 3
-            self._update_rigid_channel(c, rigid_basis, verbose=verbose)
-            continue
+            # self._y[c].mat[0, 3] = self._y[c].mat[0, 3] - 8
+            # self._y[c].mat[1, 3] = self._y[c].mat[1, 3] + 6
+            # self._y[c].mat[2, 3] = self._y[c].mat[2, 3] - 3
+            self._update_rigid_channel(c, rigid_basis, verbose=True)
 
         # Mean correct the rigid-body transforms
         if mean_correct:
@@ -994,15 +992,15 @@ class Model:
                 rigid = dexpm(self._x[c][n].rigid_q, rigid_basis)[0]
                 self._x[c][n].po.rigid = rigid
 
-    def _update_rigid_channel(self, c, rigid_basis, max_niter_gn=12, num_linesearch=16,
+    def _update_rigid_channel(self, c, rigid_basis, max_niter_gn=3, num_linesearch=6,
                               verbose=False):
         """ Updates the rigid parameters for all images of one channel.
 
         Args:
             c (int): Channel index.
             rigid_basis (torch.tensor)
-            max_niter_gn (int, optional): Max Gauss-Newton iterations, defaults to 1.
-            num_linesearch (int, optional): Max line-search iterations, defaults to 16.
+            max_niter_gn (int, optional): Max Gauss-Newton iterations, defaults to 3.
+            num_linesearch (int, optional): Max line-search iterations, defaults to 6.
             verbose (bool, optional): Show registration results, defaults to False.
 
         """
@@ -1013,11 +1011,11 @@ class Model:
         num_q = rigid_basis.shape[2]
         lkp = [[0, 3, 4], [3, 1, 5], [4, 5, 2]]
 
-        for n in range(num_x):  # Loop over observed images
+        for n_x in range(num_x):  # Loop over observed images
             # Get projection info
-            mat_x = self._x[c][n].mat
-            dim_x = self._x[c][n].dim
-            q = self._x[c][n].rigid_q
+            mat_x = self._x[c][n_x].mat
+            dim_x = self._x[c][n_x].dim
+            q = self._x[c][n_x].rigid_q
 
             # Get identity grid
             id_x = identity(dim_x, dtype=torch.float32, device=device)
@@ -1036,43 +1034,39 @@ class Model:
                 Hes = torch.zeros(num_q, num_q, device=device, dtype=torch.float64)
 
                 # Compute matching-term part (log-likelihood)
-                ll, gr_m, Hes_m = self._rigid_match(c, n, rigid, requires_grad=True,
+                ll, gr_m, Hes_m = self._rigid_match(c, n_x, rigid, requires_grad=True,
                                                     verbose=verbose)
 
                 # Multiply with d_rigid_q (chain-rule)
-                dAff = [None] * 3
-                dAff = [dAff] * num_q
+                dAff = []
                 for i in range(num_q):
+                    dAff.append([])
                     for d in range(3):
-                        tmp = d_rigid_q[d, 0, i] * id_x[:, :, :, 0] +\
-                              d_rigid_q[d, 1, i] * id_x[:, :, :, 1] +\
-                              d_rigid_q[d, 2, i] * id_x[:, :, :, 2] +\
-                              d_rigid_q[d, 3, i]
-                        dAff[i][d] = tmp.flatten()[..., None]  # (N, 1)
+                        dAff[i].append(d_rigid_q[d, 0, i] * id_x[:, :, :, 0] +\
+                                       d_rigid_q[d, 1, i] * id_x[:, :, :, 1] +\
+                                       d_rigid_q[d, 2, i] * id_x[:, :, :, 2] +\
+                                       d_rigid_q[d, 3, i])
 
                 # Add d_rigid_q to gradient
                 for d in range(3):
-                    tmp = gr_m[:, :, :, d].flatten()[None, ...]  # (1, N)
                     for i in range(num_q):
-                        gr[i] += tmp.mm(dAff[i][d])[0, 0]  # TODO: double (OK to use sum(prod)?)
+                        gr[i] += torch.sum(gr_m[:, :, :, d] * dAff[i][d], dtype=torch.float64)
 
                 # Add d_rigid_q to Hessian
                 for d1 in range(3):
                     for d2 in range(3):
-                        tmp1 = Hes_m[:, :, :, lkp[d1][d2]].flatten()[..., None]  # (N, 1)
                         for i1 in range(num_q):
-                            tmp2 = tmp1 * dAff[i1][d1]
-                            tmp2 = tmp2.t()  # (1, N)
+                            tmp1 = Hes_m[:, :, :, lkp[d1][d2]] * dAff[i1][d1]
                             for i2 in range(i1, num_q):
-                                Hes[i1, i2] += tmp2.mm(dAff[i2][d2])[0, 0]  # TODO: double (OK to use sum(prod)?)
+                                Hes[i1, i2] += torch.sum(tmp1 * dAff[i2][d2], dtype=torch.float64)
 
                 # Fill in missing triangle
                 for i1 in range(num_q):
                     for i2 in range(i1 + 1, num_q):
                         Hes[i2, i1] = Hes[i1, i2]
 
-                # Regularise diagonal of Hessian
-                Hes += 1e-5*Hes.diag().max()*torch.eye(num_q, dtype=Hes.dtype, device=device)
+                # # Regularise diagonal of Hessian
+                # Hes += 1e-5*Hes.diag().max()*torch.eye(num_q, dtype=Hes.dtype, device=device)
 
                 # --------------------------------
                 # Update rigid parameters by Gauss-Newton optimisation
@@ -1091,25 +1085,25 @@ class Model:
                     q = old_q - armijo*Update
                     # Compute matching term
                     rigid = dexpm(q, rigid_basis)[0]
-                    ll = self._rigid_match(c, n, rigid, verbose=verbose)[0]
+                    ll = self._rigid_match(c, n_x, rigid, verbose=verbose)[0]
                     # Matching improved?
                     if ll > old_ll:
                         # Better fit!
                         if verbose:
                             print('c={}, n={}, gn={}, ls={} | :) ll={:0.2f}, oll-ll={:0.2f} | q={}'
-                                  .format(c, n, n_gn, n_ls, ll, old_ll - ll, round(q, 4).tolist()))
+                                  .format(c, n_x, n_gn, n_ls, ll, old_ll - ll, round(q, 4).tolist()))
                         break
                     else:
                         # Reset parameters
-                        if verbose:
-                            print('c={}, n={}, gn={}, ls={} | :( ll={:0.2f}, oll-ll={:0.2f} | q={}'
-                                  .format(c, n, n_gn, n_ls, ll, old_ll - ll, round(q, 4).tolist()))
                         q = old_q.clone()
                         rigid = old_rigid.clone()
                         armijo *= 0.5
+                        if n_ls == num_linesearch - 1 and verbose:
+                            print('c={}, n={}, gn={}, ls={} | :( ll={:0.2f}, oll-ll={:0.2f} | q={}'
+                                  .format(c, n_x, n_gn, n_ls, ll, old_ll - ll, round(q, 4).tolist()))
             # Assign
-            self._x[c][n].rigid_q = q
-            self._x[c][n].po.rigid = rigid
+            self._x[c][n_x].rigid_q = q
+            self._x[c][n_x].po.rigid = rigid
 
         return
 
@@ -1160,7 +1154,7 @@ class Model:
 
         if verbose:  # Show registration result
             show_slices(torch.stack((dat_x, dat_yx, dat_x - dat_yx), 3),
-                        fig_num=666, colorbar=False)
+                        fig_num=666, colorbar=False, flip=False)
 
         # Double and mask
         msk = torch.isfinite(dat_yx)
