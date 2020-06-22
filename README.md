@@ -15,7 +15,7 @@ The model additionally supports multiple repeats of the same MR sequence.
 
 The implementation is written in PyTorch and should therefore run fast on the GPU. It is possible to run it also on the CPU, but GPU is strongly encouraged..
 
-## Example
+## A simple example
 
 The nitorch package is required to fit the model; simply follow the quickstart guide on its GitHub page. Once the nitroch environment has been activated, simply do:
 ```
