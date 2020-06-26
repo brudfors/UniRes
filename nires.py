@@ -103,7 +103,7 @@ class Settings:
     profile_ip: int = 0  # In-plane slice profile (0=rect|1=tri|2=gauss)
     profile_tp: int = 0  # Through-plane slice profile (0=rect|1=tri|2=gauss)
     reg_ix_fix: int = 0  # Index of fixed image in initial co-reg (if zero, pick image with largest FOV)
-    reg_scl: float = 10.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
+    reg_scl: float = 20.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
     rho: float = None  # ADMM step-size, if None -> estimate is made
     rho_scl: float = 1e-1  # Scaling of ADMM step-size
     show_hyperpar: bool = False  # Use matplotlib to visualise hyper-parameter estimates
