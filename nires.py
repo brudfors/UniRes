@@ -87,15 +87,15 @@ class Settings:
 
     """
     alpha: float = 1.0  # Relaxation parameter 0 < alpha < 2, alpha < 1: under-relaxation, alpha > 1: over-relaxation
-    cgs_max_iter: int = 10  # Max conjugate gradient (CG) iterations for solving for y
+    cgs_max_iter: int = 4  # Max conjugate gradient (CG) iterations for solving for y
     cgs_tol: float = 0  # CG tolerance for solving for y
     cgs_verbose: bool = False  # CG verbosity (0, 1)
-    device: str = None  # PyTorch device name
+    device: str = 'cuda'  # PyTorch device name
     gr_diff: str = 'forward'  # Gradient difference operator (forward|backward|central)
     dir_out: str = None  # Directory to write output, if None uses same as input (output is prefixed 'y_')
     gap: float = 0.0  # Slice gap, between 0 and 1
     has_ct: bool = True  # Data could be CT (but data must contain negative values)
-    max_iter: int = 512  # Max algorithm iterations
+    max_iter: int = 100  # Max algorithm iterations
     mod_prct: float = 0.0  # Amount to crop mean space, between 0 and 1 (faster, but could loss out on data)
     prefix: str = 'y_'  # Prefix for reconstructed image(s)
     print_info: int = 1  # Print progress to terminal (0, 1, 2)
@@ -103,12 +103,12 @@ class Settings:
     profile_ip: int = 0  # In-plane slice profile (0=rect|1=tri|2=gauss)
     profile_tp: int = 0  # Through-plane slice profile (0=rect|1=tri|2=gauss)
     reg_ix_fix: int = 0  # Index of fixed image in initial co-reg (if zero, pick image with largest FOV)
-    reg_scl: float = 20.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
-    rho: float = None  # ADMM step-size, if None -> estimate is made
+    reg_scl: float = 5.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
+    rho: float = 1.7  # ADMM step-size, if None -> estimate is made
     rho_scl: float = 1e-1  # Scaling of ADMM step-size
     show_hyperpar: bool = False  # Use matplotlib to visualise hyper-parameter estimates
     show_jtv: bool = False  # Show the joint total variation (JTV)
-    tolerance: float = 1e-4  # Algorithm tolerance, if zero, run to max_iter
+    tolerance: float = 0  # Algorithm tolerance, if zero, run to max_iter
     unified_rigid: bool = False  # Do unified rigid registration
     vx: float = 1.0  # Reconstruction voxel size (if None, set automatically)
     write_jtv: bool = False  # Write JTV to nifti
