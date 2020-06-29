@@ -362,11 +362,11 @@ class Model:
                 _ = self._print_info('int', c)  # PRINT
             _ = self._print_info('fit-done', t0)  # PRINT
 
-            if unified_rigid:
+            if unified_rigid and n_iter > 0 and n_iter % 10 == 0:
                 # UPDATE: rigid_q
                 t0 = self._print_info('fit-update', 'rigid', n_iter)  # PRINT
                 # Do update
-                self._update_rigid(mean_correct=False, max_niter_gn=1, num_linesearch=6, verbose=1)
+                self._update_rigid(mean_correct=True, max_niter_gn=3, num_linesearch=6, verbose=0)
                 _ = self._print_info('fit-done', t0)  # PRINT
                 # # Compute model objective function
                 # if self.sett.tolerance > 0:
