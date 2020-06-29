@@ -512,34 +512,6 @@ class Model:
             for n in range(num_x):
                 # Get data
                 dat = x[c][n].dat
-
-                # # Reslice to 1 mm isotropic
-                # mat_x = x[c][n].mat
-                # dim_x = torch.tensor(x[c][n].dim, device=dat.device, dtype=torch.float64)
-                # vx_x = voxsize(mat_x)
-                # vx1 = torch.tensor(3 * (1,), device=dat.device, dtype=torch.float64)
-                # D = torch.cat((vx1/vx_x, torch.ones(1, device=dat.device, dtype=torch.float64))).diag()
-                # mat1 = torch.matmul(mat_x, D)
-                # dim1 = torch.matmul(D.inverse()[:3, :3], dim_x.reshape((3, 1))).floor().squeeze()
-                # dim1 = dim1.int().tolist()
-                # # Make output grid
-                # mat = mat1.solve(mat_x)[0]  # mat_x\mat1
-                # grid = affine(dim1, mat, device=dat.device)
-                # # Get image data
-                # dat = dat[None, None, ...]
-                # # Do interpolation
-                # mn = torch.min(dat)
-                # mx = torch.max(dat)
-                # dat = grid_pull(dat, grid, bound='zero', extrapolate=False, interpolation=4)
-                # dat[dat < mn] = mn
-                # dat[dat > mx] = mx
-                # dat = dat[0, 0, ...]
-
-                # Set options for spm.noise_estimate
-                mu_noise = None
-                num_class = 2
-                max_iter = 10000
-                ff_ct_sd = 1.0
                 if x[c][n].ct:
                     # Get mean intensity of CT foreground
                     mu_fg = torch.mean(dat[(dat >= -980) & (dat <= 3071)])
