@@ -305,8 +305,7 @@ class Model:
 
                 # Invert y = lhs\tmp by conjugate gradients
                 lhs = lambda y: self._proj('AtA', y, c, vx_y=vx_y, bound__DtD=bound_grad, gr_diff=gr_diff)
-                self._y[c].dat = cg(A=lhs,
-                                    b=tmp, x=self._y[c].dat,
+                self._y[c].dat = cg(A=lhs, b=tmp, x=self._y[c].dat,
                                     verbose=self.sett.cgs_verbose,
                                     max_iter=self.sett.cgs_max_iter,
                                     tolerance=self.sett.cgs_tol)
