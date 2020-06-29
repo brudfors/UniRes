@@ -542,16 +542,15 @@ class Model:
                 ff_ct_sd = 1.0
                 if x[c][n].ct:
                     # Get mean intensity of CT foreground
-                    mu_fg = torch.mean(dat[(dat >= -100) & (dat <= 3071)])
+                    mu_fg = torch.mean(dat[(dat >= -980) & (dat <= 3071)])
                     # Get CT noise statistics
                     mu_bg = torch.mean(dat[(dat >= -1023) & (dat < -980)])
                     sd_bg = torch.std(dat[(dat >= -1023) & (dat < -980)])
-                    sd_bg = ff_ct_sd*sd_bg
                 else:
                     # Get noise and foreground statistics
                     sd_bg, sd_fg, mu_bg, mu_fg = noise_estimate(dat,
-                        num_class=num_class, show_fit=show_hyperpar, fig_num=100 + cnt,
-                        mu_noise=mu_noise, max_iter=max_iter)
+                        num_class=2, show_fit=show_hyperpar, fig_num=100 + cnt)
+                # Set values
                 x[c][n].sd = sd_bg.float()
                 x[c][n].tau = 1/sd_bg.float()**2
                 x[c][n].mu = torch.abs(mu_fg.float() - mu_bg.float())
@@ -664,6 +663,13 @@ class Model:
 
         # Assign output
         y = []
+        # CT lambda fudge factor
+        if N == 1:
+            # A single CT image
+            ff_ct = 4.0
+        else:
+            # CT and other modalities
+            ff_ct = 30.0
         for c in range(C):
             y.append(Output())
             # Regularisation (lambda) for channel c
@@ -673,6 +679,9 @@ class Model:
                 mu_c[n] = self._x[c][n].mu
             y[c].lam0 = 1/torch.mean(mu_c)
             y[c].lam = 1/torch.mean(mu_c)  # To facilitate rescaling
+            if self._x[c][0].ct:
+                y[c].lam0 *= ff_ct
+                y[c].lam *= ff_ct
             # Output image(s) dimension and orientation matrix
             y[c].dim = dim
             y[c].mat = mat.double().to(device)
