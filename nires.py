@@ -681,12 +681,12 @@ class Model:
                     self._x[c][n].armijo = torch.tensor(1.0, device=device, dtype=torch.float64)
                     # self._x[c][n].mat = mat.solve(R[c][n])  # TODO: Apply rigid transformation
 
-    def _init_y(self, interpolation=4):
+    def _init_y(self, interpolation=1):
         """ Make initial guesses of reconstucted image(s) using b-spline interpolation,
             with averaging if more than one observation per channel.
 
         Args:
-            interpolation (int, optional): Interpolation order, defaults to 4.
+            interpolation (int, optional): Interpolation order, defaults to 1.
 
         """
         C = len(self._x)
