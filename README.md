@@ -21,7 +21,7 @@ The `nitorch` package is required to fit the model; simply follow the quickstart
 ```
 (nitorch):/nires$ python fit image1.nii image2.nii image3.nii ... --vx 1.0
 ```
-The 1 mm isotropic images are written to the same folder as the input images, prefixed `y`.
+The 1 mm isotropic images are written to the same folder as the input images, prefixed `y_`.
 
 ## Further customisation
 
