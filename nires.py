@@ -375,6 +375,9 @@ class Model:
                 # gain = get_gain(nll_yx[:cnt_nll], monotonicity='decreasing')
                 # t_iter = self._print_info('fit-ll', 'q', n_iter, nll_yx[n_iter], gain, t_iter)  # PRINT
 
+        if unified_rigid and self.sett.print_info >= 1:
+            _ = self._print_info('reg-param', t0)  # PRINT
+
         # Process reconstruction results
         y, mat, pth_y = self._write_data(jtv=tmp)
 
@@ -733,6 +736,11 @@ class Model:
                                                    argv[0], argv[1], argv[2], argv[3], argv[4]))
             elif info in 'step_size':
                 print('\nADMM step-size={:0.4f}'.format(argv[0]))
+            elif info in 'reg-param':
+                print('Rigid registration fit:')
+                for c in range(len(self._x)):
+                    for n in range(len(self._x[c])):
+                        print('c={} n={} | q={}'.format(c, n, round(self._x[c][n].rigid_q, 4).cpu().tolist()))
             elif info == 'hyper_par':
                 if len(argv) == 2:
                     print('completed in {:0.5f} seconds:'.format(timer() - argv[1]))
