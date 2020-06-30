@@ -21,7 +21,7 @@ import math
 import nibabel as nib
 from nitorch.kernels import smooth
 from nitorch.spatial import grid_pull, grid_push, voxsize, im_gradient, im_divergence, grid_grad
-from nitorch.spm import affine, mean_space, noise_estimate, affine_basis, dexpm, identity
+from nitorch.spm import affine, mean_space, noise_estimate, affine_basis, dexpm, identity, estimate_fwhm
 from nitorch.optim import cg, get_gain, plot_convergence
 from nitorch.utils import show_slices, round
 import os
@@ -103,9 +103,9 @@ class Settings:
     profile_ip: int = 0  # In-plane slice profile (0=rect|1=tri|2=gauss)
     profile_tp: int = 0  # Through-plane slice profile (0=rect|1=tri|2=gauss)
     reg_ix_fix: int = 0  # Index of fixed image in initial co-reg (if zero, pick image with largest FOV)
-    reg_scl: float = 5.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
+    reg_scl: float = 10.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
     rho: float = 1.7  # ADMM step-size, if None -> estimate is made
-    rho_scl: float = 1e-1  # Scaling of ADMM step-size
+    rho_scl: float = 1.0  # Scaling of ADMM step-size
     show_hyperpar: bool = False  # Use matplotlib to visualise hyper-parameter estimates
     show_jtv: bool = False  # Show the joint total variation (JTV)
     tolerance: float = 0  # Algorithm tolerance, if zero, run to max_iter
@@ -270,8 +270,7 @@ class Model:
         # Start iterating:
         # Updates y, z, w in alternating fashion, until a convergence threshold is met
         # on the model negative log-likelihood.
-        nll = torch.zeros(2*self.sett.max_iter, dtype=dtype, device=device)
-        cnt_nll = 0
+        obj = torch.zeros(self.sett.max_iter, 3, dtype=dtype, device=device)
         jtv = None
         tmp = torch.zeros_like(self._y[0].dat)  # for holding rhs in y-update, and jtv in u-update
         t_iter = timer() if self.sett.print_info else 0
@@ -341,13 +340,13 @@ class Model:
 
             # Compute model objective function
             if self.sett.tolerance > 0:
-                nll[cnt_nll] = self._compute_nll(vx_y=vx_y, bound=bound_grad, gr_diff=gr_diff)
-                cnt_nll += 1
+                obj[n_iter, 0], obj[n_iter, 1], obj[n_iter, 2]\
+                    = self._compute_nll(vx_y=vx_y, bound=bound_grad, gr_diff=gr_diff)
             if self.sett.plot_conv:  # Plot algorithm convergence
-                fig_ax_nll = plot_convergence(vals=nll[:cnt_nll], fig_ax=fig_ax_nll, fig_num=99)
-            gain = get_gain(nll[:cnt_nll], monotonicity='decreasing')
-            t_iter = self._print_info('fit-ll', 'y', n_iter, nll[n_iter], gain, t_iter)  # PRINT
-            if n_iter > 1 and ((gain < self.sett.tolerance) or (n_iter >= (self.sett.max_iter - 1))):
+                fig_ax_nll = plot_convergence(vals=obj[:n_iter + 1, :], fig_ax=fig_ax_nll, fig_num=99)
+            gain = get_gain(obj[:n_iter + 1, 0], monotonicity='decreasing')
+            t_iter = self._print_info('fit-ll', 'y', n_iter, obj[n_iter, :], gain, t_iter)  # PRINT
+            if n_iter > 1 and ((torch.abs(gain) < self.sett.tolerance) or (n_iter >= (self.sett.max_iter - 1))):
                 _ = self._print_info('fit-finish', t00, n_iter)  # PRINT
                 break  # Finished
 
@@ -369,12 +368,12 @@ class Model:
                 _ = self._print_info('fit-done', t0)  # PRINT
                 # # Compute model objective function
                 # if self.sett.tolerance > 0:
-                #     nll[cnt_nll] = self._compute_nll(vx_y=vx_y, bound=bound_grad, gr_diff=gr_diff)
+                #     nll_yx[cnt_nll] = self._compute_nll(vx_y=vx_y, bound=bound_grad, gr_diff=gr_diff)
                 #     cnt_nll += 1
                 # if self.sett.plot_conv:  # Plot algorithm convergence
-                #     fig_ax_nll = plot_convergence(vals=nll[:cnt_nll], fig_ax=fig_ax_nll, fig_num=99)
-                # gain = get_gain(nll[:cnt_nll], monotonicity='decreasing')
-                # t_iter = self._print_info('fit-ll', 'q', n_iter, nll[n_iter], gain, t_iter)  # PRINT
+                #     fig_ax_nll = plot_convergence(vals=nll_yx[:cnt_nll], fig_ax=fig_ax_nll, fig_num=99)
+                # gain = get_gain(nll_yx[:cnt_nll], monotonicity='decreasing')
+                # t_iter = self._print_info('fit-ll', 'q', n_iter, nll_yx[n_iter], gain, t_iter)  # PRINT
 
         # Process reconstruction results
         y, mat, pth_y = self._write_data(jtv=tmp)
@@ -440,7 +439,9 @@ class Model:
             gr_diff (str, optional): Gradient difference operator, defaults to 'forward'.
 
         Returns:
-            nll (torch.tensor()): Negative log-likelihood.
+            nll_yx (torch.tensor()): Negative log-posterior
+            nll_xy (torch.tensor()): Negative log-likelihood.
+            nll_y (torch.tensor()): Negative log-prior.
 
         """
         device = self.sett.device
@@ -465,7 +466,7 @@ class Model:
 
         nll_y = torch.sum(torch.sqrt(nll_y), dtype=sum_dtype)
 
-        return nll_xy + nll_y
+        return nll_xy + nll_y, nll_xy, nll_y
 
     def _DtD(self, dat, vx_y, bound='constant', gr_diff='forward'):
         """ Computes the divergence of the gradient.
@@ -512,11 +513,10 @@ class Model:
                 # Get data
                 dat = x[c][n].dat
                 if x[c][n].ct:
-                    # Get mean intensity of CT foreground
-                    mu_fg = torch.mean(dat[(dat >= -980) & (dat <= 3071)])
-                    # Get CT noise statistics
-                    mu_bg = torch.mean(dat[(dat >= -1023) & (dat < -980)])
-                    sd_bg = torch.std(dat[(dat >= -1023) & (dat < -980)])
+                    # Estimate noise sd from estimate of FWHM
+                    sd_bg = estimate_fwhm(dat, voxsize(x[c][n].mat), mn=20, mx=50)[1]
+                    mu_bg = torch.tensor(0.0, device=dat.device, dtype=dat.dtype)
+                    mu_fg = torch.tensor(2000.0, device=dat.device, dtype=dat.dtype)
                 else:
                     # Get noise and foreground statistics
                     sd_bg, sd_fg, mu_bg, mu_fg = noise_estimate(dat,
@@ -632,15 +632,14 @@ class Model:
         dim = tuple(dim.int().tolist())
         _ = self._print_info('mean-space', dim, mat)
 
+        # CT lambda fudge factor
+        ff_ct = 1.0  # Just a CT (no fudge needed)
+        if N > 1:
+            # CT and MRIs
+            ff_ct = 15.0
+
         # Assign output
         y = []
-        # CT lambda fudge factor
-        if N == 1:
-            # A single CT image
-            ff_ct = 4.0
-        else:
-            # CT and other modalities
-            ff_ct = 30.0
         for c in range(C):
             y.append(Output())
             # Regularisation (lambda) for channel c
@@ -726,8 +725,8 @@ class Model:
                 print(' {} finished in {:0.5f} seconds and '
                       '{} iterations\n'.format(self._method, timer() - argv[0], argv[1] + 1))
             elif info in 'fit-ll':
-                print('{:3} - Convergence ({} | {:0.1f} s)  | nll={:0.4f}, '
-                      'gain={:0.7f}'.format(argv[1] + 1, argv[0], timer() - argv[4], argv[2], argv[3]))
+                print('{:3} - Convergence ({} | {:0.1f} s)  | nlyx={:0.4f}, nlxy={:0.4f}, nly={:0.4f} '
+                      'gain={:0.7f}'.format(argv[1] + 1, argv[0], timer() - argv[4], argv[2][0], argv[2][1], argv[2][2], argv[3]))
             elif info == 'fit-start':
                 print('\nStarting {} \n{} | C={} | N={} | device={} | '
                       'max_iter={} | tol={}'.format(self._method, datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
