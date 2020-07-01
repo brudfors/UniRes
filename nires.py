@@ -50,7 +50,7 @@ class Input:
     direc = None
     nam = None
     rigid_q = None
-
+    scl = None
 
 @dataclass
 class Output:
@@ -79,7 +79,8 @@ class ProjOp:
     ratio = None
     smo_ker = None
     rigid = None
-
+    scl = None
+    dim_thick = None
 
 @dataclass
 class Settings:
@@ -106,6 +107,7 @@ class Settings:
     reg_scl: float = 10.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
     rho: float = 1.7  # ADMM step-size, if None -> estimate is made
     rho_scl: float = 1.0  # Scaling of ADMM step-size
+    scaling: bool = False  # Optimise even/odd slice scaling
     show_hyperpar: bool = False  # Use matplotlib to visualise hyper-parameter estimates
     show_jtv: bool = False  # Show the joint total variation (JTV)
     tolerance: float = 0  # Algorithm tolerance, if zero, run to max_iter
@@ -194,6 +196,14 @@ class Model:
         # self._y[c].dim
         # self._y[c].mat
 
+        # Initialise even/odd scaling parameter
+        if self._method == 'denoising':
+            self.sett.scaling = False
+        for c in range(len(self._x)):
+            num_x = len(self._x[c])
+            for n in range(num_x):
+                self._x[c][n].scl = 0.0
+
         # Define projection matrices
         self._proj_info_add()
         # Defines:
@@ -210,8 +220,11 @@ class Model:
         # self._x[c][n].po.smo_ker
         # self._x[c][n].po.ratio
         # self._x[c][n].po.rigid
+        # self._x[c][n].po.scl
+        # self._x[c][n].po.dim_thick
 
-        if False:  # Check adjointness of A and At operators
+        if False:
+            # Check adjointness of A and At operators
             self.check_adjoint(po=self._x[0][0].po, method=self._method, dtype=torch.float64)
 
     # Class methods
@@ -234,6 +247,7 @@ class Model:
         device = self.sett.device
         dtype = torch.float32
         unified_rigid = self.sett.unified_rigid
+        scaling = self.sett.scaling
         gr_diff = self.sett.gr_diff
         # Parameters
         C = len(self._y)  # Number of channels
@@ -270,7 +284,8 @@ class Model:
         # Start iterating:
         # Updates y, z, w in alternating fashion, until a convergence threshold is met
         # on the model negative log-likelihood.
-        obj = torch.zeros(self.sett.max_iter, 3, dtype=dtype, device=device)
+        obj = torch.zeros(3*self.sett.max_iter, 3, dtype=dtype, device=device)
+        cnt_obj = 0
         jtv = None
         tmp = torch.zeros_like(self._y[0].dat)  # for holding rhs in y-update, and jtv in u-update
         t_iter = timer() if self.sett.print_info else 0
@@ -287,7 +302,9 @@ class Model:
                 # Update ADMM step-size
                 self._rho = self._step_size(verbose=False)
 
+            # ----------
             # UPDATE: y
+            # ----------
             t0 = self._print_info('fit-update', 'y', n_iter)  # PRINT
             for c in range(C):  # Loop over channels
                 # RHS
@@ -313,7 +330,9 @@ class Model:
 
             _ = self._print_info('fit-done', t0)  # PRINT
 
+            # ----------
             # UPDATE: z
+            # ----------
             if alpha != 1:  # Use over/under-relaxation
                 z_old = z.clone()
             t0 = self._print_info('fit-update', 'z', n_iter)  # PRINT
@@ -340,17 +359,20 @@ class Model:
 
             # Compute model objective function
             if self.sett.tolerance > 0:
-                obj[n_iter, 0], obj[n_iter, 1], obj[n_iter, 2]\
+                obj[cnt_obj, 0], obj[cnt_obj, 1], obj[cnt_obj, 2]\
                     = self._compute_nll(vx_y=vx_y, bound=bound_grad, gr_diff=gr_diff)
+                cnt_obj += 1
             if self.sett.plot_conv:  # Plot algorithm convergence
-                fig_ax_nll = plot_convergence(vals=obj[:n_iter + 1, :], fig_ax=fig_ax_nll, fig_num=99)
-            gain = get_gain(obj[:n_iter + 1, 0], monotonicity='decreasing')
-            t_iter = self._print_info('fit-ll', 'y', n_iter, obj[n_iter, :], gain, t_iter)  # PRINT
+                fig_ax_nll = plot_convergence(vals=obj[:cnt_obj, :], fig_ax=fig_ax_nll, fig_num=99)
+            gain = get_gain(obj[:cnt_obj, 0], monotonicity='decreasing')
+            t_iter = self._print_info('fit-ll', 'y', n_iter, obj[cnt_obj - 1, :], gain, t_iter)  # PRINT
             if n_iter > 1 and ((torch.abs(gain) < self.sett.tolerance) or (n_iter >= (self.sett.max_iter - 1))):
                 _ = self._print_info('fit-finish', t00, n_iter)  # PRINT
                 break  # Finished
 
+            # ----------
             # UPDATE: w
+            # ----------
             t0 = self._print_info('fit-update', 'w', n_iter)  # PRINT
             for c in range(C):  # Loop over channels
                 Dy = self._y[c].lam * im_gradient(self._y[c].dat, vx=vx_y, bound=bound_grad, which=gr_diff)
@@ -360,20 +382,41 @@ class Model:
                 _ = self._print_info('int', c)  # PRINT
             _ = self._print_info('fit-done', t0)  # PRINT
 
+            if scaling and n_iter > 0 and n_iter % 10 == 0:
+                # ----------
+                # UPDATE: even/odd scaling
+                # ----------
+                t0 = self._print_info('fit-update', 'scaling', n_iter)  # PRINT
+                # Do update
+                self._update_scaling(max_niter_gn=1, num_linesearch=6, verbose=1)
+                _ = self._print_info('fit-done', t0)  # PRINT
+                # # Compute model objective function
+                # if self.sett.tolerance > 0:
+                #     obj[cnt_obj, 0], obj[cnt_obj, 1], obj[cnt_obj, 2] \
+                #         = self._compute_nll(vx_y=vx_y, bound=bound_grad, gr_diff=gr_diff)
+                #     cnt_obj += 1
+                # if self.sett.plot_conv:  # Plot algorithm convergence
+                #     fig_ax_nll = plot_convergence(vals=obj[:cnt_obj, :], fig_ax=fig_ax_nll, fig_num=99)
+                # gain = get_gain(obj[:cnt_obj, 0], monotonicity='decreasing')
+                # t_iter = self._print_info('fit-ll', 's', n_iter, obj[cnt_obj - 1, :], gain, t_iter)  # PRINT
+
             if unified_rigid and n_iter > 0 and n_iter % 10 == 0:
+                # ----------
                 # UPDATE: rigid_q
+                # ----------
                 t0 = self._print_info('fit-update', 'rigid', n_iter)  # PRINT
                 # Do update
                 self._update_rigid(mean_correct=True, max_niter_gn=3, num_linesearch=6, verbose=0)
                 _ = self._print_info('fit-done', t0)  # PRINT
                 # # Compute model objective function
                 # if self.sett.tolerance > 0:
-                #     nll_yx[cnt_nll] = self._compute_nll(vx_y=vx_y, bound=bound_grad, gr_diff=gr_diff)
-                #     cnt_nll += 1
+                #     obj[cnt_obj, 0], obj[cnt_obj, 1], obj[cnt_obj, 2] \
+                #         = self._compute_nll(vx_y=vx_y, bound=bound_grad, gr_diff=gr_diff)
+                #     cnt_obj += 1
                 # if self.sett.plot_conv:  # Plot algorithm convergence
-                #     fig_ax_nll = plot_convergence(vals=nll_yx[:cnt_nll], fig_ax=fig_ax_nll, fig_num=99)
-                # gain = get_gain(nll_yx[:cnt_nll], monotonicity='decreasing')
-                # t_iter = self._print_info('fit-ll', 'q', n_iter, nll_yx[n_iter], gain, t_iter)  # PRINT
+                #     fig_ax_nll = plot_convergence(vals=obj[:cnt_obj, :], fig_ax=fig_ax_nll, fig_num=99)
+                # gain = get_gain(obj[:cnt_obj, 0], monotonicity='decreasing')
+                # t_iter = self._print_info('fit-ll', 'q', n_iter, obj[cnt_obj - 1, :], gain, t_iter)  # PRINT
 
         if unified_rigid and self.sett.print_info >= 1:
             _ = self._print_info('reg-param', t0)  # PRINT
@@ -456,7 +499,7 @@ class Model:
             num_x = len(self._x[c])
             # Neg. log-likelihood term
             for n in range(num_x):
-                msk = torch.isfinite(self._x[c][n].dat) & (self._x[c][n].dat != 0)
+                msk = self._x[c][n].dat != 0
                 nll_xy += 0.5*self._x[c][n].tau*torch.sum((self._x[c][n].dat[msk] -
                                                            self._proj('A', self._y[c].dat, c, n)[msk])**2,
                                                           dtype=sum_dtype)
@@ -833,10 +876,11 @@ class Model:
             for n in range(num_x):
                 # Get rigid matrix
                 rigid = dexpm(self._x[c][n].rigid_q, rigid_basis)[0]
+                scl = self._x[c][n].scl
                 # Define projection operator
                 po = self.proj_info(dim_y, mat_y, self._x[c][n].dim, self._x[c][n].mat,
                                     prof_ip=prof_ip, prof_tp=prof_tp, gap=gap, device=device,
-                                    rigid=rigid)
+                                    rigid=rigid, scl=scl)
                 # Assign
                 self._x[c][n].po = po
 
@@ -928,6 +972,118 @@ class Model:
         if verbose:
             _ = self._print_info('step_size', rho)  # PRINT
         return rho
+
+    def _update_scaling(self, max_niter_gn=1, num_linesearch=4, verbose=0):
+        """ Updates an even/odd slice scaling parameter using Gauss-Newton
+            optimisation.
+
+        Args:
+            verbose (bool, optional): Verbose for testing, defaults to False.
+
+        """
+        # Parameters
+        device = self.sett.device
+        C = len(self._x)
+
+        def odd_even(dat, which, dim):
+            if dim == 2 and which == 'odd':
+                return dat[:, :, ::2]
+            elif dim == 2 and which == 'even':
+                return dat[:, :, 1::2]
+            elif dim == 1 and which == 'odd':
+                return dat[:, ::2, :]
+            elif dim == 1 and which == 'even':
+                return dat[:, 1::2, :]
+            elif dim == 0 and which == 'odd':
+                return dat[::2, :, :]
+            elif dim == 0 and which == 'even':
+                return dat[1::2, :, :]
+
+        # Update rigid parameters, for all input images (self._x[c][n])
+        for c in range(C):  # Loop over channels
+            num_x = len(self._x[c])
+            for n_x in range(num_x):  # Loop over repeats
+                # Parameters
+                dim_thick = self._x[c][n_x].po.dim_thick
+                tau = self._x[c][n_x].tau
+                # Observed data
+                dat_x = self._x[c][n_x].dat
+                msk = dat_x != 0
+                # Get even/odd data
+                xo = odd_even(dat_x, 'odd', dim_thick)
+                mo = odd_even(msk, 'odd', dim_thick)
+                xo = xo[mo]
+                xe = odd_even(dat_x, 'even', dim_thick)
+                me = odd_even(msk, 'even', dim_thick)
+                xe = xe[me]
+
+                for n_gn in range(max_niter_gn):  # Loop over Gauss-Newton iterations
+                    # Log-likelihood
+                    dat_y = self._proj('A', self._y[c].dat, c, n_x)
+                    old_ll = 0.5*tau*torch.sum((dat_x[msk] - dat_y[msk])**2, dtype=torch.float64)
+
+                    if verbose >= 2:  # Show images
+                        show_slices(torch.stack((dat_x, dat_y, (dat_x - dat_y) ** 2), 3),
+                                    fig_num=666, colorbar=False, flip=False)
+
+                    # Exp of scaling
+                    es = torch.exp(self._x[c][n_x].po.scl).double()
+                    ems = torch.exp(-self._x[c][n_x].po.scl).double()
+
+                    # Get even/odd data
+                    yo = odd_even(dat_y, 'odd', dim_thick)
+                    yo = yo[mo]
+                    ye = odd_even(dat_y, 'even', dim_thick)
+                    ye = ye[me]
+
+                    # Gradient
+                    gr = torch.tensor(0.0, device=device, dtype=torch.float64)
+                    gr += ems * torch.sum(ye * (xe - ye * ems), dtype=torch.float64)
+                    gr -= es * torch.sum(yo * (xo - yo * es), dtype=torch.float64)
+                    gr *= tau
+
+                    # Hessian
+                    Hes = torch.tensor(0.0, device=device, dtype=torch.float64)
+                    Hes += ems**2 * torch.sum(ye**2, dtype=torch.float64) \
+                           + es**2 * torch.sum(yo**2, dtype=torch.float64)
+                    Hes *= tau
+
+                    # Update step
+                    Update = gr/Hes
+                    # print('gr={} Hes={} Update={}'.format(gr, Hes, Update))
+
+                    # Start line-search
+                    old_s = self._x[c][n_x].po.scl.clone()
+                    armijo = torch.tensor(1.0, device=device, dtype=old_s.dtype)
+                    for n_ls in range(num_linesearch):
+                        # Take step
+                        s = old_s - armijo * Update
+
+                        # Compute matching term
+                        self._x[c][n_x].po.scl = s  # Update scaling in projection operator
+                        dat_y = self._proj('A', self._y[c].dat, c, n_x)
+                        ll = 0.5 * tau * torch.sum((dat_x[msk] - dat_y[msk]) ** 2, dtype=torch.float64)
+
+                        if verbose >= 2:  # Show images
+                            show_slices(torch.stack((dat_x, dat_y, (dat_x - dat_y) ** 2), 3),
+                                        fig_num=666, colorbar=False, flip=False)
+
+                        # Matching improved?
+                        if ll < old_ll:
+                            # Better fit!
+                            if verbose >= 1:
+                                print('c={}, n={}, gn={}, ls={} | :) ll={:0.2f}, ll-oll={:0.2f} | s={} armijo={}'
+                                      .format(c, n_x, n_gn, n_ls, ll, ll - old_ll, round(s, 4),
+                                              round(armijo, 4)))
+                            break
+                        else:
+                            # Reset parameters
+                            self._x[c][n_x].po.scl = old_s  # Reset scaling in projection operator
+                            armijo *= 0.5
+                            if verbose >= 1 and n_ls == num_linesearch - 1:
+                                print('c={}, n={}, gn={}, ls={} | :( ll={:0.2f}, ll-oll={:0.2f} | s={} armijo={}'
+                                      .format(c, n_x, n_gn, n_ls, ll, ll - old_ll, round(old_s, 4),
+                                              round(armijo, 4)))
 
     def _update_rigid(self, mean_correct=True, max_niter_gn=1, num_linesearch=4, verbose=0):
         """ Updates each input image's specific registration parameters:
@@ -1161,6 +1317,8 @@ class Model:
         dim_yx = po.dim_yx
         ratio = po.ratio
         smo_ker = po.smo_ker
+        dim_thick = po.dim_thick
+        scl = po.scl
         # Image data
         dat_y = self._y[c].dat[None, None, ...]
         dat_x = self._x[c][n].dat
@@ -1188,11 +1346,12 @@ class Model:
         dat_yx = grid_pull(dat_y, grid, bound=bound, extrapolate=extrapolate)[0, 0, ...]
         if method == 'super-resolution':
             dat_yx = F.conv3d(dat_yx[None, None, ...], smo_ker, stride=ratio)[0, 0, ...]
+            dat_yx = self.apply_scaling(dat_yx, scl, dim_thick)
         if requires_grad:
             gr = grid_grad(dat_y, grid, bound=bound, extrapolate=extrapolate)[0, 0, ...]
 
-        if verbose >= 2:  # Show registration result
-            show_slices(torch.stack((dat_x, dat_yx, dat_x - dat_yx), 3),
+        if verbose >= 2:  # Show images
+            show_slices(torch.stack((dat_x, dat_yx, (dat_x - dat_yx)**2), 3),
                         fig_num=666, colorbar=False, flip=False)
 
         # Double and mask
@@ -1281,6 +1440,23 @@ class Model:
 
     # Static methods
     @staticmethod
+    def apply_scaling(dat, scl, dim):
+        """ Apply even/odd slice scaling.
+
+        """
+        dat_out = torch.zeros_like(dat)
+        if dim == 2:
+            dat_out[..., :, :, ::2] = torch.exp(scl)*dat[..., :, :, ::2]
+            dat_out[..., :, :, 1::2] = torch.exp(-scl)*dat[..., :, :, 1::2]
+        elif dim == 1:
+            dat_out[..., :, ::2, :] = torch.exp(scl)*dat[..., :, ::2, :]
+            dat_out[..., :, 1::2, :] = torch.exp(-scl)*at[..., :, 1::2, :]
+        else:
+            dat_out[..., ::2, :, :] = torch.exp(scl)*dat[..., ::2, :, :]
+            dat_out[..., 1::2, :, :] = torch.exp(-scl)*dat[..., 1::2, :, :]
+        return dat_out
+
+    @staticmethod
     def check_adjoint(po, method, dtype=torch.float32):
         """ Print adjointness of A and At operators:
             <Ay, x> - <Atx, y> \approx 0
@@ -1298,6 +1474,7 @@ class Model:
         x = torch.rand((1, 1, ) + dim_x, dtype=dtype, device=device)
         y = torch.rand((1, 1, ) + dim_y, dtype=dtype, device=device)
         po.smo_ker = po.smo_ker.type(dtype)
+        po.scl = po.scl.type(dtype)
         # Apply A and At operators
         Ay = Model.proj_apply('A', method, y, po)
         Atx = Model.proj_apply('At', method, x, po)
@@ -1326,7 +1503,7 @@ class Model:
             bound (str, optional): Bound for nitorch push/pull, defaults to 'zero'.
 
         Returns:
-            dat (torch.tensor()): Projected image data (1, 1, X_out, Y_out, Z_out).
+            dat_out (torch.tensor()): Projected image data (1, 1, X_out, Y_out, Z_out).
 
         """
         # Sanity check
@@ -1350,6 +1527,8 @@ class Model:
         dim_yx = po.dim_yx
         ratio = po.ratio
         smo_ker = po.smo_ker
+        scl = po.scl
+        dim_thick = po.dim_thick
         if method == 'super-resolution':
             dim = dim_yx
             mat = rigid.mm(mat_yx).solve(mat_y)[0]  # mat_yx\rigid*mat_yx
@@ -1362,30 +1541,33 @@ class Model:
         if method == 'super-resolution':
             extrapolate = True
             if operator == 'A':
-                dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate)
-                dat = F.conv3d(dat, smo_ker, stride=ratio)
+                dat_out = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate)
+                dat_out = F.conv3d(dat_out, smo_ker, stride=ratio)
+                dat_out = Model.apply_scaling(dat_out, scl, dim_thick)
             elif operator == 'At':
-                dat = F.conv_transpose3d(dat, smo_ker, stride=ratio)
-                dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate)
+                dat_out = Model.apply_scaling(dat, scl, dim_thick)
+                dat_out = F.conv_transpose3d(dat_out, smo_ker, stride=ratio)
+                dat_out = grid_push(dat_out, grid, shape=dim_y, bound=bound, extrapolate=extrapolate)
             elif operator == 'AtA':
-                dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate)
-                dat = F.conv3d(dat, smo_ker, stride=ratio)
-                dat = F.conv_transpose3d(dat, smo_ker, stride=ratio)
-                dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate)
+                dat_out = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate)
+                dat_out = F.conv3d(dat_out, smo_ker, stride=ratio)
+                dat_out = Model.apply_scaling(dat_out, 2*scl, dim_thick)
+                dat_out = F.conv_transpose3d(dat_out, smo_ker, stride=ratio)
+                dat_out = grid_push(dat_out, grid, shape=dim_y, bound=bound, extrapolate=extrapolate)
         elif method == 'denoising':
             extrapolate = False
             if operator == 'A':
-                dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate)
+                dat_out = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate)
             elif operator == 'At':
-                dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate)
+                dat_out = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate)
             elif operator == 'AtA':
-                dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate)
-                dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate)
-        return dat
+                dat_out = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate)
+                dat_out = grid_push(dat_out, grid, shape=dim_y, bound=bound, extrapolate=extrapolate)
+        return dat_out
 
     @staticmethod
     def proj_info(dim_y, mat_y, dim_x, mat_x, rigid=None,
-                  prof_ip=0, prof_tp=0, gap=0.0, device='cpu'):
+                  prof_ip=0, prof_tp=0, gap=0.0, device='cpu', scl=0.0):
         """ Define projection operator object, to be used with proj_apply.
 
         Args:
@@ -1398,6 +1580,7 @@ class Model:
             prof_tp (int, optional): Through-plane slice profile (0=rect|1=tri|2=gauss), defaults to 0.
             gap (float, optional): Slice-gap between 0 and 1, defaults to 0.
             device (torch.device, optional): Device. Defaults to 'cpu'.
+            scl (float, optional): Odd/even slice scaling, defaults to 0.
 
         Returns:
             po (ProjOp()): Projection operator object.
@@ -1423,9 +1606,10 @@ class Model:
         # Slice-profile
         gap_cn = torch.zeros(3, device=device, dtype=dtype)
         profile_cn = torch.tensor((prof_ip,) * 3, device=device, dtype=dtype)
-        ix_thick = torch.max(po.vx_x, dim=0)[1]
-        gap_cn[ix_thick] = gap
-        profile_cn[ix_thick] = prof_tp
+        dim_thick = torch.max(po.vx_x, dim=0)[1]
+        gap_cn[dim_thick] = gap
+        profile_cn[dim_thick] = prof_tp
+        po.dim_thick = dim_thick
         # Intermediate
         ratio = torch.solve(po.mat_x, po.mat_y)[0]  # mat_y\mat_x
         ratio = (ratio[:3, :3] ** 2).sum(0).sqrt()
@@ -1447,6 +1631,8 @@ class Model:
         mat_off[:3, -1] = off
         po.dim_yx = po.dim_yx + 2 * torch.abs(off)
         po.mat_yx = torch.matmul(po.mat_yx, mat_off)
+        # Odd/even slice scaling
+        po.scl = torch.tensor(scl, dtype=torch.float32, device=device)
         # To tuple of ints
         po.dim_yx = tuple(po.dim_yx.int().tolist())
         po.dim_x = tuple(po.dim_x.int().tolist())
