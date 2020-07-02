@@ -18,7 +18,7 @@ g_s = simplify(g_s, 1000)
 
 % Hessian
 H_s = diff(g_s, s);
-% Expectation of the Hessian
+% Expectation of the Hessian (Fisher scoring)
 HH_s = simplify(subs(H_s, xo, exp(s)*yo), 1000);
 HH_s = simplify(subs(HH_s, xe, exp(-s)*ye), 1000)
 % >> t*exp(-2*s)*(exp(4*s)*yo^2 + ye^2)
