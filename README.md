@@ -1,25 +1,16 @@
-# nires: Neuroimaging super-resolution with PyTorch
+# UnRes: Unified Super-Resolution of Neuroimaging Data in PyTorch
 
-A model for super-resolving neuroimaging data on the GPU (MRI and CT). The archetype use-case is when having multiple scans of the same subject (e.g., T1w, T2w and FLAIR MRIs) and an analysis requires these scans to be represented on the same grid (i.e., having the same image size, affine matrix and voxel size). By default, the model reconstructs 1 mm isotropic images with a field-of-view that contains all input scans; however, this voxel size can be customised with the possibility of sub-millimetric reconstuctions. The code is based on the algorithm described in the papers:
+This repository implements a unified model for super-resolving neuroimaging data (MRI and CT scans), which combines: super-resolution with a multi-channel denoising prior, rigid registration and correction of cross-talk. The archetype use-case is when having multiple scans of the same subject (e.g., T1w, T2w and FLAIR MRIs) and an analysis requires these scans to be represented on the same grid (i.e., having the same image size, affine matrix and voxel size):
 
-     Brudfors M, Balbastre Y, Nachev P, Ashburner J.
-     A Tool for Super-Resolving Multimodal Clinical MRI.
-     2019 arXiv preprint arXiv:1909.01140.     
-     
-     Brudfors M, Balbastre Y, Nachev P, Ashburner J.
-     MRI Super-Resolution Using Multi-channel Total Variation.
-     In Annual Conference on Medical Image Understanding and Analysis
-     2018 Jul 9 (pp. 217-228). Springer, Cham.   
-     
-The model additionally supports multiple repeats of the same MR sequence.
+<img style="float: right;" src="https://github.com/WCHN/unres/blob/master/demo.png" width="60%" height="60%"> 
+ 
+By default, the model reconstructs 1 mm isotropic images with a field-of-view that contains all input scans; however, this voxel size can be customised with the possibility of sub-millimetric reconstuctions. The model additionally supports multiple repeats of each MR sequence. The implementation is written in PyTorch and should therefore run fast on the GPU. It is possible to run it also on the CPU, but GPU is strongly encouraged..
 
-The implementation is written in PyTorch and should therefore run fast on the GPU. It is possible to run it also on the CPU, but GPU is strongly encouraged..
-
-## A simple example
+## Basic use-case
 
 The `nitorch` package is required to fit the model; simply follow the quickstart guide on its GitHub page. Once the `nitroch` environment has been activated, simply do:
 ```
-(nitorch):/nires$ python fit image1.nii image2.nii image3.nii ... --vx 1.0
+(nitorch):/unres python fit image1.nii image2.nii image3.nii ... --vx 1.0
 ```
 The 1 mm isotropic images are written to the same folder as the input images, prefixed `y_`.
 
@@ -28,8 +19,8 @@ The 1 mm isotropic images are written to the same folder as the input images, pr
 The algorithm estimates the necessary parameters from the input data, so it should, hopefully, work well out-the-box. However, a user might want to change some of the defaults, like slice-profile, slice-gap, or scale the regularisation a bit. Furthermore, instead of giving, e.g., nifti files via the command line tool (`fit.py`) it might be more desirable to interact with the nires code directly (maybe as part of some pipeline), working with the image data as `torch.tensor`. The following code snippet shows an example of how to do this:
 ```
 import nibabel as nib
-from nires import Model
-from nires import Settings
+from unres import Model
+from unres import Settings
 
 # Algorithm settings
 s = Settings()
@@ -60,7 +51,19 @@ for c in range(len(p)):
 model = Model(data, s)
 
 # Fit superres model
-y, mat, p_y = model.fit()
-# Outputs are: reconstructed data (y), output affine (mat), paths to reconstructions (p_y)
+y, mat, p_y, R = model.fit()
+# Outputs are: reconstructed data (y), output affine (mat), 
+paths to reconstructions (p_y) and rigid transformation matrices (R).
 ```
-More details of algorithm settings can be found in the declaration of the dataclass `Settings()` in `nires.py`.
+More details of algorithm settings can be found in the declaration of the dataclass `Settings()` in `unres.py`.
+
+## References
+
+1. Brudfors M, Balbastre Y, Nachev P, Ashburner J.
+   A Tool for Super-Resolving Multimodal Clinical MRI.
+   2019 arXiv preprint arXiv:1909.01140. 
+
+2. Brudfors M, Balbastre Y, Nachev P, Ashburner J.
+   MRI Super-Resolution Using Multi-channel Total Variation.
+   In Annual Conference on Medical Image Understanding and Analysis
+   2018 Jul 9 (pp. 217-228). Springer, Cham.   

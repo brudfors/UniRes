@@ -1,5 +1,5 @@
 """
-Script to process MRI or CT scans with nires.
+Script to process MRI or CT scans with UnRes.
 
 Example usage:
     python fit.py T1.nii T2.nii Flair.nii
@@ -12,8 +12,8 @@ Default settings should work well.
 
 
 from argparse import ArgumentParser
-from nires import Model
-from nires import Settings
+from unres import Model
+from unres import Settings
 import sys
 import torch
 
