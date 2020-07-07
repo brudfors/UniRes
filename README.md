@@ -10,9 +10,9 @@ By default, the model reconstructs 1 mm isotropic images with a field-of-view th
 
 The `nitorch` package is required to fit the model; simply follow the quickstart guide on its GitHub page. Once the `nitroch` environment has been activated, simply do:
 ```
-(nitorch):/unires python fit_unires image1.nii image2.nii image3.nii ... --vx 1.0
+(nitorch):/unires python fit_unires image1.nii image2.nii image3.nii
 ```
-The 1 mm isotropic images are written to the same folder as the input images, prefixed `y_`.
+The three 1 mm isotropic images are written to the same folder as the input data, prefixed `y_`.
 
 ## Further customisation
 
