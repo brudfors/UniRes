@@ -105,7 +105,7 @@ class Settings:
     profile_ip: int = 0  # In-plane slice profile (0=rect|1=tri|2=gauss)
     profile_tp: int = 0  # Through-plane slice profile (0=rect|1=tri|2=gauss)
     reg_ix_fix: int = 0  # Index of fixed image in initial co-reg (if zero, pick image with largest FOV)
-    reg_scl: float = 20.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
+    reg_scl: float = 10.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
     rho: float = 1.7  # ADMM step-size, if None -> estimate is made
     rho_scl: float = 1.0  # Scaling of ADMM step-size
     rigid_samp: int = 3  # Level of sub-sampling for estimating rigid registration parameters
@@ -392,7 +392,7 @@ class Model:
                 _ = self._print_info('int', c)  # PRINT
             _ = self._print_info('fit-done', t0)  # PRINT
 
-            if scaling and n_iter > 0 and not (n_iter % 2) == 0:
+            if scaling:
                 # ----------
                 # UPDATE: even/odd scaling
                 # ----------
@@ -410,9 +410,9 @@ class Model:
                 # gain = get_gain(obj[:cnt_obj, 0], monotonicity='decreasing')
                 # t_iter = self._print_info('fit-ll', 's', n_iter, obj[cnt_obj - 1, :], gain, t_iter)  # PRINT
 
-            if unified_rigid and n_iter > 0 and (n_iter % 2) == 0:
+            if unified_rigid and (n_iter % 2) == 0:
                 # ----------
-                # UPDATE: rigid_q
+                # UPDATE: rigid_q (every second iteration)
                 # ----------
                 t0 = self._print_info('fit-update', 'rigid', n_iter)  # PRINT
                 # Do update
@@ -698,19 +698,18 @@ class Model:
         else:
             self._method = 'denoising'
 
-
         # Optimise even/odd scaling parameter?
-        if self._method == 'denoising':
+        if self._method == 'denoising' or (N == 1 and self._x[0][0].ct):
             self.sett.scaling = False
 
         dim = tuple(dim.int().tolist())
         _ = self._print_info('mean-space', dim, mat)
 
         # CT lambda fudge factor
-        ff_ct = 1.0  # Just a CT (no fudge needed)
+        ff_ct = 1.0  # Just a single CT (no fudge)
         if N > 1:
             # CT and MRIs
-            ff_ct = 15.0
+            ff_ct = 14.0
 
         # Assign output
         y = []
