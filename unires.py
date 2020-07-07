@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-""" A model for denoising and super-resolving neuroimaging data.
+""" UniRes: Unified Super-Resolution of Neuroimaging Data in PyTorch.
 
 References:
     Brudfors M, Balbastre Y, Nachev P, Ashburner J.
@@ -108,7 +108,7 @@ class Settings:
     reg_scl: float = 20.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
     rho: float = 1.7  # ADMM step-size, if None -> estimate is made
     rho_scl: float = 1.0  # Scaling of ADMM step-size
-    rigid_samp: int = 2  # Level of sub-sampling for estimating rigid registration parameters
+    rigid_samp: int = 3  # Level of sub-sampling for estimating rigid registration parameters
     scaling: bool = True  # Optimise even/odd slice scaling
     show_hyperpar: bool = False  # Use matplotlib to visualise hyper-parameter estimates
     show_jtv: bool = False  # Show the joint total variation (JTV)
@@ -1502,7 +1502,7 @@ class Model:
         if self.sett.dir_out is None:
             # No output directory given, use directory of input data
             if self._x[0][0].direc is None:
-                dir_out = 'UnRes-output'
+                dir_out = 'UniRes-output'
                 if not os.path.isdir(dir_out):
                     os.mkdir(dir_out)
             else:
