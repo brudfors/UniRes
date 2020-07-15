@@ -105,7 +105,7 @@ class Settings:
     profile_ip: int = 0  # In-plane slice profile (0=rect|1=tri|2=gauss)
     profile_tp: int = 0  # Through-plane slice profile (0=rect|1=tri|2=gauss)
     reg_ix_fix: int = 0  # Index of fixed image in initial co-reg (if zero, pick image with largest FOV)
-    reg_scl: float = 10.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
+    reg_scl: float = 20.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
     rho: float = 1.7  # ADMM step-size, if None -> estimate is made
     rho_scl: float = 1.0  # Scaling of ADMM step-size
     rigid_samp: int = 3  # Level of sub-sampling for estimating rigid registration parameters
@@ -706,10 +706,10 @@ class Model:
         _ = self._print_info('mean-space', dim, mat)
 
         # CT lambda fudge factor
-        ff_ct = 1.0  # Just a single CT (no fudge)
+        ff_ct = 0.5  # Just a single CT
         if N > 1:
             # CT and MRIs
-            ff_ct = 14.0
+            ff_ct = 8.0
 
         # Assign output
         y = []
