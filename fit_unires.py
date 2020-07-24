@@ -12,10 +12,8 @@ Default settings should work well.
 
 
 from argparse import ArgumentParser
-from unires import Model
-from unires import Settings
-import sys
 import torch
+from unires import Model, Settings
 
 def fit(pth, device, dir_out, plot_conv, print_info, reg_scl,
         show_hyperpar, show_jtv, tolerance, unified_rigid, vx):

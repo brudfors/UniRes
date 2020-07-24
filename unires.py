@@ -89,15 +89,16 @@ class Settings:
 
     """
     alpha: float = 1.0  # Relaxation parameter 0 < alpha < 2, alpha < 1: under-relaxation, alpha > 1: over-relaxation
-    cgs_max_iter: int = 2  # Max conjugate gradient (CG) iterations for solving for y
-    cgs_tol: float = 0  # CG tolerance for solving for y
+    cgs_max_iter: int = 512  # Max conjugate gradient (CG) iterations for solving for y
+    cgs_tol: float = 1e-2  # CG tolerance for solving for y
     cgs_verbose: bool = False  # CG verbosity (0, 1)
     device: str = 'cuda'  # PyTorch device name
     gr_diff: str = 'forward'  # Gradient difference operator (forward|backward|central)
     dir_out: str = None  # Directory to write output, if None uses same as input (output is prefixed 'y_')
     gap: float = 0.0  # Slice gap, between 0 and 1
-    has_ct: bool = True  # Data could be CT (but data must contain negative values)
-    max_iter: int = 256  # Max algorithm iterations
+    has_ct: bool = False  # Data could be CT (but data must contain negative values)
+    mat: torch.Tensor = None  # Observed image(s) affine matrix. OBS: Data needs to be given as 4D array
+    max_iter: int = 512  # Max algorithm iterations
     mod_prct: float = 0.0  # Amount to crop mean space, between 0 and 1 (faster, but could loss out on data)
     prefix: str = 'y_'  # Prefix for reconstructed image(s)
     print_info: int = 1  # Print progress to terminal (0, 1, 2)
@@ -106,13 +107,15 @@ class Settings:
     profile_tp: int = 0  # Through-plane slice profile (0=rect|1=tri|2=gauss)
     reg_ix_fix: int = 0  # Index of fixed image in initial co-reg (if zero, pick image with largest FOV)
     reg_scl: float = 20.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
-    rho: float = 1.7  # ADMM step-size, if None -> estimate is made
+    rho: float = None  # ADMM step-size, if None -> estimate is made
     rho_scl: float = 1.0  # Scaling of ADMM step-size
-    rigid_samp: int = 3  # Level of sub-sampling for estimating rigid registration parameters
+    rigid_mod: int = 4  # Update rigidt every rigid_mod iteration
+    rigid_sched_max: int = 13  # Start scaling at 2^rigid_sched_max
+    rigid_samp: int = 1  # Level of sub-sampling for estimating rigid registration parameters
     scaling: bool = True  # Optimise even/odd slice scaling
     show_hyperpar: bool = False  # Use matplotlib to visualise hyper-parameter estimates
     show_jtv: bool = False  # Show the joint total variation (JTV)
-    tolerance: float = 0  # Algorithm tolerance, if zero, run to max_iter
+    tolerance: float = 1e-4  # Algorithm tolerance, if zero, run to max_iter
     unified_rigid: bool = True  # Do unified rigid registration
     vx: float = 1.0  # Reconstruction voxel size (if None, set automatically)
     write_jtv: bool = False  # Write JTV to nifti
@@ -157,8 +160,6 @@ class Model:
         self._do_proj = None  # Use projection matrices (set in _format_output())
         self._method = None  # Method name (super-resolution|denoising)
         self._rigid_basis = None  # Rigid transformation basis
-        if not isinstance(self.sett.reg_scl, list):  # For coarse-to-fine scaling of regularisation
-            self.sett.reg_scl = [self.sett.reg_scl]
 
         # Read and format data
         self._x = self._format_input(data)
@@ -197,16 +198,6 @@ class Model:
         # self._y[c].lam
         # self._y[c].dim
         # self._y[c].mat
-
-        # if self.sett.scaling or self.sett.unified_rigid:
-        #     # Coarse-to-fine scaling of lambda
-        #     mx = 6  # start scaling is 2^mx end is 2^0
-        #     rep = 20  # how many times to update y for each scaling value
-        #     # sched = torch.tensor(2.0, device=self.sett.device, dtype=torch.float32)\
-        #     #         **torch.arange(0, mx, device=self.sett.device, dtype=torch.float32).flip(dims=(0,))
-        #     sched = torch.tensor([50, 1], device=self.sett.device, dtype=torch.float32)
-        #     sched = sched.view(-1, 1).repeat(1, rep).view(1, -1).squeeze()
-        #     self.sett.reg_scl = self.sett.reg_scl[0]*sched
 
         # Define projection matrices
         self._proj_info_add()
@@ -253,14 +244,18 @@ class Model:
         dtype = torch.float32
         unified_rigid = self.sett.unified_rigid
         rigid_samp = self.sett.rigid_samp
+        rigid_mod = self.sett.rigid_mod
         scaling = self.sett.scaling
         gr_diff = self.sett.gr_diff
         max_iter = self.sett.max_iter
         tol = self.sett.tolerance
+        if not isinstance(self.sett.reg_scl, torch.Tensor):
+            self.sett.reg_scl = torch.tensor(self.sett.reg_scl, dtype=dtype, device=device)
+            self.sett.reg_scl = self.sett.reg_scl.reshape(1)
+
         # Parameters
         C = len(self._y)  # Number of channels
         N = sum([len(x) for x in self._x])  # Number of observations
-        dim_y = self._y[0].dim  # Output dimensions
         vx_y = voxsize(self._y[0].mat).float()  # Output voxel size
         bound_grad = 'constant'
         # Constants
@@ -278,9 +273,14 @@ class Model:
             # Get ADMM variables
             z, w = self._alloc_admm_vars()
 
+        # For unified registration, defines a coarse-to-fine scaling of regularisation
+        self._set_sched()
+
         # Scale lambda
+        cnt_scl = 0
         for c in range(C):
-            self._y[c].lam = self.sett.reg_scl[0] * self._y[c].lam0
+            self._y[c].lam = self.sett.reg_scl[cnt_scl] * self._y[c].lam0
+            # print('lam={}'.format(self._y[c].lam))
 
         # Get ADMM step-size
         self._rho = self._step_size()
@@ -289,26 +289,24 @@ class Model:
         fig_ax_nll = None
         fig_ax_jtv = None
 
-        # Start iterating:
+        # Aux variables
+        cnt_obj = 0
+        next_reg_scl = False  # For registration, makes sure there is at least two registration updates for each scale level
+        jtv = None
+        obj = torch.zeros(3 * max_iter, 3, dtype=torch.float64, device=device)
+        tmp = torch.zeros_like(self._y[0].dat)  # for holding rhs in y-update, and jtv in u-update
+
+        # ----------
+        # ITERATE:
         # Updates y, z, w in alternating fashion, until a convergence threshold is met
         # on the model negative log-likelihood.
-        obj = torch.zeros(3*max_iter, 3, dtype=torch.float64, device=device)
-        cnt_obj = 0
-        jtv = None
-        tmp = torch.zeros_like(self._y[0].dat)  # for holding rhs in y-update, and jtv in u-update
+        # ----------
         t_iter = timer() if self.sett.print_info else 0
         for n_iter in range(max_iter):
 
             if n_iter == 0:
                 t00 = self._print_info('fit-start', C, N, device,
                                        max_iter, tol)  # PRINT
-
-            # Coarse-to-fine scaling of lambda
-            if n_iter < len(self.sett.reg_scl):
-                for c in range(C):
-                    self._y[c].lam = self.sett.reg_scl[n_iter] * self._y[c].lam0
-                # Update ADMM step-size
-                self._rho = self._step_size(verbose=False)
 
             # ----------
             # UPDATE: y
@@ -329,10 +327,12 @@ class Model:
 
                 # Invert y = lhs\tmp by conjugate gradients
                 lhs = lambda y: self._proj('AtA', y, c, vx_y=vx_y, bound__DtD=bound_grad, gr_diff=gr_diff)
-                self._y[c].dat = cg(A=lhs, b=tmp, x=self._y[c].dat,
-                                    verbose=self.sett.cgs_verbose,
-                                    max_iter=self.sett.cgs_max_iter,
-                                    tolerance=self.sett.cgs_tol)
+                cg(A=lhs, b=tmp, x=self._y[c].dat,
+                   verbose=self.sett.cgs_verbose,
+                   max_iter=self.sett.cgs_max_iter,
+                   stop='residuals',
+                   inplace=True,
+                   tolerance=self.sett.cgs_tol)  # OBS: self._y[c].dat is here updated in-place
 
                 _ = self._print_info('int', c)  # PRINT
 
@@ -353,7 +353,8 @@ class Model:
             tmp.sqrt_()  # in-place
             tmp = ((tmp - one / self._rho).clamp_min(0)) / (tmp + tiny)
 
-            if self.sett.show_jtv:  # Show computed JTV
+            # Show computed JTV
+            if self.sett.show_jtv:
                 fig_ax_jtv = show_slices(img=tmp, fig_ax=fig_ax_jtv, title='JTV',
                                          cmap='coolwarm', fig_num=98)
 
@@ -364,6 +365,13 @@ class Model:
                 for d in range(Dy.shape[0]):
                     z[c, d, ...] = tmp * (w[c, d, ...] / self._rho + Dy[d, ...])
             _ = self._print_info('fit-done', t0)  # PRINT
+
+            # if n_iter in [0, 1, 2, 4, 8, 16, 32, 64]:
+            #     # Write partial results to disk (for testing)
+            #     prefix0 = self.sett.prefix
+            #     self.sett.prefix = prefix0 + '_' + str(n_iter) + '_'
+            #     _, _, _ = self._write_data(jtv=tmp)
+            #     self.sett.prefix = prefix0
 
             # ----------
             # Compute model objective function
@@ -376,7 +384,7 @@ class Model:
                 fig_ax_nll = plot_convergence(vals=obj[:cnt_obj, :], fig_ax=fig_ax_nll, fig_num=99)
             gain = get_gain(obj[:cnt_obj, 0], monotonicity='decreasing')
             t_iter = self._print_info('fit-ll', 'y', n_iter, obj[cnt_obj - 1, :], gain, t_iter)  # PRINT
-            if n_iter > 1 and ((torch.abs(gain) < tol) or (n_iter >= (max_iter - 1))):
+            if cnt_scl >= (self.sett.reg_scl.numel() - 1) and ((gain.abs() < tol) or (n_iter >= (max_iter - 1))):
                 _ = self._print_info('fit-finish', t00, n_iter)  # PRINT
                 break  # Finished
 
@@ -396,46 +404,41 @@ class Model:
                 # ----------
                 # UPDATE: even/odd scaling
                 # ----------
-                t0 = self._print_info('fit-update', 'scaling', n_iter)  # PRINT
+                t0 = self._print_info('fit-update', 's', n_iter)  # PRINT
                 # Do update
                 obj1 = self._update_scaling(max_niter_gn=1, num_linesearch=4, verbose=0)
                 _ = self._print_info('fit-done', t0)  # PRINT
-                # # Compute objective function
-                # obj[cnt_obj, 0] = obj1 + obj[cnt_obj - 1, 2]
-                # obj[cnt_obj, 1] = obj1
-                # obj[cnt_obj, 2] = obj[cnt_obj - 1, 2]
-                # cnt_obj += 1
-                # if self.sett.plot_conv:  # Plot algorithm convergence
-                #     fig_ax_nll = plot_convergence(vals=obj[:cnt_obj, :], fig_ax=fig_ax_nll, fig_num=99)
-                # gain = get_gain(obj[:cnt_obj, 0], monotonicity='decreasing')
-                # t_iter = self._print_info('fit-ll', 's', n_iter, obj[cnt_obj - 1, :], gain, t_iter)  # PRINT
 
-            if unified_rigid and (n_iter % 2) == 0:
+                # # Print parameter estimates
+                # _ = self._print_info('scl-param', t0)
+
+            if unified_rigid and 0 < n_iter and cnt_scl < (self.sett.reg_scl.numel() - 1) and ((n_iter + 1) % rigid_mod) == 0:# and (n_iter % (self.sett.rigid_rep - 1)) == 0:
                 # ----------
-                # UPDATE: rigid_q (every second iteration)
+                # UPDATE: rigid_q (not every iteration)
                 # ----------
-                t0 = self._print_info('fit-update', 'rigid', n_iter)  # PRINT
-                # Do update
-                obj1 = self._update_rigid(mean_correct=True, max_niter_gn=1, num_linesearch=4,
-                                          verbose=0, samp=rigid_samp)
+                t0 = self._print_info('fit-update', 'q', n_iter)  # PRINT
+                _ = self._update_rigid(mean_correct=True, max_niter_gn=1, num_linesearch=4,
+                                       verbose=0, samp=rigid_samp)
                 _ = self._print_info('fit-done', t0)  # PRINT
-                # # Compute objective function
-                # obj[cnt_obj, 0] = obj1 + obj[cnt_obj - 1, 2]
-                # obj[cnt_obj, 1] = obj1
-                # obj[cnt_obj, 2] = obj[cnt_obj - 1, 2]
-                # cnt_obj += 1
-                # if self.sett.plot_conv:  # Plot algorithm convergence
-                #     fig_ax_nll = plot_convergence(vals=obj[:cnt_obj, :], fig_ax=fig_ax_nll, fig_num=99)
-                # gain = get_gain(obj[:cnt_obj, 0], monotonicity='decreasing')
-                # t_iter = self._print_info('fit-ll', 'q', n_iter, obj[cnt_obj - 1, :], gain, t_iter)  # PRINT
 
-        # Print parameter estimates
-        if scaling and self.sett.print_info >= 1:
-            _ = self._print_info('scl-param', t0)  # PRINT
-        if unified_rigid and self.sett.print_info >= 1:
-            _ = self._print_info('reg-param', t0)  # PRINT
+                if gain.abs() < 1e-3:
+                    if not next_reg_scl:
+                        next_reg_scl = True
+                    else:
+                        next_reg_scl = False
+                        cnt_scl += 1
+                        # Coarse-to-fine scaling of lambda
+                        for c in range(C):
+                            self._y[c].lam = self.sett.reg_scl[cnt_scl] * self._y[c].lam0
+                        # Also update ADMM step-size
+                        self._rho = self._step_size(verbose=False)
 
+                # # Print parameter estimates
+                # _ = self._print_info('reg-param', t0)
+
+        # ----------
         # Get rigid matrices
+        # ----------
         R = torch.zeros((4, 4, N), device=device, dtype=torch.float64)
         n = 0
         for c in range(C):
@@ -444,7 +447,9 @@ class Model:
                 R[..., n] = dexpm(self._x[c][cn].rigid_q, self._rigid_basis)[0]
                 n += 1
 
+        # ----------
         # Process reconstruction results
+        # ----------
         y, mat, pth_y = self._write_data(jtv=tmp)
 
         return y, mat, pth_y, R
@@ -686,10 +691,11 @@ class Model:
 
         if do_sr or self._do_proj:
             # Get FOV of mean space
-            if N == 1 and do_sr:
+            if mat_same and do_sr:
                 D = torch.diag(torch.cat((vx_y / all_vx[:, 0], one[..., None])))
                 mat = all_mat[..., 0].mm(D)
-                dim = D.inverse()[:3, :3].mm(all_dim[:, 0].reshape((3, 1))).floor().squeeze()
+                mat[:3, 3] = mat[:3, 3] + 0.5*(vx_y - all_vx[:, 0])
+                dim = D.inverse()[:3, :3].mm(all_dim[:, 0].reshape((3, 1))).ceil().squeeze()
             else:
                 # Mean space from several images
                 dim, mat, _ = mean_space(all_mat, all_dim, vx=vx_y, mod_prct=-mod_prct)
@@ -748,7 +754,6 @@ class Model:
             num_x = len(self._x[c])  # Number of observations of channel c
             for n in range(num_x):  # Loop over observations of channel c
                 self._x[c][n].rigid_q = torch.zeros(6, device=device, dtype=torch.float64)
-                self._x[c][n].armijo = torch.tensor(1.0, device=device, dtype=torch.float64)
                 # self._x[c][n].mat = mat.solve(R[c][n])  # TODO: Apply rigid transformation
 
     def _init_y(self, interpolation=1):
@@ -799,7 +804,7 @@ class Model:
                       '{} iterations\n'.format(self._method, timer() - argv[0], argv[1] + 1))
             elif info in 'fit-ll':
                 print('{:3} - Convergence ({} | {:0.1f} s)  | nlyx={:0.4f}, nlxy={:0.4f}, nly={:0.4f} '
-                      'gain={:0.7f}'.format(argv[1] + 1, argv[0], timer() - argv[4], argv[2][0], argv[2][1], argv[2][2],
+                      'gain={:0.7f}'.format(argv[1], argv[0], timer() - argv[4], argv[2][0], argv[2][1], argv[2][2],
                                             argv[3]))
             elif info == 'fit-start':
                 print('\nStarting {} \n{} | C={} | N={} | device={} | '
@@ -931,16 +936,39 @@ class Model:
         # Parse function settings
         device = self.sett.device
         has_ct = self.sett.has_ct
+        mat_vol = self.sett.mat
 
+        # Sanity check
+        if isinstance(data, str):
+            nii = nib.load(data)
+            dim = nii.shape
+            if len(dim) > 3:
+                # Data is path to 4D nifti
+                data = nii.get_fdata()
+                mat_vol = nii.affine
+        try:
+            data.shape
+            data = data[..., None]
+            data = data[:, :, :, :, 0]
+            if mat_vol is None:
+                raise ValueError('Image data given as array, please also provide affine matrix in sett.mat!')
+        except AttributeError:
+            pass
         if isinstance(data, str):
             data = [data]
-        C = len(data)  # Number of channels
+
+        # Number of channels
+        if mat_vol is not None:
+            C = data.shape[3]
+        else:
+            C = len(data)
 
         x = []
         for c in range(C):  # Loop over channels
             x.append([])
             x[c] = []
-            if isinstance(data[c], list) and (isinstance(data[c][0], str) or isinstance(data[c][0], list)):
+            if mat_vol is None and isinstance(data[c], list) and (isinstance(data[c][0], str) or isinstance(data[c][0], list)):
+                # Possibly multiple repeats per channel
                 num_x = len(data[c])  # Number of observations of channel c
                 for n in range(num_x):  # Loop over observations of channel c
                     x[c].append(Input())
@@ -957,11 +985,16 @@ class Model:
                     x[c][n].head = head
                     x[c][n].ct = ct
             else:
+                # One repeat per channel
+                n = 0
                 x[c].append(Input())
-                n = 0  # One repeat per channel
                 # Get data
-                dat, dim, mat, fname, direc, nam, head, ct, _ = \
-                    self.read_image(data[c], device, is_ct=has_ct)
+                if mat_vol is not None:
+                    dat, dim, mat, fname, direc, nam, head, ct, _ = \
+                        self.read_image([data[..., c], mat_vol], device, is_ct=has_ct)
+                else:
+                    dat, dim, mat, fname, direc, nam, head, ct, _ = \
+                        self.read_image(data[c], device, is_ct=has_ct)
                 # Assign
                 x[c][n].dat = dat
                 x[c][n].dim = dim
@@ -972,6 +1005,102 @@ class Model:
                 x[c][n].head = head
                 x[c][n].ct = ct
         return x
+
+    def _rigid_match(self, dat_x, dat_y, po, tau, rigid, CtC=None, diff=False, verbose=0):
+        """ Computes the rigid matching term, and its gradient and Hessian (if requested).
+
+        Args:
+            dat_x (torch.tensor): Observed data (X0, Y0, Z0).
+            dat_y (torch.tensor): Reconstructed data (X1, Y1, Z1).
+            po (ProjOp): Projection operator.
+            tau (torch.tensor): Noice precision.
+            CtC (torch.tensor, optional): CtC(ones), used for super-res gradient calculation.
+                Defaults to None.
+            rigid (torch.tensor): Rigid transformation matrix (4, 4).
+            diff (bool, optional): Compute derivatives, defaults to False.
+            verbose (bool, optional): Show registration results, defaults to 0.
+                0: No verbose
+                1: Print convergence info to console
+                2: Plot registration results using matplotlib
+
+        Returns:
+            ll (torch.tensor): Log-likelihood.
+            gr (torch.tensor): Gradient (dim_x, 3).
+            Hes (torch.tensor): Hessian (dim_x, 6).
+
+        """
+        # Parameters
+        device = self.sett.device
+        method = self._method
+        # Projection info
+        mat_x = po.mat_x
+        mat_y = po.mat_y
+        mat_yx = po.mat_yx
+        dim_x = po.dim_x
+        dim_yx = po.dim_yx
+        ratio = po.ratio
+        smo_ker = po.smo_ker
+        dim_thick = po.dim_thick
+        scl = po.scl
+
+        # Init output
+        ll = None
+        gr = None
+        Hes = None
+
+        bound = 'dct2'
+        interpolation = 1
+        if method == 'super-resolution':
+            extrapolate = True
+            dim = dim_yx
+            mat = mat_yx
+        elif method == 'denoising':
+            extrapolate = False
+            dim = dim_x
+            mat = mat_x
+
+        # Get grid
+        mat = rigid.mm(mat).solve(mat_y)[0]  # mat_y\rigid*mat
+        grid = affine(dim, mat, device=device, dtype=torch.float32)
+
+        # Warp y and compute spatial derivatives
+        dat_yx = grid_pull(dat_y, grid, bound=bound, extrapolate=extrapolate, interpolation=interpolation)[0, 0, ...]
+        if method == 'super-resolution':
+            dat_yx = F.conv3d(dat_yx[None, None, ...], smo_ker, stride=ratio)[0, 0, ...]
+            if scl != 0:
+                dat_yx = self.apply_scaling(dat_yx, scl, dim_thick)
+        if diff:
+            gr = grid_grad(dat_y, grid, bound=bound, extrapolate=extrapolate, interpolation=interpolation)[0, 0, ...]
+
+        if verbose >= 2:  # Show images
+            show_slices(torch.stack((dat_x, dat_yx, (dat_x - dat_yx) ** 2), 3),
+                        fig_num=666, colorbar=False, flip=False)
+
+        # Double and mask
+        msk = dat_x != 0
+
+        # Compute matching term
+        ll = 0.5 * tau * torch.sum((dat_x[msk] - dat_yx[msk]) ** 2, dtype=torch.float64)
+
+        if diff:
+            # Difference
+            diff = dat_yx - dat_x
+            msk = msk & (dat_yx != 0)
+            diff[~msk] = 0
+            # Hessian
+            Hes = torch.zeros(dim + (6,), device=device, dtype=torch.float32)
+            Hes[:, :, :, 0] = gr[:, :, :, 0] * gr[:, :, :, 0]
+            Hes[:, :, :, 1] = gr[:, :, :, 1] * gr[:, :, :, 1]
+            Hes[:, :, :, 2] = gr[:, :, :, 2] * gr[:, :, :, 2]
+            Hes[:, :, :, 3] = gr[:, :, :, 0] * gr[:, :, :, 1]
+            Hes[:, :, :, 4] = gr[:, :, :, 0] * gr[:, :, :, 2]
+            Hes[:, :, :, 5] = gr[:, :, :, 1] * gr[:, :, :, 2]
+            if method == 'super-resolution':
+                Hes *= CtC[..., None]
+                diff = F.conv_transpose3d(diff[None, None, ...], smo_ker, stride=ratio)[0, 0, ...]
+            # Gradient
+            gr *= diff[..., None]
+        return ll, gr, Hes
 
     def _step_size(self, verbose=True):
         """ ADMM step size (rho) from image statistics.
@@ -1025,6 +1154,7 @@ class Model:
 
         # Update rigid parameters, for all input images (self._x[c][n])
         sll = torch.tensor(0, device=device, dtype=torch.float64)
+        ll = torch.tensor(0, device=device, dtype=torch.float64)
         for c in range(C):  # Loop over channels
             num_x = len(self._x[c])
             for n_x in range(num_x):  # Loop over repeats
@@ -1233,6 +1363,7 @@ class Model:
         method = self._method
         num_q = rigid_basis.shape[2]
         lkp = [[0, 3, 4], [3, 1, 5], [4, 5, 2]]
+        one = torch.tensor(1.0, device=device, dtype=torch.float64)
 
         sll = torch.tensor(0, device=device, dtype=torch.float64)
         for n_x in range(num_x):  # Loop over repeats
@@ -1242,7 +1373,7 @@ class Model:
             # Parameters
             q = self._x[c][n_x].rigid_q
             tau = self._x[c][n_x].tau
-            armijo = self._x[c][n_x].armijo
+            armijo = torch.tensor(1.0, device=device, dtype=q.dtype)
             po = self.proj_info(self._x[c][n_x].po.dim_y, self._x[c][n_x].po.mat_y, self._x[c][n_x].po.dim_x,
                                 self._x[c][n_x].po.mat_x, rigid=self._x[c][n_x].po.rigid, prof_ip=self.sett.profile_ip,
                                 prof_tp=self.sett.profile_tp, gap=self.sett.gap, device=device,
@@ -1337,7 +1468,6 @@ class Model:
                 old_ll = ll.clone()
                 old_q = q.clone()
                 old_rigid = rigid.clone()
-                # armijo = torch.tensor(1.0, device=device, dtype=armijo.dtype)
                 if num_linesearch == 0:
                     # ..without a line-search
                     q = old_q - armijo * Update
@@ -1355,7 +1485,7 @@ class Model:
                         # Matching improved?
                         if ll < old_ll:
                             # Better fit!
-                            armijo = torch.min(1.25 * armijo, torch.tensor(1.0, device=device, dtype=armijo.dtype))
+                            armijo = torch.min(1.25 * armijo, one)
                             if verbose >= 1:
                                 print('c={}, n={}, gn={}, ls={} | :) ll={:0.2f}, ll-oll={:0.2f} | q={} armijo={}'
                                       .format(c, n_x, n_gn, n_ls, ll, ll - old_ll, round(q, 7).tolist(),
@@ -1366,118 +1496,35 @@ class Model:
                             ll = old_ll
                             q = old_q
                             rigid = old_rigid
-                            armijo = torch.max(0.5 * armijo, torch.tensor(1e-6, device=device, dtype=armijo.dtype))
+                            armijo *= 0.5
                             if n_ls == num_linesearch - 1 and verbose >= 1:
                                 print('c={}, n={}, gn={}, ls={} | :( ll={:0.2f}, ll-oll={:0.2f} | q={} armijo={}'
                                       .format(c, n_x, n_gn, n_ls, ll, ll - old_ll, round(q, 7).tolist(),
                                               round(armijo, 4)))
             # Assign
-            self._x[c][n_x].armijo = armijo
             self._x[c][n_x].rigid_q = q
             self._x[c][n_x].po.rigid = rigid
-            if not old_ll == ll and samp > 0 and self.sett.tolerance > 0:
-                # Recompute neg log-lik
-                ll = self._rigid_match(self._x[c][n_x].dat, self._y[c].dat[None, None, ...],
-                                       self._x[c][n_x].po, tau, rigid)[0]
             # Accumulate neg log-lik
             sll += ll
         # Return neg log-lik
         return sll
 
-    def _rigid_match(self, dat_x, dat_y, po, tau, rigid, CtC=None, diff=False, verbose=0):
-        """ Computes the rigid matching term, and its gradient and Hessian (if requested).
-
-        Args:
-            dat_x (torch.tensor): Observed data (X0, Y0, Z0).
-            dat_y (torch.tensor): Reconstructed data (X1, Y1, Z1).
-            po (ProjOp): Projection operator.
-            tau (torch.tensor): Noice precision.
-            CtC (torch.tensor, optional): CtC(ones), used for super-res gradient calculation.
-                Defaults to None.
-            rigid (torch.tensor): Rigid transformation matrix (4, 4).
-            diff (bool, optional): Compute derivatives, defaults to False.
-            verbose (bool, optional): Show registration results, defaults to 0.
-                0: No verbose
-                1: Print convergence info to console
-                2: Plot registration results using matplotlib
-
-        Returns:
-            ll (torch.tensor): Log-likelihood.
-            gr (torch.tensor): Gradient (dim_x, 3).
-            Hes (torch.tensor): Hessian (dim_x, 6).
+    def _set_sched(self):
+        """ For unified registration, define a coarse-to-fine scaling of regularisation
 
         """
-        # Parameters
-        device = self.sett.device
-        method = self._method
-        # Projection info
-        mat_x = po.mat_x
-        mat_y = po.mat_y
-        mat_yx = po.mat_yx
-        dim_x = po.dim_x
-        dim_yx = po.dim_yx
-        ratio = po.ratio
-        smo_ker = po.smo_ker
-        dim_thick = po.dim_thick
-        scl = po.scl
-
-        # Init output
-        ll = None
-        gr = None
-        Hes = None
-
-        bound = 'dct2'
-        if method == 'super-resolution':
-            extrapolate = True
-            dim = dim_yx
-            mat = mat_yx
-        elif method == 'denoising':
-            extrapolate = False
-            dim = dim_x
-            mat = mat_x
-
-        # Get grid
-        mat = rigid.mm(mat).solve(mat_y)[0]  # mat_y\rigid*mat
-        grid = affine(dim, mat, device=device, dtype=torch.float32)
-
-        # Warp y and compute spatial derivatives
-        dat_yx = grid_pull(dat_y, grid, bound=bound, extrapolate=extrapolate)[0, 0, ...]
-        if method == 'super-resolution':
-            dat_yx = F.conv3d(dat_yx[None, None, ...], smo_ker, stride=ratio)[0, 0, ...]
-            if scl != 0:
-                dat_yx = self.apply_scaling(dat_yx, scl, dim_thick)
-        if diff:
-            gr = grid_grad(dat_y, grid, bound=bound, extrapolate=extrapolate)[0, 0, ...]
-
-        if verbose >= 2:  # Show images
-            show_slices(torch.stack((dat_x, dat_yx, (dat_x - dat_yx) ** 2), 3),
-                        fig_num=666, colorbar=False, flip=False)
-
-        # Double and mask
-        msk = dat_x != 0
-
-        # Compute matching term
-        ll = 0.5 * tau * torch.sum((dat_x[msk] - dat_yx[msk]) ** 2, dtype=torch.float64)
-
-        if diff:
-            # Difference
-            diff = dat_yx - dat_x
-            msk = msk & (dat_yx != 0)
-            diff[~msk] = 0
-            # Hessian
-            Hes = torch.zeros(dim + (6,), device=device, dtype=torch.float32)
-            Hes[:, :, :, 0] = gr[:, :, :, 0] * gr[:, :, :, 0]
-            Hes[:, :, :, 1] = gr[:, :, :, 1] * gr[:, :, :, 1]
-            Hes[:, :, :, 2] = gr[:, :, :, 2] * gr[:, :, :, 2]
-            Hes[:, :, :, 3] = gr[:, :, :, 0] * gr[:, :, :, 1]
-            Hes[:, :, :, 4] = gr[:, :, :, 0] * gr[:, :, :, 2]
-            Hes[:, :, :, 5] = gr[:, :, :, 1] * gr[:, :, :, 2]
-            if method == 'super-resolution':
-                Hes *= CtC[..., None]
-                diff = F.conv_transpose3d(diff[None, None, ...], smo_ker, stride=ratio)[0, 0, ...]
-            # Gradient
-            gr *= diff[..., None]
-        return ll, gr, Hes
+        if self.sett.unified_rigid:
+            # Parameters/settings
+            max = self.sett.rigid_sched_max
+            scl = self.sett.reg_scl
+            # rep = self.sett.rigid_rep
+            two = torch.tensor(2.0, device=self.sett.device, dtype=torch.float32)
+            # Build scheduler
+            sched = two ** torch.arange(0, max, device=self.sett.device, dtype=torch.float32).flip(dims=(0,))
+            ix = torch.min((sched - self.sett.reg_scl).abs(), dim=0)[1]
+            sched = sched[:ix]
+            sched = torch.cat((sched, scl.reshape(1)))
+            self.sett.reg_scl = sched
 
     def _write_data(self, jtv=None):
         """ Format algorithm output.
@@ -1494,18 +1541,20 @@ class Model:
         # Parse function settings
         write_out = self.sett.write_out
         write_jtv = self.sett.write_jtv
+        dir_out = self.sett.dir_out
+        mat_vol = self.sett.mat
         # Output data
         dim_y = self._y[0].dim + (3,)
         # Output orientation matrix
         mat = self._y[0].mat
-        if self.sett.dir_out is None:
+        if dir_out is None:
             # No output directory given, use directory of input data
             if self._x[0][0].direc is None:
                 dir_out = 'UniRes-output'
-                if not os.path.isdir(dir_out):
-                    os.mkdir(dir_out)
             else:
                 dir_out = self._x[0][0].direc
+        if not os.path.isdir(dir_out):
+            os.makedirs(dir_out, exist_ok=True)
         # Reconstructed images
         C = len(self._y)
         prefix_y = self.sett.prefix
@@ -1514,8 +1563,8 @@ class Model:
             mn = torch.min(self._x[c][0].dat)
             dat = self._y[c].dat
             dat[dat < mn] = 0
-            if write_out:
-                # Write reconstructed images
+            if write_out and mat_vol is None:
+                # Write reconstructed images (as separate niftis, because given as separate niftis)
                 if self._x[c][0].nam is None:
                     nam = str(c) + '.nii'
                 else:
@@ -1527,6 +1576,16 @@ class Model:
                 y = dat[:, :, :, None]
             else:
                 y = torch.cat((y, dat[:, :, :, None]), dim=3)
+        if write_out and mat_vol is not None:
+            # Write reconstructed images as 4D volume (because given as 4D volume)
+            c = 0
+            if self._x[c][0].nam is None:
+                nam = str(c) + '.nii'
+            else:
+                nam = self._x[c][0].nam
+            fname = os.path.join(dir_out, prefix_y + nam)
+            pth_y.append(fname)
+            self.write_image(y, fname, mat=mat, header=self._x[c][0].head)
         if write_jtv and jtv is not None:
             # Write JTV
             if self._x[c][0].nam is None:
@@ -1598,7 +1657,7 @@ class Model:
             return dat[1::2, :, :]
 
     @staticmethod
-    def proj_apply(operator, method, dat, po, bound='dct2'):
+    def proj_apply(operator, method, dat, po, bound='dct2', interpolation=1):
         """ Applies operator A, At  or AtA (for denoising or super-resolution).
 
         Args:
@@ -1615,6 +1674,7 @@ class Model:
                 po.ratio: The ratio (low-res voxsize)/(high-res voxsize).
                 po.smo_ker: Smoothing kernel (slice-profile).
             bound (str, optional): Bound for nitorch push/pull, defaults to 'zero'.
+            interpolation (int, optional): Interpolation order, defaults to 1 (linear).
 
         Returns:
             dat (torch.tensor()): Projected image data (1, 1, X_out, Y_out, Z_out).
@@ -1655,7 +1715,7 @@ class Model:
         if method == 'super-resolution':
             extrapolate = True
             if operator == 'A':
-                dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate)
+                dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
                 dat = F.conv3d(dat, smo_ker, stride=ratio)
                 if scl != 0:
                     dat = Model.apply_scaling(dat, scl, dim_thick)
@@ -1663,23 +1723,23 @@ class Model:
                 if scl != 0:
                     dat = Model.apply_scaling(dat, scl, dim_thick)
                 dat = F.conv_transpose3d(dat, smo_ker, stride=ratio)
-                dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate)
+                dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
             elif operator == 'AtA':
-                dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate)
+                dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
                 dat = F.conv3d(dat, smo_ker, stride=ratio)
                 if scl != 0:
                     dat = Model.apply_scaling(dat, 2 * scl, dim_thick)
                 dat = F.conv_transpose3d(dat, smo_ker, stride=ratio)
-                dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate)
+                dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
         elif method == 'denoising':
             extrapolate = False
             if operator == 'A':
-                dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate)
+                dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
             elif operator == 'At':
-                dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate)
+                dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
             elif operator == 'AtA':
-                dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate)
-                dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate)
+                dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
+                dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
         return dat
 
     @staticmethod
