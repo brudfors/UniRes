@@ -26,7 +26,7 @@ def fit(pth, device, dir_out, plot_conv, print_info, reg_scl,
     s.device = device
     if dir_out is not None: s.dir_out = dir_out
     if plot_conv is not None: s.plot_conv = plot_conv
-    if print_info is not None: s.print_info = print_info
+    if do_print is not None: s.do_print = do_print
     if reg_scl is not None: s.reg_scl = reg_scl
     if show_hyperpar is not None: s.show_hyperpar = show_hyperpar
     if show_jtv is not None: s.show_jtv = show_jtv
