@@ -1,4 +1,4 @@
-name: nires
+name: unires
 channels:
   - conda-forge
   - pytorch

@@ -1,5 +1,5 @@
 """
-Script to process MRI or CT scans with UniRes.
+Script to process MRI and/or CT scans with UniRes.
 
 Example usage:
     python fit.py T1.nii T2.nii Flair.nii
@@ -7,15 +7,24 @@ Example usage:
 Results will be written in the same folder, prefixed 'y_'.
 Default settings should work well.
 
+References:
+    Brudfors M, Balbastre Y, Nachev P, Ashburner J.
+    A Tool for Super-Resolving Multimodal Clinical MRI.
+    2019 arXiv preprint arXiv:1909.01140.
+
+    Brudfors M, Balbastre Y, Nachev P, Ashburner J.
+    MRI Super-Resolution Using Multi-channel Total Variation.
+    In Annual Conference on Medical Image Understanding and Analysis
+    2018 Jul 9 (pp. 217-228). Springer, Cham.
+
 @author: brudfors@gmail.com
 """
 
 
 from argparse import ArgumentParser
-from unires import Model
-from unires import Settings
-import sys
 import torch
+from unires.model import init, fit
+from unires.struct import Settings
 
 def fit(pth, device, dir_out, plot_conv, print_info, reg_scl,
         show_hyperpar, show_jtv, tolerance, unified_rigid, vx):
@@ -28,7 +37,7 @@ def fit(pth, device, dir_out, plot_conv, print_info, reg_scl,
     s.device = device
     if dir_out is not None: s.dir_out = dir_out
     if plot_conv is not None: s.plot_conv = plot_conv
-    if print_info is not None: s.print_info = print_info
+    if do_print is not None: s.do_print = do_print
     if reg_scl is not None: s.reg_scl = reg_scl
     if show_hyperpar is not None: s.show_hyperpar = show_hyperpar
     if show_jtv is not None: s.show_jtv = show_jtv
@@ -36,11 +45,11 @@ def fit(pth, device, dir_out, plot_conv, print_info, reg_scl,
     if unified_rigid is not None: s.unified_rigid = unified_rigid
     if vx is not None: s.vx = vx
 
-    # Init algorithm
-    model = Model(pth, s)
+    # Init UniRes
+    x, y, sett = init(pth, s)
 
-    # Start algorithm
-    model.fit()
+    # Fit UniRes
+    _, _, _, _ = fit(x, y, sett)
 
 
 if __name__ == "__main__":

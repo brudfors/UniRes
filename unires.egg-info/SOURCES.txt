@@ -1,0 +1,12 @@
+README.md
+setup.py
+unires/__init__.py
+unires/model.py
+unires/project.py
+unires/struct.py
+unires/update.py
+unires/util.py
+unires.egg-info/PKG-INFO
+unires.egg-info/SOURCES.txt
+unires.egg-info/dependency_links.txt
+unires.egg-info/top_level.txt
