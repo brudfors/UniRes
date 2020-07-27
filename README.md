@@ -1,9 +1,9 @@
+<img style="float: right;" src="https://github.com/brudfors/UniRes/blob/master/figures/example_2.png" width="100%" height="100%"> 
+
 # UniRes: Unified Super-Resolution of Neuroimaging Data in PyTorch
 
-This repository implements a unified model for super-resolving neuroimaging data (MRI and CT scans), which combines: super-resolution with a multi-channel denoising prior, rigid registration and a correction for interleaved slice acquisition. The archetype use-case is when having multiple scans of the same subject (e.g., T1w, T2w and FLAIR MRIs) and an analysis requires these scans to be represented on the same grid (i.e., having the same image size, affine matrix and voxel size):
+This repository implements a unified model for super-resolving neuroimaging data (MRI and CT scans), which combines: super-resolution with a multi-channel denoising prior, rigid registration and a correction for interleaved slice acquisition. The archetype use-case is when having multiple scans of the same subject (e.g., T1w, T2w and FLAIR MRIs) and an analysis requires these scans to be represented on the same grid (i.e., having the same image size, affine matrix and voxel size).
 
-<img style="float: right;" src="https://github.com/brudfors/UniRes/blob/master/figures/example_2.png" width="100%" height="100%"> 
- 
 By default, the model reconstructs 1 mm isotropic images with a field-of-view that contains all input scans; however, this voxel size can be customised with the possibility of sub-millimetric reconstuctions. The model additionally supports multiple repeats of each MR sequence. The implementation is written in PyTorch and should therefore run fast on the GPU. It is possible to run it also on the CPU, but GPU is strongly encouraged..
 
 ## Dependencies
