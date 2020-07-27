@@ -2,25 +2,37 @@
 
 This repository implements a unified model for super-resolving neuroimaging data (MRI and CT scans), which combines: super-resolution with a multi-channel denoising prior, rigid registration and a correction for interleaved slice acquisition. The archetype use-case is when having multiple scans of the same subject (e.g., T1w, T2w and FLAIR MRIs) and an analysis requires these scans to be represented on the same grid (i.e., having the same image size, affine matrix and voxel size):
 
-<img style="float: right;" src="https://github.com/brudfors/UniRes/blob/master/example.png" width="60%" height="60%"> 
+<img style="float: right;" src="https://github.com/brudfors/UniRes/blob/master/figures/example_2.png" width="100%" height="100%"> 
  
 By default, the model reconstructs 1 mm isotropic images with a field-of-view that contains all input scans; however, this voxel size can be customised with the possibility of sub-millimetric reconstuctions. The model additionally supports multiple repeats of each MR sequence. The implementation is written in PyTorch and should therefore run fast on the GPU. It is possible to run it also on the CPU, but GPU is strongly encouraged..
 
-## Basic use-case
+## Dependencies
 
-The `nitorch` package is required to fit the model; simply follow the quickstart guide on its GitHub page. Once the `nitroch` environment has been activated, simply do:
+The `nitorch` package is required to use `UniRes`; simply follow the quickstart guide on its GitHub page: https://github.com/balbasty/nitorch.
+
+Next, activate a `nitorch` virtual environment and move to the ``UniRes`` project directory. Then install the package using either setuptools or pip:
+```shell script
+cd /path/to/unires
+python setupy.py install
+# OR
+pip install .
+``` 
+
+## Example use case
+
+Running `UniRes` should be straight forward. Let's say you have three thick-sliced MR images: *image1.nii.gz*, *image2.nii.gz* and *image3.nii.gz*, then simply run `fit_unires.py` in the terminal as:
 ```
-(nitorch):/unires python fit_unires image1.nii image2.nii image3.nii
+python fit_unires.py image1.nii.gz image2.nii.gz image3.nii.gz
 ```
-The three 1 mm isotropic images are written to the same folder as the input data, prefixed `y_`.
+Three 1 mm isotropic images are written to the same folder as the input data, prefixed *y_*.
 
 ## Further customisation
 
 The algorithm estimates the necessary parameters from the input data, so it should, hopefully, work well out-the-box. However, a user might want to change some of the defaults, like slice-profile, slice-gap, or scale the regularisation a bit. Furthermore, instead of giving, e.g., nifti files via the command line tool (`fit.py`) it might be more desirable to interact with the nires code directly (maybe as part of some pipeline), working with the image data as `torch.tensor`. The following code snippet shows an example of how to do this:
 ```
 import nibabel as nib
-from unires import Model
-from unires import Settings
+from unires.model import init, fit
+from unires.struct import Settings
 
 # Algorithm settings
 s = Settings()
@@ -48,14 +60,14 @@ for c in range(len(p)):
     data.append([dat, mat])
 
 # Init super-resolution model
-model = Model(data, s)
+model = init(data, s)
 
 # Fit superres model
-y, mat, p_y, R = model.fit()
+y, mat, p_y, R = fit()
 # Outputs are: reconstructed data (y), output affine (mat), 
-paths to reconstructions (p_y) and rigid transformation matrices (R).
+# paths to reconstructions (p_y) and rigid transformation matrices (R).
 ```
-More details of algorithm settings can be found in the declaration of the dataclass `Settings()` in `unires.py`.
+More details of algorithm settings can be found in the declaration of the dataclass `Settings()` in `struct.py`.
 
 ## References
 

@@ -1,5 +1,5 @@
 """
-Script to process MRI or CT scans with UniRes.
+Script to process MRI and/or CT scans with UniRes.
 
 Example usage:
     python fit.py T1.nii T2.nii Flair.nii
@@ -7,13 +7,24 @@ Example usage:
 Results will be written in the same folder, prefixed 'y_'.
 Default settings should work well.
 
+References:
+    Brudfors M, Balbastre Y, Nachev P, Ashburner J.
+    A Tool for Super-Resolving Multimodal Clinical MRI.
+    2019 arXiv preprint arXiv:1909.01140.
+
+    Brudfors M, Balbastre Y, Nachev P, Ashburner J.
+    MRI Super-Resolution Using Multi-channel Total Variation.
+    In Annual Conference on Medical Image Understanding and Analysis
+    2018 Jul 9 (pp. 217-228). Springer, Cham.
+
 @author: brudfors@gmail.com
 """
 
 
 from argparse import ArgumentParser
 import torch
-from unires import Model, Settings
+from unires.model import init, fit
+from unires.struct import Settings
 
 def fit(pth, device, dir_out, plot_conv, print_info, reg_scl,
         show_hyperpar, show_jtv, tolerance, unified_rigid, vx):
@@ -34,11 +45,11 @@ def fit(pth, device, dir_out, plot_conv, print_info, reg_scl,
     if unified_rigid is not None: s.unified_rigid = unified_rigid
     if vx is not None: s.vx = vx
 
-    # Init algorithm
-    model = Model(pth, s)
+    # Init UniRes
+    x, y, sett = init(pth, s)
 
-    # Start algorithm
-    model.fit()
+    # Fit UniRes
+    _, _, _, _ = fit(x, y, sett)
 
 
 if __name__ == "__main__":
