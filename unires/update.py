@@ -88,7 +88,7 @@ def update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
         tmp -= y[c].lam * div
 
         # Invert y = lhs\tmp by conjugate gradients
-        lhs = lambda i: proj('AtA', i, x[c], y[c], sett, rho, vx_y=vx_y, bound_DtD=bound_grad, gr_diff=sett.gr_diff)
+        lhs = lambda dat: proj('AtA', dat, x[c], y[c], sett, rho, vx_y=vx_y, bound_DtD=bound_grad, gr_diff=sett.gr_diff)
         cg(A=lhs, b=tmp, x=y[c].dat,
            verbose=sett.cgs_verbose,
            max_iter=sett.cgs_max_iter,
