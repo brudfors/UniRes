@@ -44,21 +44,21 @@ def check_adjoint(po, method, dtype=torch.float32):
     po.smo_ker = po.smo_ker.type(dtype)
     po.scl = po.scl.type(dtype)
     # Apply A and At operators
-    Ay = _proj_apply('A', method, y, po)
-    Atx = _proj_apply('At', method, x, po)
+    Ay = proj_apply('A', y, po, method=method)
+    Atx = proj_apply('At', x, po, method=method)
     # Check okay
     val = torch.sum(Ay * x, dtype=torch.float64) - torch.sum(Atx * y, dtype=torch.float64)
     # Print okay
     print('<Ay, x> - <Atx, y> = {}'.format(val))
 
 
-def proj(operator, dat, x, y, sett, rho, n=0, vx_y=None, bound_DtD='constant', gr_diff='forward'):
+def proj(operator, dat, x, y, method='super-resolution', do=True, rho=1, n=0, vx_y=None, bound_DtD='constant', gr_diff='forward'):
     """ Projects image data by A, At or AtA.
 
     Args:
         operator (string): Either 'A', 'At ' or 'AtA'.
         dat (torch.Rensor): Image data (dim_x|dim_y).
-        rho (torch.Tensor): ADMM step size.
+        rho (torch.Tensor): ADMM step size, defaults to 1.
         n (int): Observation index, defaults to 0.
         vx_y (tuple(float)): Output voxel size.
         bound_DtD (str, optional): Bound for gradient/divergence calculation, defaults to
@@ -70,21 +70,108 @@ def proj(operator, dat, x, y, sett, rho, n=0, vx_y=None, bound_DtD='constant', g
 
     """
     if operator == 'AtA':
-        if not sett.do_proj:  # return dat
+        if not do:  # return dat
             operator = 'none'
         dat1 = rho * y.lam ** 2 * _DtD(dat, vx_y=vx_y, bound=bound_DtD, gr_diff=gr_diff)
         dat = dat[None, None, ...]
-        dat = x[n].tau * _proj_apply(operator, sett.method, dat, x[n].po)
+        dat = x[n].tau * proj_apply(operator, dat, x[n].po, method=method)
         for n1 in range(1, len(x)):
-            dat = dat + x[n1].tau * _proj_apply(operator, sett.method, dat, x[n1].po)
+            dat = dat + x[n1].tau * proj_apply(operator, dat, x[n1].po, method=method)
         dat = dat[0, 0, ...]
         dat += dat1
     else:  # A, At
-        if not sett.do_proj:  # return dat
+        if not do:  # return dat
             operator = 'none'
         dat = dat[None, None, ...]
-        dat = _proj_apply(operator, sett.method, dat, x[n].po)
+        dat = proj_apply(operator, dat, x[n].po, method=method)
         dat = dat[0, 0, ...]
+
+    return dat
+
+
+def proj_apply(operator, dat, po, method='super-resolution', bound='dct2', interpolation=1):
+    """ Applies operator A, At  or AtA (for denoising or super-resolution).
+
+    Args:
+        operator (string): Either 'A', 'At', 'AtA' or 'none'.
+        dat (torch.tensor()): Image data (1, 1, X_in, Y_in, Z_in).
+        po (ProjOp()): Encodes projection operator, has the following fields:
+            po.mat_x: Low-res affine matrix.
+            po.mat_y: High-res affine matrix.
+            po.mat_yx: Intermediate affine matrix.
+            po.dim_x: Low-res image dimensions.
+            po.dim_y: High-res image dimensions.
+            po.dim_yx: Intermediate image dimensions.
+            po.ratio: The ratio (low-res voxsize)/(high-res voxsize).
+            po.smo_ker: Smoothing kernel (slice-profile).
+        method (string): Either 'denoising' or 'super-resolution' (default).
+        bound (str, optional): Bound for nitorch push/pull, defaults to 'zero'.
+        interpolation (int, optional): Interpolation order, defaults to 1 (linear).
+
+    Returns:
+        dat (torch.tensor()): Projected image data (1, 1, X_out, Y_out, Z_out).
+
+    """
+    # Sanity check
+    if operator not in ['A', 'At', 'AtA', 'none']:
+        raise ValueError('Undefined operator')
+    if method not in ['denoising', 'super-resolution']:
+        raise ValueError('Undefined method')
+    if operator == 'none':
+        # No projection
+        return dat
+    # Get data type and device
+    dtype = dat.dtype
+    device = dat.device
+    # Parse required projection info
+    mat_x = po.mat_x
+    mat_y = po.mat_y
+    mat_yx = po.mat_yx
+    rigid = po.rigid
+    dim_x = po.dim_x
+    dim_y = po.dim_y
+    dim_yx = po.dim_yx
+    ratio = po.ratio
+    smo_ker = po.smo_ker
+    scl = po.scl
+    dim_thick = po.dim_thick
+    if method == 'super-resolution':
+        dim = dim_yx
+        mat = rigid.mm(mat_yx).solve(mat_y)[0]  # mat_y\rigid*mat_yx
+    elif method == 'denoising':
+        dim = dim_x
+        mat = rigid.mm(mat_x).solve(mat_y)[0]  # mat_y\rigid*mat_x
+    # Get grid
+    grid = affine(dim, mat, device=device, dtype=dtype)
+    # Apply projection
+    if method == 'super-resolution':
+        extrapolate = True
+        if operator == 'A':
+            dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
+            dat = F.conv3d(dat, smo_ker, stride=ratio)
+            if scl != 0:
+                dat = apply_scaling(dat, scl, dim_thick)
+        elif operator == 'At':
+            if scl != 0:
+                dat = apply_scaling(dat, scl, dim_thick)
+            dat = F.conv_transpose3d(dat, smo_ker, stride=ratio)
+            dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
+        elif operator == 'AtA':
+            dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
+            dat = F.conv3d(dat, smo_ker, stride=ratio)
+            if scl != 0:
+                dat = apply_scaling(dat, 2 * scl, dim_thick)
+            dat = F.conv_transpose3d(dat, smo_ker, stride=ratio)
+            dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
+    elif method == 'denoising':
+        extrapolate = False
+        if operator == 'A':
+            dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
+        elif operator == 'At':
+            dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
+        elif operator == 'AtA':
+            dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
+            dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
 
     return dat
 
@@ -92,7 +179,7 @@ def proj(operator, dat, x, y, sett, rho, n=0, vx_y=None, bound_DtD='constant', g
 def proj_info(dim_y, mat_y, dim_x, mat_x, rigid=None,
               prof_ip=0, prof_tp=0, gap=0.0, device='cpu', scl=0.0,
               samp=0):
-    """ Define projection operator object, to be used with _proj_apply.
+    """ Define projection operator object, to be used with proj_apply.
 
     Args:
         dim_y ((int, int, int))): High-res image dimensions (3,).
@@ -209,89 +296,3 @@ def _DtD(dat, vx_y, bound='constant', gr_diff='forward'):
     
     return dat
 
-
-def _proj_apply(operator, method, dat, po, bound='dct2', interpolation=1):
-    """ Applies operator A, At  or AtA (for denoising or super-resolution).
-
-    Args:
-        operator (string): Either 'A', 'At', 'AtA' or 'none'.
-        method (string): Either 'denoising' or 'super-resolution'.
-        dat (torch.tensor()): Image data (1, 1, X_in, Y_in, Z_in).
-        po (ProjOp()): Encodes projection operator, has the following fields:
-            po.mat_x: Low-res affine matrix.
-            po.mat_y: High-res affine matrix.
-            po.mat_yx: Intermediate affine matrix.
-            po.dim_x: Low-res image dimensions.
-            po.dim_y: High-res image dimensions.
-            po.dim_yx: Intermediate image dimensions.
-            po.ratio: The ratio (low-res voxsize)/(high-res voxsize).
-            po.smo_ker: Smoothing kernel (slice-profile).
-        bound (str, optional): Bound for nitorch push/pull, defaults to 'zero'.
-        interpolation (int, optional): Interpolation order, defaults to 1 (linear).
-
-    Returns:
-        dat (torch.tensor()): Projected image data (1, 1, X_out, Y_out, Z_out).
-
-    """
-    # Sanity check
-    if operator not in ['A', 'At', 'AtA', 'none']:
-        raise ValueError('Undefined operator')
-    if method not in ['denoising', 'super-resolution']:
-        raise ValueError('Undefined method')
-    if operator == 'none':
-        # No projection
-        return dat
-    # Get data type and device
-    dtype = dat.dtype
-    device = dat.device
-    # Parse required projection info
-    mat_x = po.mat_x
-    mat_y = po.mat_y
-    mat_yx = po.mat_yx
-    rigid = po.rigid
-    dim_x = po.dim_x
-    dim_y = po.dim_y
-    dim_yx = po.dim_yx
-    ratio = po.ratio
-    smo_ker = po.smo_ker
-    scl = po.scl
-    dim_thick = po.dim_thick
-    if method == 'super-resolution':
-        dim = dim_yx
-        mat = rigid.mm(mat_yx).solve(mat_y)[0]  # mat_y\rigid*mat_yx
-    elif method == 'denoising':
-        dim = dim_x
-        mat = rigid.mm(mat_x).solve(mat_y)[0]  # mat_y\rigid*mat_x
-    # Get grid
-    grid = affine(dim, mat, device=device, dtype=dtype)
-    # Apply projection
-    if method == 'super-resolution':
-        extrapolate = True
-        if operator == 'A':
-            dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
-            dat = F.conv3d(dat, smo_ker, stride=ratio)
-            if scl != 0:
-                dat = apply_scaling(dat, scl, dim_thick)
-        elif operator == 'At':
-            if scl != 0:
-                dat = apply_scaling(dat, scl, dim_thick)
-            dat = F.conv_transpose3d(dat, smo_ker, stride=ratio)
-            dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
-        elif operator == 'AtA':
-            dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
-            dat = F.conv3d(dat, smo_ker, stride=ratio)
-            if scl != 0:
-                dat = apply_scaling(dat, 2 * scl, dim_thick)
-            dat = F.conv_transpose3d(dat, smo_ker, stride=ratio)
-            dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
-    elif method == 'denoising':
-        extrapolate = False
-        if operator == 'A':
-            dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
-        elif operator == 'At':
-            dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
-        elif operator == 'AtA':
-            dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
-            dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
-
-    return dat
