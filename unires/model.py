@@ -106,7 +106,7 @@ def fit(x, y, sett):
 
             t0 = print_info('fit-update', sett, 's', n_iter)  # PRINT
             # Do update
-            x, _ = update_scaling(x, y, sett, max_niter_gn=1, num_linesearch=4, verbose=0)
+            x, _ = update_scaling(x, y, sett, max_niter_gn=3, num_linesearch=6, verbose=0)
             _ = print_info('fit-done', sett, t0)  # PRINT
             # # Print parameter estimates
             # _ = print_info('scl-param', sett, x, t0)
