@@ -537,12 +537,12 @@ def _update_rigid_channel(xc, yc, sett, max_niter_gn=1, num_linesearch=4,
         if samp > 0 and po.D_x is not None:
             # Lowres
             grid = affine(po.dim_x, po.D_x, device=device, dtype=torch.float32)
-            dat_x = grid_pull(xc[n_x].dat[None, None, ...], grid, bound='zero',
+            dat_x = grid_pull(xc[n_x].dat[None, None, ...], grid, bound='dct2',
                               extrapolate=False, interpolation=0)[0, 0, ...]
             if n_x == 0 and po.D_y is not None:
                 # Highres (only for superres)
                 grid = affine(po.dim_y, po.D_y, device=device, dtype=torch.float32)
-                dat_y = grid_pull(yc.dat[None, None, ...], grid, bound='zero',
+                dat_y = grid_pull(yc.dat[None, None, ...], grid, bound='dct2',
                                   extrapolate=False, interpolation=0)
             else:
                 dat_y = yc.dat[None, None, ...]

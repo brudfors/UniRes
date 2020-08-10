@@ -17,7 +17,7 @@ def apply_scaling(dat, scl, dim):
         dat_out[..., :, :, 1::2] = torch.exp(-scl) * dat[..., :, :, 1::2]
     elif dim == 1:
         dat_out[..., :, ::2, :] = torch.exp(scl) * dat[..., :, ::2, :]
-        dat_out[..., :, 1::2, :] = torch.exp(-scl) * at[..., :, 1::2, :]
+        dat_out[..., :, 1::2, :] = torch.exp(-scl) * dat[..., :, 1::2, :]
     else:
         dat_out[..., ::2, :, :] = torch.exp(scl) * dat[..., ::2, :, :]
         dat_out[..., 1::2, :, :] = torch.exp(-scl) * dat[..., 1::2, :, :]
@@ -141,6 +141,13 @@ def proj_apply(operator, dat, po, method='super-resolution', bound='dct2', inter
     elif method == 'denoising':
         dim = dim_x
         mat = rigid.mm(mat_x).solve(mat_y)[0]  # mat_y\rigid*mat_x
+    # Smoothing operator
+    if len(ratio) == 3:  # 3D
+        conv = lambda x: F.conv3d(x, smo_ker, stride=ratio)
+        conv_transpose = lambda x: F.conv_transpose3d(x, smo_ker, stride=ratio)
+    else:  # 2D
+        conv = lambda x: F.conv2d(x, smo_ker, stride=ratio)
+        conv_transpose = lambda x: F.conv_transpose2d(x, smo_ker, stride=ratio)
     # Get grid
     grid = affine(dim, mat, device=device, dtype=dtype)
     # Apply projection
@@ -148,20 +155,20 @@ def proj_apply(operator, dat, po, method='super-resolution', bound='dct2', inter
         extrapolate = True
         if operator == 'A':
             dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
-            dat = F.conv3d(dat, smo_ker, stride=ratio)
+            dat = conv(dat)
             if scl != 0:
                 dat = apply_scaling(dat, scl, dim_thick)
         elif operator == 'At':
             if scl != 0:
                 dat = apply_scaling(dat, scl, dim_thick)
-            dat = F.conv_transpose3d(dat, smo_ker, stride=ratio)
+            dat = conv_transpose(dat)
             dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
         elif operator == 'AtA':
             dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
-            dat = F.conv3d(dat, smo_ker, stride=ratio)
+            dat = conv(dat)
             if scl != 0:
                 dat = apply_scaling(dat, 2 * scl, dim_thick)
-            dat = F.conv_transpose3d(dat, smo_ker, stride=ratio)
+            dat = conv_transpose(dat)
             dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
     elif method == 'denoising':
         extrapolate = False
@@ -202,36 +209,42 @@ def proj_info(dim_y, mat_y, dim_x, mat_x, rigid=None,
     # Data types
     dtype = torch.float64
     dtype_smo_ker = torch.float32
-    one = torch.tensor([1, 1, 1], device=device, dtype=torch.float64)
     # Output properties
-    po.dim_y = torch.tensor(dim_y, device=device, dtype=dtype)
+    if not isinstance(dim_y, torch.Tensor):
+        dim_y = torch.tensor(dim_y, device=device, dtype=dtype)
+    po.dim_y = dim_y
     po.mat_y = mat_y
     po.vx_y = voxsize(mat_y)
     # Input properties
-    po.dim_x = torch.tensor(dim_x, device=device, dtype=dtype)
+    if not isinstance(dim_x, torch.Tensor):
+        dim_x = torch.tensor(dim_x, device=device, dtype=dtype)
+    po.dim_x = dim_x
     po.mat_x = mat_x
     po.vx_x = voxsize(mat_x)
+    # Number of dimensions
+    ndim = len(dim_y)
+    one = torch.tensor((1,) * ndim, device=device, dtype=torch.float64)
     if rigid is None:
-        po.rigid = torch.eye(4, device=device, dtype=dtype)
+        po.rigid = torch.eye(ndim + 1, device=device, dtype=dtype)
     else:
         po.rigid = rigid.type(dtype).to(device)
     # Slice-profile
-    gap_cn = torch.zeros(3, device=device, dtype=dtype)
-    profile_cn = torch.tensor((prof_ip,) * 3, device=device, dtype=dtype)
+    gap_cn = torch.zeros(ndim, device=device, dtype=dtype)
+    profile = torch.tensor((prof_ip,) * ndim, device=device, dtype=dtype)
     dim_thick = torch.max(po.vx_x, dim=0)[1]
     gap_cn[dim_thick] = gap
-    profile_cn[dim_thick] = prof_tp
+    profile[dim_thick] = prof_tp
     po.dim_thick = dim_thick
     if samp > 0:
         # Sub-sampling
-        samp = torch.tensor((samp,) * 3, device=device, dtype=torch.float64)
+        samp = torch.tensor((samp,) * ndim, device=device, dtype=torch.float64)
         # Intermediate to lowres
         sk = torch.max(one, torch.floor(samp * one / po.vx_x + 0.5))
         D_x = torch.diag(torch.cat((sk, one[0, None])))
         po.D_x = D_x
         # Modulate lowres
         po.mat_x = po.mat_x.mm(D_x)
-        po.dim_x = D_x.inverse()[:3, :3].mm(po.dim_x.reshape((3, 1))).floor().squeeze()
+        po.dim_x = D_x.inverse()[:ndim, :ndim].mm(po.dim_x[..., None]).floor().squeeze()
         if torch.sum(torch.abs(po.vx_x - po.vx_x)) > 1e-4:
             # Intermediate to highres (only for superres)
             sk = torch.max(one, torch.floor(samp * one / po.vx_y + 0.5))
@@ -240,27 +253,27 @@ def proj_info(dim_y, mat_y, dim_x, mat_x, rigid=None,
             # Modulate highres
             po.mat_y = po.mat_y.mm(D_y)
             po.vx_y = voxsize(po.mat_y)
-            po.dim_y = D_y.inverse()[:3, :3].mm(po.dim_y.reshape((3, 1))).floor().squeeze()
+            po.dim_y = D_y.inverse()[:ndim, :ndim].mm(po.dim_y[..., None]).floor().squeeze()
         po.vx_x = voxsize(po.mat_x)
     # Make intermediate
     ratio = torch.solve(po.mat_x, po.mat_y)[0]  # mat_y\mat_x
-    ratio = (ratio[:3, :3] ** 2).sum(0).sqrt()
+    ratio = (ratio[:ndim, :ndim] ** 2).sum(0).sqrt()
     ratio = ratio.ceil().clamp(1)  # ratio low/high >= 1
     mat_yx = torch.cat((ratio, torch.ones(1, device=device, dtype=dtype))).diag()
     po.mat_yx = po.mat_x.matmul(mat_yx.inverse())  # mat_x/mat_yx
     po.dim_yx = (po.dim_x - 1) * ratio + 1
     # Make elements with ratio <= 1 use dirac profile
-    profile_cn[ratio == 1] = -1
-    profile_cn = profile_cn.int().tolist()
+    profile[ratio == 1] = -1
+    profile = profile.int().tolist()
     # Make smoothing kernel (slice-profile)
     fwhm = (1. - gap_cn) * ratio
-    smo_ker = smooth(profile_cn, fwhm, sep=False, dtype=dtype_smo_ker, device=device)
+    smo_ker = smooth(profile, fwhm, sep=False, dtype=dtype_smo_ker, device=device)
     po.smo_ker = smo_ker
     # Add offset to intermediate space
-    off = torch.tensor(smo_ker.shape[-3:], dtype=dtype, device=device)
+    off = torch.tensor(smo_ker.shape[-ndim:], dtype=dtype, device=device)
     off = -(off - 1) // 2  # set offset
-    mat_off = torch.eye(4, dtype=torch.float64, device=device)
-    mat_off[:3, -1] = off
+    mat_off = torch.eye(ndim + 1, dtype=torch.float64, device=device)
+    mat_off[:ndim, -1] = off
     po.dim_yx = po.dim_yx + 2 * torch.abs(off)
     po.mat_yx = torch.matmul(po.mat_yx, mat_off)
     # Odd/even slice scaling

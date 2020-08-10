@@ -1,3 +1,4 @@
+import nibabel as nib
 from nitorch.spatial import grid_pull, voxsize
 from nitorch.spm import (affine, mean_space, noise_estimate,
                          affine_basis, dexpm, estimate_fwhm)
@@ -254,7 +255,7 @@ def _estimate_hyperpar(x, sett):
                 # Estimate noise sd from estimate of FWHM
                 sd_bg = estimate_fwhm(dat, voxsize(x[c][n].mat), mn=20, mx=50)[1]
                 mu_bg = torch.tensor(0.0, device=dat.device, dtype=dat.dtype)
-                mu_fg = torch.tensor(2000.0, device=dat.device, dtype=dat.dtype)
+                mu_fg = torch.tensor(5000.0, device=dat.device, dtype=dat.dtype)
             else:
                 # Get noise and foreground statistics
                 sd_bg, sd_fg, mu_bg, mu_fg = noise_estimate(dat, num_class=2, show_fit=sett.show_hyperpar, 
@@ -342,10 +343,11 @@ def _format_y(x, sett):
     _ = print_info('mean-space', sett, dim, mat)
 
     # CT lambda fudge factor
-    ff_ct = 0.5  # Just a single CT
+    ff_ct = 1.0  # Just a single CT
     if N > 1:
-        # CT and MRIs
-        ff_ct = 8.0
+        # CT and MRIs: We need to fudge the CT scaling of lambda because the gradient
+        # distribution between CT and MRIs are so different
+        ff_ct = 10.0
 
     # Assign output
     y = []
@@ -421,7 +423,7 @@ def _init_y_dat(x, y, sett):
                 # Do interpolation
                 mn = torch.min(dat)
                 mx = torch.max(dat)
-                dat = grid_pull(dat, grid, bound='zero', extrapolate=False, interpolation=1)
+                dat = grid_pull(dat, grid, bound='dct2', extrapolate=False, interpolation=1)
                 dat[dat < mn] = mn
                 dat[dat > mx] = mx
                 dat_y = dat_y + dat[0, 0, ...]
