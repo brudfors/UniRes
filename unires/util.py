@@ -18,6 +18,12 @@ def print_info(info, sett, *argv):
         return 0
 
     if sett.do_print >= 1:
+        if info == 'init':
+            print('Initialising UniRes')
+            if type(sett.device) is torch.device:
+                print('GPU: ' + torch.cuda.get_device_name(0) + ', CUDA: ' + str(torch.cuda.is_available()))
+            else:
+                print('CPU')
         if info == 'fit-finish':
             print(' {} finished in {:0.5f} seconds and '
                   '{} iterations\n'.format(sett.method, timer() - argv[0], argv[1] + 1))

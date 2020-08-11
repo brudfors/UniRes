@@ -182,6 +182,8 @@ def init(data, sett=Settings()):
         sett (Settings(), optional): Algorithm settings. Described in Settings() class.
 
     """
+    _ = print_info('init', sett)
+
     # Read and format data
     x = _read_data(data, sett)
     del data
