@@ -314,7 +314,7 @@ def _format_y(x, sett):
     if vx_same and (torch.abs(all_vx[..., 0] - vx_y) < 1e-3).all():
         # All input images have same voxel size, and output voxel size is the also the same
         do_sr = False
-        if mat_same and dim_same and not sett.unified_rigid:
+        if mat_same and dim_same and not sett.unified_rigid and sett.bb == 'full':
             # All input images have the same FOV
             mat = all_mat[..., 0]
             dim = all_dim[..., 0]
@@ -322,14 +322,16 @@ def _format_y(x, sett):
 
     if do_sr or sett.do_proj:
         # Get FOV of mean space
-        if mat_same and do_sr:
+        if mat_same and do_sr and sett.bb == 'full':
             D = torch.diag(torch.cat((vx_y / all_vx[:, 0], one[..., None])))
             mat = all_mat[..., 0].mm(D)
             mat[:3, 3] = mat[:3, 3] + 0.5*(vx_y - all_vx[:, 0])
             dim = D.inverse()[:3, :3].mm(all_dim[:, 0].reshape((3, 1))).ceil().squeeze()
         else:
             # Mean space from several images
-            dim, mat, _ = mean_space(all_mat, all_dim, vx=vx_y, mod_prct=-sett.mod_prct)
+            dim, mat, _ = mean_space(all_mat, all_dim, vx=vx_y, bb=sett.bb)
+
+    # Set method
     if do_sr:
         sett.method = 'super-resolution'
     else:
@@ -423,7 +425,7 @@ def _init_y_dat(x, y, sett):
                 # Do interpolation
                 mn = torch.min(dat)
                 mx = torch.max(dat)
-                dat = grid_pull(dat, grid, bound='dct2', extrapolate=False, interpolation=1)
+                dat = grid_pull(dat, grid, bound='zero', extrapolate=False, interpolation=1)
                 dat[dat < mn] = mn
                 dat[dat > mx] = mx
                 dat_y = dat_y + dat[0, 0, ...]

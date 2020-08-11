@@ -89,7 +89,7 @@ def proj(operator, dat, x, y, method='super-resolution', do=True, rho=1, n=0, vx
     return dat
 
 
-def proj_apply(operator, dat, po, method='super-resolution', bound='dct2', interpolation=1):
+def proj_apply(operator, dat, po, method='super-resolution', bound='zero', interpolation=1):
     """ Applies operator A, At  or AtA (for denoising or super-resolution).
 
     Args:

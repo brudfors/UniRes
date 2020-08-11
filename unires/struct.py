@@ -61,6 +61,7 @@ class Settings:
 
     """
     alpha: float = 1.0  # Relaxation parameter 0 < alpha < 2, alpha < 1: under-relaxation, alpha > 1: over-relaxation
+    bb: str = 'full'  # Output bounding box of reconstructed data ('full'|'mni'|'95')
     cgs_max_iter: int = 128  # Max conjugate gradient (CG) iterations for solving for y
     cgs_tol: float = 1e-3  # CG tolerance for solving for y
     cgs_verbose: bool = False  # CG verbosity (0, 1)
@@ -73,7 +74,6 @@ class Settings:
     mat: torch.Tensor = None  # Observed image(s) affine matrix. OBS: Data needs to be given as 4D array
     max_iter: int = 512  # Max algorithm iterations
     method = None  # Method name (super-resolution|denoising), defined in format_output()
-    mod_prct: float = 0.0  # Amount to crop mean space, between 0 and 1 (faster, but could loss out on data)
     prefix: str = 'y_'  # Prefix for reconstructed image(s)
     do_print: int = 1  # Print progress to terminal (0, 1, 2)
     plot_conv: bool = False  # Use matplotlib to plot convergence in real-time
