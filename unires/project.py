@@ -25,7 +25,7 @@ def apply_scaling(dat, scl, dim):
     return dat_out
 
 
-def check_adjoint(po, method, dtype=torch.float32):
+def check_adjoint(po, method, bound, interpolation, dtype=torch.float32):
     """ Print adjointness of A and At operators:
         <Ay, x> - <Atx, y> \approx 0
 
@@ -44,15 +44,16 @@ def check_adjoint(po, method, dtype=torch.float32):
     po.smo_ker = po.smo_ker.type(dtype)
     po.scl = po.scl.type(dtype)
     # Apply A and At operators
-    Ay = proj_apply('A', y, po, method=method)
-    Atx = proj_apply('At', x, po, method=method)
+    Ay = proj_apply('A', y, po, method=method, bound=bound, interpolation=interpolation)
+    Atx = proj_apply('At', x, po, method=method, bound=bound, interpolation=interpolation)
     # Check okay
     val = torch.sum(Ay * x, dtype=torch.float64) - torch.sum(Atx * y, dtype=torch.float64)
     # Print okay
     print('<Ay, x> - <Atx, y> = {}'.format(val))
 
 
-def proj(operator, dat, x, y, method='super-resolution', do=True, rho=1, n=0, vx_y=None, bound_DtD='constant', gr_diff='forward'):
+def proj(operator, dat, x, y, method='super-resolution', do=True, rho=1, n=0, vx_y=None,
+         interpolation='linear', bound='zero', diff='forward'):
     """ Projects image data by A, At or AtA.
 
     Args:
@@ -61,9 +62,9 @@ def proj(operator, dat, x, y, method='super-resolution', do=True, rho=1, n=0, vx
         rho (torch.Tensor): ADMM step size, defaults to 1.
         n (int): Observation index, defaults to 0.
         vx_y (tuple(float)): Output voxel size.
-        bound_DtD (str, optional): Bound for gradient/divergence calculation, defaults to
+        bound (str, optional): Bound for gradient/divergence calculation, defaults to
             constant zero.
-        gr_diff (str, optional): Gradient difference operator, defaults to 'forward'.
+        diff (str, optional): Gradient difference operator, defaults to 'forward'.
 
     Returns:
         dat (torch.tensor()): Projected image data (dim_y|dim_x).
@@ -72,24 +73,27 @@ def proj(operator, dat, x, y, method='super-resolution', do=True, rho=1, n=0, vx
     if operator == 'AtA':
         if not do:  # return dat
             operator = 'none'
-        dat1 = rho * y.lam ** 2 * _DtD(dat, vx_y=vx_y, bound=bound_DtD, gr_diff=gr_diff)
+        dat1 = rho * y.lam ** 2 * _DtD(dat, vx_y=vx_y, bound=bound, diff=diff)
         dat = dat[None, None, ...]
-        dat = x[n].tau * proj_apply(operator, dat, x[n].po, method=method)
+        dat = x[n].tau * proj_apply(operator, dat, x[n].po, method=method,
+                                    bound=bound, interpolation=interpolation)
         for n1 in range(1, len(x)):
-            dat = dat + x[n1].tau * proj_apply(operator, dat, x[n1].po, method=method)
+            dat = dat + x[n1].tau * proj_apply(operator, dat, x[n1].po, method=method,
+                                               bound=bound, interpolation=interpolation)
         dat = dat[0, 0, ...]
         dat += dat1
     else:  # A, At
         if not do:  # return dat
             operator = 'none'
         dat = dat[None, None, ...]
-        dat = proj_apply(operator, dat, x[n].po, method=method)
+        dat = proj_apply(operator, dat, x[n].po, method=method,
+                         bound=bound, interpolation=interpolation)
         dat = dat[0, 0, ...]
 
     return dat
 
 
-def proj_apply(operator, dat, po, method='super-resolution', bound='zero', interpolation=1):
+def proj_apply(operator, dat, po, method='super-resolution', bound='zero', interpolation='linear'):
     """ Applies operator A, At  or AtA (for denoising or super-resolution).
 
     Args:
@@ -106,7 +110,7 @@ def proj_apply(operator, dat, po, method='super-resolution', bound='zero', inter
             po.smo_ker: Smoothing kernel (slice-profile).
         method (string): Either 'denoising' or 'super-resolution' (default).
         bound (str, optional): Bound for nitorch push/pull, defaults to 'zero'.
-        interpolation (int, optional): Interpolation order, defaults to 1 (linear).
+        interpolation (int, optional): Interpolation order, defaults to linear.
 
     Returns:
         dat (torch.tensor()): Projected image data (1, 1, X_out, Y_out, Z_out).
@@ -290,7 +294,7 @@ def proj_info(dim_y, mat_y, dim_x, mat_x, rigid=None,
     return po
 
 
-def _DtD(dat, vx_y, bound='constant', gr_diff='forward'):
+def _DtD(dat, vx_y, bound='zero', diff='forward'):
     """ Computes the divergence of the gradient.
 
     Args:
@@ -298,14 +302,14 @@ def _DtD(dat, vx_y, bound='constant', gr_diff='forward'):
         vx_y (tuple(float)): Output voxel size.
         bound (str, optional): Bound for gradient/divergence calculation, defaults to
             constant zero.
-        gr_diff (str, optional): Gradient difference operator, defaults to 'forward'.
+        diff (str, optional): Gradient difference operator, defaults to 'forward'.
 
     Returns:
           div (torch.tensor()): Dt(D(dat)) (dim_y).
 
     """
-    dat = im_gradient(dat, vx=vx_y, bound=bound, which=gr_diff)
-    dat = im_divergence(dat, vx=vx_y, bound=bound, which=gr_diff)
+    dat = im_gradient(dat, vx=vx_y, bound=bound, which=diff)
+    dat = im_divergence(dat, vx=vx_y, bound=bound, which=diff)
     
     return dat
 

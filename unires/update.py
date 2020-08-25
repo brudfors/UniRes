@@ -64,7 +64,6 @@ def update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
     """
     # Parameters
     vx_y = voxsize(y[0].mat).float()  # Output voxel size
-    bound_grad = 'constant'
     # Constants
     tiny = torch.tensor(1e-7, dtype=torch.float32, device=sett.device)
     one = torch.tensor(1, dtype=torch.float32, device=sett.device)
@@ -80,15 +79,17 @@ def update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
         tmp[:] = 0
         for n in range(len(x[c])):  # Loop over observations of channel 'c'
             # _ = print_info('int', sett, n)  # PRINT
-            tmp += x[c][n].tau * proj('At', x[c][n].dat, x[c], y[c], method=sett.method, do=sett.do_proj, n=n)
+            tmp += x[c][n].tau * proj('At', x[c][n].dat, x[c], y[c], method=sett.method, do=sett.do_proj,
+                                      n=n, bound=sett.bound, interpolation=sett.interpolation)
 
         # Divergence
         div = w[c, ...] - rho * z[c, ...]
-        div = im_divergence(div, vx=vx_y, bound=bound_grad, which=sett.gr_diff)
+        div = im_divergence(div, vx=vx_y, bound=sett.bound, which=sett.diff)
         tmp -= y[c].lam * div
 
         # Invert y = lhs\tmp by conjugate gradients
-        lhs = lambda dat: proj('AtA', dat, x[c], y[c], method=sett.method, do=sett.do_proj, rho=rho, vx_y=vx_y, bound_DtD=bound_grad, gr_diff=sett.gr_diff)
+        lhs = lambda dat: proj('AtA', dat, x[c], y[c], method=sett.method, do=sett.do_proj, rho=rho,
+                               vx_y=vx_y, bound=sett.bound, interpolation=sett.interpolation, diff=sett.diff)
         cg(A=lhs, b=tmp, x=y[c].dat,
            verbose=sett.cgs_verbose,
            max_iter=sett.cgs_max_iter,
@@ -104,8 +105,7 @@ def update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
     # Compute model objective function
     # ----------
     if sett.tolerance > 0:
-        obj[n_iter, 0], obj[n_iter, 1], obj[n_iter, 2] \
-            = _compute_nll(x, y, sett, rho, bound=bound_grad, gr_diff=sett.gr_diff)  # nl_pyx, nl_pxy, nl_py
+        obj[n_iter, 0], obj[n_iter, 1], obj[n_iter, 2] = _compute_nll(x, y, sett, rho)  # nl_pyx, nl_pxy, nl_py
 
     # ----------
     # UPDATE: z
@@ -115,7 +115,7 @@ def update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
     t0 = print_info('fit-update', sett, 'z', n_iter)  # PRINT
     tmp[:] = 0
     for c in range(len(x)):
-        Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=bound_grad, which=sett.gr_diff)
+        Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
         if alpha != 1:  # Use over/under-relaxation
             Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
         tmp += torch.sum((w[c, ...] / rho + Dy) ** 2, dim=0)
@@ -123,7 +123,7 @@ def update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
     tmp = ((tmp - one / rho).clamp_min(0)) / (tmp + tiny)
 
     for c in range(len(x)):
-        Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=bound_grad, which=sett.gr_diff)
+        Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
         if alpha != 1:  # Use over/under-relaxation
             Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
         for d in range(Dy.shape[0]):
@@ -135,7 +135,7 @@ def update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
     # ----------
     t0 = print_info('fit-update', sett, 'w', n_iter)  # PRINT
     for c in range(len(x)):  # Loop over channels
-        Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=bound_grad, which=sett.gr_diff)
+        Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
         if alpha != 1:  # Use over/under-relaxation
             Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
         w[c, ...] += rho * (Dy - z[c, ...])
@@ -254,7 +254,8 @@ def update_scaling(x, y, sett, max_niter_gn=1, num_linesearch=4, verbose=0):
             xe = xe[me]
             # Get reconstruction (without scaling)
             grid = affine(dim, mat, device=sett.device, dtype=torch.float32)
-            dat_y = grid_pull(y[c].dat[None, None, ...], grid, bound='zero', extrapolate=True)
+            dat_y = grid_pull(y[c].dat[None, None, ...], grid, bound=sett.bound,
+                              interpolation=sett.interpolation, extrapolate=True)
             dat_y = F.conv3d(dat_y, smo_ker, stride=ratio)[0, 0, ...]
             # Apply scaling
             dat_y = apply_scaling(dat_y, scl, dim_thick)
@@ -335,15 +336,12 @@ def update_scaling(x, y, sett, max_niter_gn=1, num_linesearch=4, verbose=0):
     return x, sll
 
 
-def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64, bound='constant', gr_diff='forward'):
+def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64):
     """ Compute negative model log-likelihood.
 
     Args:
         rho (torch.Tensor): ADMM step size.
         sum_dtype (torch.dtype): Defaults to torch.float64.
-        bound (str, optional): Bound for gradient/divergence calculation, defaults to
-            constant zero.
-        gr_diff (str, optional): Gradient difference operator, defaults to 'forward'.
 
     Returns:
         nll_yx (torch.tensor()): Negative log-posterior
@@ -358,10 +356,11 @@ def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64, bound='constant', gr_
         for n in range(len(x[c])):
             msk = x[c][n].dat != 0
             nll_xy += 0.5 * x[c][n].tau * torch.sum((x[c][n].dat[msk] -
-                                                    proj('A', y[c].dat, x[c], y[c], method=sett.method, do=sett.do_proj, n=n)[msk]) ** 2,
-                                                    dtype=sum_dtype)
+                                                    proj('A', y[c].dat, x[c], y[c], method=sett.method, do=sett.do_proj,
+                                                         n=n, bound=sett.bound, interpolation=sett.interpolation)[msk]) ** 2,
+                                                         dtype=sum_dtype)
         # Neg. log-prior term
-        Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=bound, which=gr_diff)
+        Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
         if c > 0:
             nll_y += torch.sum(Dy ** 2, dim=0)
         else:
@@ -390,7 +389,7 @@ def _even_odd(dat, which, dim):
         return dat[1::2, :, :]
 
 
-def _rigid_match(method, dat_x, dat_y, po, tau, rigid, CtC=None, diff=False, verbose=0):
+def _rigid_match(dat_x, dat_y, po, tau, rigid, sett, CtC=None, diff=False, verbose=0):
     """ Computes the rigid matching term, and its gradient and Hessian (if requested).
 
     Args:
@@ -429,13 +428,11 @@ def _rigid_match(method, dat_x, dat_y, po, tau, rigid, CtC=None, diff=False, ver
     gr = None
     Hes = None
 
-    bound = 'zero'
-    interpolation = 1
-    if method == 'super-resolution':
+    if sett.method == 'super-resolution':
         extrapolate = True
         dim = dim_yx
         mat = mat_yx
-    elif method == 'denoising':
+    elif sett.method == 'denoising':
         extrapolate = False
         dim = dim_x
         mat = mat_x
@@ -445,13 +442,13 @@ def _rigid_match(method, dat_x, dat_y, po, tau, rigid, CtC=None, diff=False, ver
     grid = affine(dim, mat, device=dat_x.device, dtype=torch.float32)
 
     # Warp y and compute spatial derivatives
-    dat_yx = grid_pull(dat_y, grid, bound=bound, extrapolate=extrapolate, interpolation=interpolation)[0, 0, ...]
-    if method == 'super-resolution':
+    dat_yx = grid_pull(dat_y, grid, bound=sett.bound, extrapolate=extrapolate, interpolation=sett.interpolation)[0, 0, ...]
+    if sett.method == 'super-resolution':
         dat_yx = F.conv3d(dat_yx[None, None, ...], smo_ker, stride=ratio)[0, 0, ...]
         if scl != 0:
             dat_yx = apply_scaling(dat_yx, scl, dim_thick)
     if diff:
-        gr = grid_grad(dat_y, grid, bound=bound, extrapolate=extrapolate, interpolation=interpolation)[0, 0, ...]
+        gr = grid_grad(dat_y, grid, bound=sett.bound, extrapolate=extrapolate, interpolation=sett.interpolation)[0, 0, ...]
 
     if verbose >= 2:  # Show images
         show_slices(torch.stack((dat_x, dat_yx, (dat_x - dat_yx) ** 2), 3),
@@ -476,7 +473,7 @@ def _rigid_match(method, dat_x, dat_y, po, tau, rigid, CtC=None, diff=False, ver
         Hes[:, :, :, 3] = gr[:, :, :, 0] * gr[:, :, :, 1]
         Hes[:, :, :, 4] = gr[:, :, :, 0] * gr[:, :, :, 2]
         Hes[:, :, :, 5] = gr[:, :, :, 1] * gr[:, :, :, 2]
-        if method == 'super-resolution':
+        if sett.method == 'super-resolution':
             Hes *= CtC[..., None]
             diff = F.conv_transpose3d(diff[None, None, ...], smo_ker, stride=ratio)[0, 0, ...]
         # Gradient
@@ -573,8 +570,8 @@ def _update_rigid_channel(xc, yc, sett, max_niter_gn=1, num_linesearch=4,
             Hes = torch.zeros(num_q, num_q, device=device, dtype=torch.float64)
 
             # Compute matching-term part (log-likelihood)
-            ll, gr_m, Hes_m = _rigid_match(sett.method, dat_x, dat_y, po, tau, rigid,
-                                          diff=True, verbose=verbose, CtC=CtC)
+            ll, gr_m, Hes_m = _rigid_match(dat_x, dat_y, po, tau, rigid, sett,
+                                           diff=True, verbose=verbose, CtC=CtC)
 
             # Multiply with d_rigid_q (chain-rule)
             dAff = []
@@ -627,8 +624,8 @@ def _update_rigid_channel(xc, yc, sett, max_niter_gn=1, num_linesearch=4,
                     q = old_q - armijo * Update
                     # Compute matching term
                     rigid = dexpm(q, sett.rigid_basis)[0]
-                    ll = _rigid_match(sett.method, dat_x, dat_y, po, tau, rigid,
-                                     verbose=verbose)[0]
+                    ll = _rigid_match(dat_x, dat_y, po, tau, rigid, sett,
+                                      verbose=verbose)[0]
                     # Matching improved?
                     if ll < old_ll:
                         # Better fit!

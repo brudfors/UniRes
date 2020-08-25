@@ -62,15 +62,17 @@ class Settings:
     """
     alpha: float = 1.0  # Relaxation parameter 0 < alpha < 2, alpha < 1: under-relaxation, alpha > 1: over-relaxation
     bb: str = 'full'  # Output bounding box of reconstructed data ('full'|'mni'|'95')
+    bound: str = 'zero'  # Boundary conditions (see nitorch.spatial)
     cgs_max_iter: int = 128  # Max conjugate gradient (CG) iterations for solving for y
     cgs_tol: float = 1e-3  # CG tolerance for solving for y
     cgs_verbose: bool = False  # CG verbosity (0, 1)
     device: str = 'cuda'  # PyTorch device name
-    gr_diff: str = 'forward'  # Gradient difference operator (forward|backward|central)
+    diff: str = 'forward'  # Gradient difference operator (forward|backward|central)
     dir_out: str = None  # Directory to write output, if None uses same as input (output is prefixed 'y_')
     do_proj = None  # Use projection matrices, defined in format_output()
     gap: float = 0.0  # Slice gap, between 0 and 1
     has_ct: bool = False  # Data could be CT (but data must contain negative values)
+    interpolation: str = 'linear'  # Interpolation order (see nitorch.spatial)
     mat: torch.Tensor = None  # Observed image(s) affine matrix. OBS: Data needs to be given as 4D array
     max_iter: int = 512  # Max algorithm iterations
     method = None  # Method name (super-resolution|denoising), defined in format_output()

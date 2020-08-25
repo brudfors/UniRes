@@ -92,7 +92,8 @@ def fit(x, y, sett):
         # Check convergence
         # ----------
         if sett.plot_conv:  # Plot algorithm convergence
-            fig_ax_nll = plot_convergence(vals=obj[:n_iter + 1, :], fig_ax=fig_ax_nll, fig_num=99)
+            fig_ax_nll = plot_convergence(vals=obj[:n_iter + 1, :], fig_ax=fig_ax_nll, fig_num=99,
+                                          legend=['-ln(p(y|x))', '-ln(p(x|y))', '-ln(p(y))'])
         gain = get_gain(obj[:n_iter + 1, 0], monotonicity='decreasing')
         t_iter = print_info('fit-ll', sett, 'y', n_iter, obj[n_iter, :], gain, t_iter)
         # Converged?
@@ -427,7 +428,7 @@ def _init_y_dat(x, y, sett):
                 # Do interpolation
                 mn = torch.min(dat)
                 mx = torch.max(dat)
-                dat = grid_pull(dat, grid, bound='zero', extrapolate=False, interpolation=1)
+                dat = grid_pull(dat, grid, bound=sett.bound, extrapolate=False, interpolation=1)
                 dat[dat < mn] = mn
                 dat[dat > mx] = mx
                 dat_y = dat_y + dat[0, 0, ...]
