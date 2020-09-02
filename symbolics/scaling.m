@@ -5,7 +5,8 @@
 % ye: even recon, after C (conv) and P (pull) have been applied
 % s: scaling parameter
 % t: noise precision
-syms xo xe yo ye s t
+syms xo xe yo ye s real
+syms t positive
 
 % Energy function (E = t/2 ||x - Sy||_2^2)
 % where x = [xo xe]', y = [yo ye]', S = [exp(s) 0; 0 exp(-s)]
