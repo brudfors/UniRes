@@ -153,7 +153,7 @@ def proj_apply(operator, dat, po, method='super-resolution', bound='zero', inter
         conv = lambda x: F.conv2d(x, smo_ker, stride=ratio)
         conv_transpose = lambda x: F.conv_transpose2d(x, smo_ker, stride=ratio)
     # Get grid
-    grid = affine(dim, mat, device=device, dtype=dtype)
+    grid = affine(dim, mat, device=device, dtype=dtype, jitter=True)
     # Apply projection
     if method == 'super-resolution':
         extrapolate = True

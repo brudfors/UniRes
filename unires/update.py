@@ -253,7 +253,7 @@ def update_scaling(x, y, sett, max_niter_gn=1, num_linesearch=4, verbose=0):
             me = _even_odd(msk, 'even', dim_thick)
             xe = xe[me]
             # Get reconstruction (without scaling)
-            grid = affine(dim, mat, device=sett.device, dtype=torch.float32)
+            grid = affine(dim, mat, device=sett.device, dtype=torch.float32, jitter=True)
             dat_y = grid_pull(y[c].dat[None, None, ...], grid, bound=sett.bound,
                               interpolation=sett.interpolation, extrapolate=True)
             dat_y = F.conv3d(dat_y, smo_ker, stride=ratio)[0, 0, ...]
@@ -439,7 +439,7 @@ def _rigid_match(dat_x, dat_y, po, tau, rigid, sett, CtC=None, diff=False, verbo
 
     # Get grid
     mat = rigid.mm(mat).solve(mat_y)[0]  # mat_y\rigid*mat
-    grid = affine(dim, mat, device=dat_x.device, dtype=torch.float32)
+    grid = affine(dim, mat, device=dat_x.device, dtype=torch.float32, jitter=True)
 
     # Warp y and compute spatial derivatives
     dat_yx = grid_pull(dat_y, grid, bound=sett.bound, extrapolate=extrapolate, interpolation=sett.interpolation)[0, 0, ...]
@@ -555,7 +555,7 @@ def _update_rigid_channel(xc, yc, sett, max_niter_gn=1, num_linesearch=4,
             CtC = F.conv_transpose3d(CtC, po.smo_ker, stride=po.ratio)[0, 0, ...]
 
         # Get identity grid
-        id_x = identity(dim, dtype=torch.float32, device=device, jitter=False)
+        id_x = identity(dim, dtype=torch.float32, device=device)
 
         for n_gn in range(max_niter_gn):  # Loop over Gauss-Newton iterations
 

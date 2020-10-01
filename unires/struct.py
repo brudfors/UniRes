@@ -63,7 +63,7 @@ class Settings:
     alpha: float = 1.0  # Relaxation parameter 0 < alpha < 2, alpha < 1: under-relaxation, alpha > 1: over-relaxation
     bb: str = 'full'  # Output bounding box of reconstructed data ('full'|'mni'|'95')
     bound: str = 'zero'  # Boundary conditions (see nitorch.spatial)
-    cgs_max_iter: int = 128  # Max conjugate gradient (CG) iterations for solving for y
+    cgs_max_iter: int = 64  # Max conjugate gradient (CG) iterations for solving for y
     cgs_tol: float = 1e-3  # CG tolerance for solving for y
     cgs_verbose: bool = False  # CG verbosity (0, 1)
     device: str = 'cuda'  # PyTorch device name
