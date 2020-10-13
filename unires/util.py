@@ -1,3 +1,4 @@
+import contextlib
 from datetime import datetime
 import nibabel as nib
 from nitorch.spatial import voxsize
@@ -210,4 +211,6 @@ def write_image(dat, ofname, mat=torch.eye(4), header=None, dtype='float32'):
         header.set_data_offset(offset=offset)
         header.set_slope_inter(slope=slope, inter=inter)
     # Write to  disk
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(ofname)
     nib.save(nii, ofname)
