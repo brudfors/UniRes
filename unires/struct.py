@@ -76,7 +76,7 @@ class Settings:
     mat: torch.Tensor = None  # Observed image(s) affine matrix. OBS: Data needs to be given as 4D array
     max_iter: int = 512  # Max algorithm iterations
     method = None  # Method name (super-resolution|denoising), defined in format_output()
-    prefix: str = 'y_'  # Prefix for reconstructed image(s)
+    prefix: str = 'ur_'  # Prefix for reconstructed image(s)
     do_print: int = 1  # Print progress to terminal (0, 1, 2)
     plot_conv: bool = False  # Use matplotlib to plot convergence in real-time
     profile_ip: int = 0  # In-plane slice profile (0=rect|1=tri|2=gauss)
@@ -85,7 +85,7 @@ class Settings:
     rho: float = None  # ADMM step-size, if None -> estimate is made
     rho_scl: float = 1.0  # Scaling of ADMM step-size
     rigid_basis = None  # Rigid transformation basis, defined in init_reg()
-    rigid_mod: int = 8  # Update rigidt every rigid_mod iteration
+    rigid_mod: int = 8  # Update rigid every rigid_mod iteration
     rigid_sched_max: int = 13  # Start scaling at 2^rigid_sched_max
     rigid_samp: int = 1  # Level of sub-sampling for estimating rigid registration parameters
     scaling: bool = False  # Optimise even/odd slice scaling

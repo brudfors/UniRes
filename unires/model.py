@@ -352,7 +352,7 @@ def _format_y(x, sett):
     if N > 1:
         # CT and MRIs: We need to fudge the CT scaling of lambda because the gradient
         # distribution between CT and MRIs are so different
-        ff_ct = 10.0
+        ff_ct = 20.0
 
     # Assign output
     y = []
