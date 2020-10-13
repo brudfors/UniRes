@@ -58,7 +58,7 @@ Now you can run *UniRes* via Docker containers started from the `unires:1.0` ima
 ### 1.4. Process MRI scans through Docker container
 Let's say you have a folder named `data` in your current working directory, which contains two MR images of the same subject: `T1.nii.gz`, `PD.nii.gz`. You can then process these two scans with *UniRes* by executing:
 ``` bash
-docker run -t --rm -v $PWD/data:/home/docker/app/data unires:1.0 data/T1.nii.gz data/PD.nii.gz
+docker run -it --rm -v $PWD/data:/home/docker/app/data unires:1.0 data/T1.nii.gz data/PD.nii.gz
 ```
 When the algorithm has finished, you will find the processed scans in the same `data` folder, prefixed `'y_'`.
 
