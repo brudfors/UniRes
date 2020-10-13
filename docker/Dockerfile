@@ -1,6 +1,8 @@
 # Point to base image
 FROM nvidia/cuda:10.1-cudnn7-devel-ubuntu18.04
 
+MAINTAINER Mikael Brudfors <brudfors@gmail.com>
+
 # Make bash the default shell
 SHELL ["/bin/bash", "--login", "-c"]
 

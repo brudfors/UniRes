@@ -8,7 +8,7 @@ This section describes setting up *UniRes* to run using NVIDIA's Docker engine o
 
 ### 1.1. Install NVIDIA driver and Docker
 Make sure that you have **installed** the **NVIDIA driver** and **Docker engine** for **your Linux distribution** (you do not need to install the CUDA Toolkit on the host system). These commands should install Docker:
-```
+``` bash
 curl https://get.docker.com | sh
 sudo systemctl start docker && sudo systemctl enable docker
 ```
@@ -16,7 +16,7 @@ Regarding the NVIDIA driver, I personally like the installation guide in [1] (st
 
 ### 1.2. Install the NVIDIA Docker engine
 Execute the following commands to install the NVIDIA Docker engine:
-```
+``` bash
 distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
 curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
 curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | sudo tee /etc/apt/sources.list.d/nvidia-docker.list
@@ -36,29 +36,29 @@ Next, edit/create `/etc/docker/daemon.json` with content (e.g., by `sudo vim /et
 }
 ```
 then do:
-```
+``` bash
 sudo systemctl restart docker
 ```
 Finally, test that it works by starting *nvidia-smi* in a Docker container:
-```
+``` bash
 sudo docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
 ```
 
 ### 1.3. Build UniRes Docker image
 `cd` to the content of the `docker` folder and run the following command to build the *UniRes* image:
-```
+``` bash
 docker build --rm --tag unires:1.0 .
 ```
 If there are permission issues, the following can help:
-```
+``` bash
 sudo chmod 666 /var/run/docker.sock
 ```
 Now you can run *UniRes* via Docker containers started from the `unires:1.0` image!
 
 ### 1.4. Process MRI scans through Docker container
 Let's say you have a folder named `data` in your current working directory, which contains two MR images of the same subject: `T1.nii.gz`, `PD.nii.gz`. You can then process these two scans with *UniRes* by executing:
-```
-docker run -t --rm -v $PWD/data:/home/docker/app/data unires:1.0 data/T1.nii.gz data/PD.nii.gz
+``` bash
+docker run -it --rm -v $PWD/data:/home/docker/app/data unires:1.0 data/T1.nii.gz data/PD.nii.gz
 ```
 When the algorithm has finished, you will find the processed scans in the same `data` folder, prefixed `'y_'`.
 
@@ -68,7 +68,7 @@ When the algorithm has finished, you will find the processed scans in the same `
 The *nitorch* package is required to use *UniRes*; simply follow the quickstart guide on its GitHub page: https://github.com/balbasty/nitorch.
 
 Next, activate a *nitorch* virtual environment and move to the *UniRes* project directory. Then install the package using either setuptools or pip:
-```
+``` bash
 cd /path/to/unires
 python setupy.py install
 # OR
@@ -78,7 +78,7 @@ pip install .
 ### 2.2. Example use case
 
 Running *UniRes* should be straight forward. Let's say you have three thick-sliced MR images: `T1.nii.gz`, `T2.nii.gz` and `PD.nii.gz`, then simply run `fit_unires.py` in the terminal as:
-```
+``` bash
 python fit_unires.py T1.nii.gz T2.nii.gz PD.nii.gz
 ```
 Three 1 mm isotropic images are written to the same folder as the input data, prefixed *y_*.
@@ -86,7 +86,7 @@ Three 1 mm isotropic images are written to the same folder as the input data, pr
 ### 2.3. Further customisation
 
 The algorithm estimates the necessary parameters from the input data, so it should, hopefully, work well out-the-box. However, a user might want to change some of the defaults, like slice-profile, slice-gap, or scale the regularisation a bit. Furthermore, instead of giving, e.g., nifti files via the command line tool (`fit.py`) it might be more desirable to interact with the nires code directly (maybe as part of some pipeline), working with the image data as `torch.tensor`. The following code snippet shows an example of how to do this:
-```
+``` python
 import nibabel as nib
 from unires.model import init, fit
 from unires.struct import Settings
