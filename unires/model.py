@@ -110,8 +110,8 @@ def fit(x, y, sett):
             # Do update
             x, _ = update_scaling(x, y, sett, max_niter_gn=3, num_linesearch=6, verbose=0)
             _ = print_info('fit-done', sett, t0)  # PRINT
-            # # Print parameter estimates
-            # _ = print_info('scl-param', sett, x, t0)
+            # Print parameter estimates
+            _ = print_info('scl-param', sett, x, t0)
 
         # ----------
         # UPDATE: rigid_q (not every iteration)

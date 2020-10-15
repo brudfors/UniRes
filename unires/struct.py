@@ -69,7 +69,7 @@ class Settings:
     device: str = 'cuda'  # PyTorch device name
     diff: str = 'forward'  # Gradient difference operator (forward|backward|central)
     dir_out: str = None  # Directory to write output, if None uses same as input (output is prefixed 'y_')
-    do_print: int = 1  # Print progress to terminal (0, 1, 2)
+    do_print: int = 1  # Print progress to terminal (0, 1, 2, 3)
     do_proj = None  # Use projection matrices, defined in format_output()
     gap: float = 0.0  # Slice gap, between 0 and 1
     has_ct: bool = False  # Data could be CT (but data must contain negative values)

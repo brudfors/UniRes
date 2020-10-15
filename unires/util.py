@@ -26,7 +26,7 @@ def print_info(info, sett, *argv):
                 print('GPU: ' + torch.cuda.get_device_name(0) + ', CUDA: ' + str(torch.cuda.is_available()))
             else:
                 print('CPU')
-        if info == 'fit-finish':
+        elif info == 'fit-finish':
             print(' {} finished in {:0.5f} seconds and '
                   '{} iterations\n'.format(sett.method, timer() - argv[0], argv[1] + 1))
         elif info in 'fit-ll':
@@ -40,18 +40,6 @@ def print_info(info, sett, *argv):
                                                 argv[0], argv[1], argv[2], argv[3], argv[4]))
         elif info in 'step_size':
             print('\nADMM step-size={:0.4f}'.format(argv[0]))
-        elif info in 'reg-param':
-            print('Rigid registration fit:')
-            for c in range(len(argv[0])):
-                for n in range(len(argv[0][c])):
-                    print('c={} n={} | q={}'.format(c, n, round(argv[0][c][n].rigid_q, 4).cpu().tolist()))
-            print('')
-        elif info in 'scl-param':
-            print('Scale fit:')
-            for c in range(len(argv[0])):
-                for n in range(len(argv[0][c])):
-                    print('c={} n={} | exp(s)={}'.format(c, n, round(argv[0][c][n].po.scl.exp(), 4)))
-            print('')
         elif info == 'hyper_par':
             if len(argv) == 2:
                 print('completed in {:0.5f} seconds:'.format(timer() - argv[1]))
@@ -76,6 +64,17 @@ def print_info(info, sett, *argv):
             vx_y = tuple(vx_y.tolist())
             print('\nMean space | dim={}, vx_y={}'.format(argv[0], vx_y))
     if sett.do_print >= 2:
+        if info in 'reg-param':
+            print('Rigid registration fit:')
+            for c in range(len(argv[0])):
+                for n in range(len(argv[0][c])):
+                    print('c={} n={} | q={}'.format(c, n, round(argv[0][c][n].rigid_q, 4).cpu().tolist()))
+        elif info in 'scl-param':
+            print('Scale fit:')
+            for c in range(len(argv[0])):
+                for n in range(len(argv[0][c])):
+                    print('c={} n={} | exp(s)={}'.format(c, n, round(argv[0][c][n].po.scl.exp(), 4)))
+    if sett.do_print >= 3:
         if info == 'fit-done':
             print('(completed in {:0.5f} seconds)'.format(timer() - argv[0]))
         elif info == 'fit-update':
