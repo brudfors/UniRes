@@ -132,7 +132,6 @@ def fit(x, y, sett):
                     next_reg_scl = False
                     cnt_scl += 1
                     # Coarse-to-fine scaling of lambda
-                    print(sett.reg_scl[cnt_scl])
                     for c in range(len(x)):
                         y[c].lam = sett.reg_scl[cnt_scl] * y[c].lam0
                     # Also update ADMM step-size
