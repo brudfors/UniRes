@@ -181,7 +181,7 @@ def update_rigid(x, y, sett, mean_correct=True, max_niter_gn=1, num_linesearch=4
         # _update_rigid_channel(c, sett.rigid_basis, verbose=2, max_niter_gn=16, samp=3)
         x[c], sllc = _update_rigid_channel(x[c], y[c], sett, max_niter_gn=max_niter_gn,
                                           num_linesearch=num_linesearch, verbose=verbose,
-                                          samp=samp)
+                                          samp=samp, c=c)
         sll += sllc
 
     # Mean correct the rigid-body transforms
@@ -253,7 +253,7 @@ def update_scaling(x, y, sett, max_niter_gn=1, num_linesearch=4, verbose=0):
             me = _even_odd(msk, 'even', dim_thick)
             xe = xe[me]
             # Get reconstruction (without scaling)
-            grid = affine(dim, mat, device=sett.device, dtype=torch.float32, jitter=True)
+            grid = affine(dim, mat, device=sett.device, dtype=torch.float32, jitter=False)
             dat_y = grid_pull(y[c].dat[None, None, ...], grid, bound=sett.bound,
                               interpolation=sett.interpolation, extrapolate=True)
             dat_y = F.conv3d(dat_y, smo_ker, stride=ratio)[0, 0, ...]
@@ -439,7 +439,7 @@ def _rigid_match(dat_x, dat_y, po, tau, rigid, sett, CtC=None, diff=False, verbo
 
     # Get grid
     mat = rigid.mm(mat).solve(mat_y)[0]  # mat_y\rigid*mat
-    grid = affine(dim, mat, device=dat_x.device, dtype=torch.float32, jitter=True)
+    grid = affine(dim, mat, device=dat_x.device, dtype=torch.float32, jitter=False)
 
     # Warp y and compute spatial derivatives
     dat_yx = grid_pull(dat_y, grid, bound=sett.bound, extrapolate=extrapolate, interpolation=sett.interpolation)[0, 0, ...]
@@ -455,7 +455,7 @@ def _rigid_match(dat_x, dat_y, po, tau, rigid, sett, CtC=None, diff=False, verbo
                     fig_num=666, colorbar=False, flip=False)
 
     # Double and mask
-    msk = dat_x != 0
+    msk = (dat_x != 0)
 
     # Compute matching term
     ll = 0.5 * tau * torch.sum((dat_x[msk] - dat_yx[msk]) ** 2, dtype=torch.float64)
@@ -483,7 +483,7 @@ def _rigid_match(dat_x, dat_y, po, tau, rigid, sett, CtC=None, diff=False, verbo
 
 
 def _update_rigid_channel(xc, yc, sett, max_niter_gn=1, num_linesearch=4,
-                         verbose=0, samp=3):
+                         verbose=0, samp=3, c=1):
     """ Updates the rigid parameters for all images of one channel.
 
     Args:
@@ -516,7 +516,7 @@ def _update_rigid_channel(xc, yc, sett, max_niter_gn=1, num_linesearch=4,
         # Parameters
         q = xc[n_x].rigid_q
         tau = xc[n_x].tau
-        armijo = torch.tensor(1.0, device=device, dtype=q.dtype)
+        armijo = torch.tensor(1, device=device, dtype=q.dtype)
         po = proj_info(xc[n_x].po.dim_y, xc[n_x].po.mat_y, xc[n_x].po.dim_x,
                             xc[n_x].po.mat_x, rigid=xc[n_x].po.rigid, prof_ip=sett.profile_ip,
                             prof_tp=sett.profile_tp, gap=sett.gap, device=device,

@@ -62,13 +62,14 @@ class Settings:
     """
     alpha: float = 1.0  # Relaxation parameter 0 < alpha < 2, alpha < 1: under-relaxation, alpha > 1: over-relaxation
     bb: str = 'full'  # Output bounding box of reconstructed data ('full'|'mni'|'95')
-    bound: str = 'zero'  # Boundary conditions (see nitorch.spatial)
-    cgs_max_iter: int = 64  # Max conjugate gradient (CG) iterations for solving for y
+    bound: str = 'dct2'  # Boundary conditions (see nitorch.spatial)
+    cgs_max_iter: int = 50  # Max conjugate gradient (CG) iterations for solving for y
     cgs_tol: float = 1e-3  # CG tolerance for solving for y
     cgs_verbose: bool = False  # CG verbosity (0, 1)
     device: str = 'cuda'  # PyTorch device name
     diff: str = 'forward'  # Gradient difference operator (forward|backward|central)
     dir_out: str = None  # Directory to write output, if None uses same as input (output is prefixed 'y_')
+    do_print: int = 1  # Print progress to terminal (0, 1, 2)
     do_proj = None  # Use projection matrices, defined in format_output()
     gap: float = 0.0  # Slice gap, between 0 and 1
     has_ct: bool = False  # Data could be CT (but data must contain negative values)
@@ -77,7 +78,6 @@ class Settings:
     max_iter: int = 512  # Max algorithm iterations
     method = None  # Method name (super-resolution|denoising), defined in format_output()
     prefix: str = 'ur_'  # Prefix for reconstructed image(s)
-    do_print: int = 1  # Print progress to terminal (0, 1, 2)
     plot_conv: bool = False  # Use matplotlib to plot convergence in real-time
     profile_ip: int = 0  # In-plane slice profile (0=rect|1=tri|2=gauss)
     profile_tp: int = 0  # Through-plane slice profile (0=rect|1=tri|2=gauss)
@@ -85,8 +85,8 @@ class Settings:
     rho: float = None  # ADMM step-size, if None -> estimate is made
     rho_scl: float = 1.0  # Scaling of ADMM step-size
     rigid_basis = None  # Rigid transformation basis, defined in init_reg()
-    rigid_mod: int = 8  # Update rigid every rigid_mod iteration
-    rigid_sched_max: int = 13  # Start scaling at 2^rigid_sched_max
+    rigid_mod: int = 5  # Update rigid every rigid_mod iteration
+    rigid_sched_max: int = 14  # Start scaling at 2^rigid_sched_max
     rigid_samp: int = 1  # Level of sub-sampling for estimating rigid registration parameters
     scaling: bool = False  # Optimise even/odd slice scaling
     show_hyperpar: bool = False  # Use matplotlib to visualise hyper-parameter estimates

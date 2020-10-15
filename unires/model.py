@@ -120,11 +120,11 @@ def fit(x, y, sett):
             and ((n_iter + 1) % sett.rigid_mod) == 0:
 
             t0 = print_info('fit-update', sett, 'q', n_iter)  # PRINT
-            x, _ = update_rigid(x, y, sett, mean_correct=True, max_niter_gn=3, num_linesearch=4,
+            x, _ = update_rigid(x, y, sett, mean_correct=False, max_niter_gn=3, num_linesearch=1,
                                 verbose=0, samp=sett.rigid_samp)
             _ = print_info('fit-done', sett, t0)  # PRINT
-            # # Print parameter estimates
-            # _ = print_info('reg-param', sett, x, t0)
+            # Print parameter estimates
+            _ = print_info('reg-param', sett, x, t0)
             if gain.abs() < 1e-3:
                 if not next_reg_scl:
                     next_reg_scl = True
@@ -132,6 +132,7 @@ def fit(x, y, sett):
                     next_reg_scl = False
                     cnt_scl += 1
                     # Coarse-to-fine scaling of lambda
+                    print(sett.reg_scl[cnt_scl])
                     for c in range(len(x)):
                         y[c].lam = sett.reg_scl[cnt_scl] * y[c].lam0
                     # Also update ADMM step-size
@@ -151,6 +152,7 @@ def fit(x, y, sett):
     # ----------
     # Process reconstruction results
     # ----------
+    y = _crop_fov(y, bb=sett.bb)
     y, mat, pth_y = _write_data(x, y, sett, jtv=tmp)
 
     return y, mat, pth_y, R
@@ -231,6 +233,51 @@ def _all_mat_dim_vx(x, sett):
             cnt += 1
 
     return all_mat, all_dim, all_vx
+
+
+def _crop_fov(y, bb='full'):
+    """ Crop reconstructed images FOV to a specified bounding-box.
+
+    Args:
+        y (Output()): Output data.
+        bb (string): Bounding-box ('full'|'mni'), defaults to 'full'.
+
+    Returns:
+        y (Output()): Output data.
+
+    """
+    if bb == 'full':  # No cropping
+        return y
+    # y image information
+    dim0 = torch.tensor(y[0].dim, device=y[0].dat.device)
+    mat0 = y[0].mat
+    vx0 = voxsize(mat0)
+    # Set cropping
+    if bb == 'mni':
+        dim_mni = torch.tensor([181, 217, 181], device=y[0].dat.device,)  # Size of SPM MNI
+        dim_mni = (dim_mni / vx0).round()  # Modulate with voxel size
+        off = - (dim0 - dim_mni) / 2
+        dim1 = dim0 + 2 * off
+        mat_crop = torch.tensor([[1, 0, 0, - (off[0] + 1)],
+                                 [0, 1, 0, - (off[1] + 1)],
+                                 [0, 0, 1, - (off[2] + 1)],
+                                 [0, 0, 0, 1]], device=y[0].dat.device)
+        mat1 = mat0.mm(mat_crop)
+        dim1 = dim1.cpu().int().tolist()
+    else:
+        raise ValueError('Undefined bounding-box (bb)')
+    # Make output grid
+    grid = affine(dim1, mat_crop, device=y[0].dat.device, dtype=y[0].dat.dtype)
+    # Do interpolation
+    for c in range(len(y)):
+        dat = grid_pull(y[c].dat[None, None, ...] ,
+                        grid, bound='zero', extrapolate=False, interpolation=0)
+        # Assign
+        y[c].dat = dat[0, 0, ...]
+        y[c].mat = mat1
+        y[c].dim = dim1
+
+    return y
 
 
 def _estimate_hyperpar(x, sett):
@@ -317,7 +364,7 @@ def _format_y(x, sett):
     if vx_same and (torch.abs(all_vx[..., 0] - vx_y) < 1e-3).all():
         # All input images have same voxel size, and output voxel size is the also the same
         do_sr = False
-        if mat_same and dim_same and not sett.unified_rigid and sett.bb == 'full':
+        if mat_same and dim_same and not sett.unified_rigid:
             # All input images have the same FOV
             mat = all_mat[..., 0]
             dim = all_dim[..., 0]
@@ -325,14 +372,14 @@ def _format_y(x, sett):
 
     if do_sr or sett.do_proj:
         # Get FOV of mean space
-        if mat_same and do_sr and sett.bb == 'full':
+        if mat_same and do_sr:
             D = torch.diag(torch.cat((vx_y / all_vx[:, 0], one[..., None])))
             mat = all_mat[..., 0].mm(D)
             mat[:3, 3] = mat[:3, 3] + 0.5*(vx_y - all_vx[:, 0])
             dim = D.inverse()[:3, :3].mm(all_dim[:, 0].reshape((3, 1))).ceil().squeeze()
         else:
             # Mean space from several images
-            dim, mat, _ = mean_space(all_mat, all_dim, vx=vx_y, bb=sett.bb)
+            dim, mat, _ = mean_space(all_mat, all_dim, vx=vx_y)
 
     # Set method
     if do_sr:
@@ -384,7 +431,7 @@ def _get_sched(sett):
         scl = sett.reg_scl
         two = torch.tensor(2.0, device=sett.device, dtype=torch.float32)
         # Build scheduler
-        sched = two ** torch.arange(0, max, device=sett.device, dtype=torch.float32).flip(dims=(0,))
+        sched = two ** torch.arange(0, max, step=2, device=sett.device, dtype=torch.float32).flip(dims=(0,))
         ix = torch.min((sched - sett.reg_scl).abs(), dim=0)[1]
         sched = sched[:ix]
         sched = torch.cat((sched, scl.reshape(1)))

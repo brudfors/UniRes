@@ -20,7 +20,8 @@ def print_info(info, sett, *argv):
 
     if sett.do_print >= 1:
         if info == 'init':
-            print('Initialising UniRes')
+            title = " _   _       _ ____           \n| | | |_ __ (_)  _ \\ ___  ___ \n| | | | '_ \\| | |_) / _ \\/ __|\n| |_| | | | | |  _ <  __/\\__ \\\n \\___/|_| |_|_|_| \\_\\___||___/\n"
+            print(title)
             if type(sett.device) is torch.device:
                 print('GPU: ' + torch.cuda.get_device_name(0) + ', CUDA: ' + str(torch.cuda.is_available()))
             else:
@@ -33,8 +34,9 @@ def print_info(info, sett, *argv):
                   'gain={:0.7f}'.format(argv[1], argv[0], timer() - argv[4], argv[2][0], argv[2][1], argv[2][2],
                                         argv[3]))
         elif info == 'fit-start':
-            print('\nStarting {} \n{} | C={} | N={} | device={} | '
-                  'max_iter={} | tol={}'.format(sett.method, datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+            print('\nStarting {} (update_rigid={}, update_scaling={}) \n{} | C={} | N={} | device={} | '
+                  'max_iter={} | tol={}'.format(sett.method, sett.unified_rigid, sett.scaling,
+                                                datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                                                 argv[0], argv[1], argv[2], argv[3], argv[4]))
         elif info in 'step_size':
             print('\nADMM step-size={:0.4f}'.format(argv[0]))
