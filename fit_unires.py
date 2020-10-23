@@ -31,6 +31,8 @@ def fit(pth, device, dir_out, plot_conv, print_info, reg_scl,
 
     # CPU/GPU?
     device = torch.device("cpu" if not torch.cuda.is_available() else device)
+    torch.cuda.empty_cache()
+    torch.set_grad_enabled(False)
 
     # Algorithm settings
     s = Settings()  # Get default settings
