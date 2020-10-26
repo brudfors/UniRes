@@ -1,7 +1,8 @@
 from nitorch.spatial import grid_pull, voxsize, im_gradient, im_divergence, grid_grad
-from nitorch.spm import affine, dexpm, identity
-from nitorch.optim import cg
-from nitorch.utils import show_slices, round
+from nitorch.tools.spm import affine, dexpm, identity
+from nitorch.core.optim import cg
+from nitorch.plot.volumes import show_slices
+from nitorch.core.math import round
 import torch
 from torch.nn import functional as F
 
@@ -294,7 +295,7 @@ def update_scaling(x, y, sett, max_niter_gn=1, num_linesearch=4, verbose=0):
                     scl = old_scl - armijo * Update
                     if verbose >= 1:
                         print('c={}, n={}, gn={} | exp(s)={}'
-                              .format(c, n_x, n_gn, round(s.exp(), 5)))
+                              .format(c, n_x, n_gn, round(scl.exp(), 5)))
                 else:
                     # ..using a line-search
                     for n_ls in range(num_linesearch):
