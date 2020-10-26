@@ -97,7 +97,7 @@ def fit(x, y, sett):
         gain = get_gain(obj[:n_iter + 1, 0], monotonicity='decreasing')
         t_iter = print_info('fit-ll', sett, 'y', n_iter, obj[n_iter, :], gain, t_iter)
         # Converged?
-        if cnt_scl >= (sett.reg_scl.numel() - 1) and ((gain.abs() < sett.tolerance) or (n_iter >= (sett.max_iter - 1))):
+        if cnt_scl >= (sett.reg_scl.numel() - 1) and n_iter > 64 and ((gain.abs() < sett.tolerance) or (n_iter >= (sett.max_iter - 1))):
             _ = print_info('fit-finish', sett, t00, n_iter)
             break  # Finished
 
