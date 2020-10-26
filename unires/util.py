@@ -2,10 +2,19 @@ import contextlib
 from datetime import datetime
 import nibabel as nib
 from nitorch.spatial import voxsize
-from nitorch.utils import round
+from nitorch.core.math import round
 import os
 from timeit import default_timer as timer
 import torch
+
+
+_unires_title = r"""
+  _   _       _ ____           
+ | | | |_ __ (_)  _ \ ___  ___ 
+ | | | | '_ \| | |_) / _ \/ __|
+ | |_| | | | | |  _ <  __/\__ \
+  \___/|_| |_|_|_| \_\___||___/
+"""
 
 
 def print_info(info, sett, *argv):
@@ -20,8 +29,7 @@ def print_info(info, sett, *argv):
 
     if sett.do_print >= 1:
         if info == 'init':
-            title = " _   _       _ ____           \n| | | |_ __ (_)  _ \\ ___  ___ \n| | | | '_ \\| | |_) / _ \\/ __|\n| |_| | | | | |  _ <  __/\\__ \\\n \\___/|_| |_|_|_| \\_\\___||___/\n"
-            print(title)
+            print(_unires_title)
             if type(sett.device) is torch.device:
                 print('GPU: ' + torch.cuda.get_device_name(0) + ', CUDA: ' + str(torch.cuda.is_available()))
             else:

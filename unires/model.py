@@ -1,9 +1,10 @@
 import nibabel as nib
 from nitorch.spatial import grid_pull, voxsize
-from nitorch.spm import (affine, mean_space, noise_estimate,
-                         affine_basis, dexpm, estimate_fwhm)
-from nitorch.optim import get_gain, plot_convergence
-from nitorch.utils import show_slices, round
+from nitorch.tools.spm import (affine, mean_space, noise_estimate,
+                               affine_basis, dexpm, estimate_fwhm)
+from nitorch.core.optim import get_gain, plot_convergence
+from nitorch.plot.volumes import show_slices
+from nitorch.core.math import round
 import os
 from timeit import default_timer as timer
 import torch
