@@ -8,10 +8,6 @@ from timeit import default_timer as timer
 import torch
 
 
-# nice ascii title
-#   * strings prefixed by `r` treat backslashes as normal characters
-#     (no need to escape them)
-#   * there is one new line before an after the title already
 _unires_title = r"""
   _   _       _ ____           
  | | | |_ __ (_)  _ \ ___  ___ 
