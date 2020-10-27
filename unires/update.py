@@ -1,4 +1,4 @@
-from nitorch.spatial import grid_pull, voxsize, im_gradient, im_divergence, grid_grad
+from nitorch.spatial import grid_pull, voxel_size, im_gradient, im_divergence, grid_grad
 from nitorch.tools.spm import affine, dexpm, identity
 from nitorch.core.optim import cg
 from nitorch.plot.volumes import show_slices
@@ -64,7 +64,7 @@ def update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
 
     """
     # Parameters
-    vx_y = voxsize(y[0].mat).float()  # Output voxel size
+    vx_y = voxel_size(y[0].mat).float()  # Output voxel size
     # Constants
     tiny = torch.tensor(1e-7, dtype=torch.float32, device=sett.device)
     one = torch.tensor(1, dtype=torch.float32, device=sett.device)
@@ -350,7 +350,7 @@ def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64):
         nll_y (torch.tensor()): Negative log-prior.
 
     """
-    vx_y = voxsize(y[0].mat).float()
+    vx_y = voxel_size(y[0].mat).float()
     nll_xy = torch.tensor(0, device=sett.device, dtype=torch.float64)
     for c in range(len(x)):
         # Neg. log-likelihood term

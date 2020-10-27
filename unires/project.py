@@ -1,5 +1,5 @@
 from nitorch.core.kernels import smooth
-from nitorch.spatial import grid_pull, grid_push, voxsize, im_gradient, im_divergence
+from nitorch.spatial import grid_pull, grid_push, voxel_size, im_gradient, im_divergence
 from nitorch.tools.spm import affine
 import torch
 from torch.nn import functional as F
@@ -106,7 +106,7 @@ def proj_apply(operator, dat, po, method='super-resolution', bound='zero', inter
             po.dim_x: Low-res image dimensions.
             po.dim_y: High-res image dimensions.
             po.dim_yx: Intermediate image dimensions.
-            po.ratio: The ratio (low-res voxsize)/(high-res voxsize).
+            po.ratio: The ratio (low-res voxel_size)/(high-res voxel_size).
             po.smo_ker: Smoothing kernel (slice-profile).
         method (string): Either 'denoising' or 'super-resolution' (default).
         bound (str, optional): Bound for nitorch push/pull, defaults to 'zero'.
@@ -218,13 +218,13 @@ def proj_info(dim_y, mat_y, dim_x, mat_x, rigid=None,
         dim_y = torch.tensor(dim_y, device=device, dtype=dtype)
     po.dim_y = dim_y
     po.mat_y = mat_y
-    po.vx_y = voxsize(mat_y)
+    po.vx_y = voxel_size(mat_y)
     # Input properties
     if not isinstance(dim_x, torch.Tensor):
         dim_x = torch.tensor(dim_x, device=device, dtype=dtype)
     po.dim_x = dim_x
     po.mat_x = mat_x
-    po.vx_x = voxsize(mat_x)
+    po.vx_x = voxel_size(mat_x)
     # Number of dimensions
     ndim = len(dim_y)
     one = torch.tensor((1,) * ndim, device=device, dtype=torch.float64)
@@ -256,9 +256,9 @@ def proj_info(dim_y, mat_y, dim_x, mat_x, rigid=None,
             po.D_y = D_y
             # Modulate highres
             po.mat_y = po.mat_y.mm(D_y)
-            po.vx_y = voxsize(po.mat_y)
+            po.vx_y = voxel_size(po.mat_y)
             po.dim_y = D_y.inverse()[:ndim, :ndim].mm(po.dim_y[..., None]).floor().squeeze()
-        po.vx_x = voxsize(po.mat_x)
+        po.vx_x = voxel_size(po.mat_x)
     # Make intermediate
     ratio = torch.solve(po.mat_x, po.mat_y)[0]  # mat_y\mat_x
     ratio = (ratio[:ndim, :ndim] ** 2).sum(0).sqrt()

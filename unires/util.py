@@ -1,7 +1,7 @@
 import contextlib
 from datetime import datetime
 import nibabel as nib
-from nitorch.spatial import voxsize
+from nitorch.spatial import voxel_size
 from nitorch.core.math import round
 import os
 from timeit import default_timer as timer
@@ -68,7 +68,7 @@ def print_info(info, sett, *argv):
             else:
                 print('\nEstimating model hyper-parameters...', end='')
         elif info == 'mean-space':
-            vx_y = voxsize(argv[1])
+            vx_y = voxel_size(argv[1])
             vx_y = tuple(vx_y.tolist())
             print('\nMean space | dim={}, vx_y={}'.format(argv[0], vx_y))
     if sett.do_print >= 2:

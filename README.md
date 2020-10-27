@@ -70,7 +70,7 @@ The *nitorch* package is required to use *UniRes*; simply follow the quickstart 
 Next, activate a *nitorch* virtual environment and move to the *UniRes* project directory. Then install the package using either setuptools or pip:
 ``` bash
 cd /path/to/unires
-python setupy.py install
+python setupy.py install/develop
 # OR
 pip install .
 ``` 

@@ -1,5 +1,5 @@
 import nibabel as nib
-from nitorch.spatial import grid_pull, voxsize
+from nitorch.spatial import grid_pull, voxel_size
 from nitorch.tools.spm import (affine, mean_space, noise_estimate,
                                affine_basis, dexpm, estimate_fwhm)
 from nitorch.core.optim import get_gain, plot_convergence
@@ -229,7 +229,7 @@ def _all_mat_dim_vx(x, sett):
         for n in range(len(x[c])):
             all_mat[..., cnt] = x[c][n].mat
             all_dim[..., cnt] = torch.tensor(x[c][n].dim, device=sett.device, dtype=torch.float64)
-            all_vx[..., cnt] = voxsize(x[c][n].mat)
+            all_vx[..., cnt] = voxel_size(x[c][n].mat)
             cnt += 1
 
     return all_mat, all_dim, all_vx
@@ -251,7 +251,7 @@ def _crop_fov(y, bb='full'):
     # y image information
     dim0 = torch.tensor(y[0].dim, device=y[0].dat.device)
     mat0 = y[0].mat
-    vx0 = voxsize(mat0)
+    vx0 = voxel_size(mat0)
     # Set cropping
     if bb == 'mni':
         dim_mni = torch.tensor([181, 217, 181], device=y[0].dat.device,)  # Size of SPM MNI
@@ -303,7 +303,7 @@ def _estimate_hyperpar(x, sett):
             dat = x[c][n].dat
             if x[c][n].ct:
                 # Estimate noise sd from estimate of FWHM
-                sd_bg = estimate_fwhm(dat, voxsize(x[c][n].mat), mn=20, mx=50)[1]
+                sd_bg = estimate_fwhm(dat, voxel_size(x[c][n].mat), mn=20, mx=50)[1]
                 mu_bg = torch.tensor(0.0, device=dat.device, dtype=dat.dtype)
                 mu_fg = torch.tensor(5000.0, device=dat.device, dtype=dat.dtype)
             else:

@@ -91,7 +91,7 @@ class Settings:
     scaling: bool = False  # Optimise even/odd slice scaling
     show_hyperpar: bool = False  # Use matplotlib to visualise hyper-parameter estimates
     show_jtv: bool = False  # Show the joint total variation (JTV)
-    tolerance: float = 1e-4  # Algorithm tolerance, if zero, run to max_iter
+    tolerance: float = 1e-5  # Algorithm tolerance, if zero, run to max_iter
     unified_rigid: bool = False  # Do unified rigid registration
     vx: float = 1.0  # Reconstruction voxel size (if None, set automatically)
     write_jtv: bool = False  # Write JTV to nifti
