@@ -462,23 +462,20 @@ def _init_y_dat(x, y, sett):
     mat_y = x[0][0].po.mat_y
     for c in range(len(x)):
         dat_y = torch.zeros(dim_y, dtype=torch.float32, device=sett.device)
-        num_x = 1.0
-        if sett.max_iter == 0:
-            # No superres will be performed, so generate the isotropic images using b-splines
-            num_x = len(x[c])
-            for n in range(num_x):
-                # Get image data
-                dat = x[c][n].dat[None, None, ...]
-                # Make output grid
-                mat = mat_y.solve(x[c][n].po.mat_x)[0]  # mat_x\mat_y
-                grid = affine(x[c][n].po.dim_y, mat, device=dat.device, dtype=dat.dtype)
-                # Do interpolation
-                mn = torch.min(dat)
-                mx = torch.max(dat)
-                dat = grid_pull(dat, grid, bound=sett.bound, extrapolate=False, interpolation=1)
-                dat[dat < mn] = mn
-                dat[dat > mx] = mx
-                dat_y = dat_y + dat[0, 0, ...]
+        num_x = len(x[c])
+        for n in range(num_x):
+            # Get image data
+            dat = x[c][n].dat[None, None, ...]
+            # Make output grid
+            mat = mat_y.solve(x[c][n].po.mat_x)[0]  # mat_x\mat_y
+            grid = affine(x[c][n].po.dim_y, mat, device=dat.device, dtype=dat.dtype)
+            # Do interpolation
+            mn = torch.min(dat)
+            mx = torch.max(dat)
+            dat = grid_pull(dat, grid, bound='zero', extrapolate=False, interpolation=1)
+            dat[dat < mn] = mn
+            dat[dat > mx] = mx
+            dat_y = dat_y + dat[0, 0, ...]
         y[c].dat = dat_y / num_x
 
     return y
