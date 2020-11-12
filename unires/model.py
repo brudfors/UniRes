@@ -1,19 +1,22 @@
 import nibabel as nib
-from nitorch.spatial import grid_pull, voxel_size
-from nitorch.tools.spm import (affine, mean_space, noise_estimate,
-                               affine_basis, dexpm, estimate_fwhm)
-from nitorch.core.optim import get_gain, plot_convergence
+from nitorch.spatial import (grid_pull, voxel_size)
+from nitorch.spatial import affine_basis as affine_basis_new
+from nitorch.tools.spm import (affine, affine_basis, dexpm, matrix,
+                               noise_estimate, estimate_fwhm, max_bb)
+from nitorch.tools.affine_reg import (mni_align, run_affine_reg)
+from nitorch.core.optim import (get_gain, plot_convergence)
 from nitorch.plot.volumes import show_slices
 from nitorch.core.math import round
+from nitorch.core._linalg_expm import _expm
 import os
 from timeit import default_timer as timer
 import torch
-
-from .project import check_adjoint, proj_info
-from .struct import Input, Output, Settings
-from .update import (admm_aux, update_admm, update_rigid, 
+from .project import (check_adjoint, proj_info)
+from .struct import (Input, Output, Settings)
+from .update import (admm_aux, update_admm, update_rigid,
                      update_scaling, step_size)
-from .util import print_info, read_image, write_image
+from .util import (print_info, read_image, write_image)
+
 
 torch.backends.cudnn.benchmark = True
 
@@ -34,128 +37,126 @@ def fit(x, y, sett):
         R (torch.tensor): Rigid matrices (4, 4, N).
 
     """
-    # Total number of observations
-    N = sum([len(xn) for xn in x])
+    with torch.no_grad():
+        # Total number of observations
+        N = sum([len(xn) for xn in x])
 
-    # Initial guess of reconstructed images (y)
-    y = _init_y_dat(x, y, sett)
+        # Sanity check scaling parameter
+        if not isinstance(sett.reg_scl, torch.Tensor):
+            sett.reg_scl = torch.tensor(sett.reg_scl, dtype=torch.float32, device=sett.device)
+            sett.reg_scl = sett.reg_scl.reshape(1)
 
-    # Sanity check scaling parameter
-    if not isinstance(sett.reg_scl, torch.Tensor):
-        sett.reg_scl = torch.tensor(sett.reg_scl, dtype=torch.float32, device=sett.device)
-        sett.reg_scl = sett.reg_scl.reshape(1)
+        # Defines a coarse-to-fine scaling of regularisation
+        sett = _get_sched(sett)
 
-    # For unified registration, defines a coarse-to-fine scaling of regularisation
-    sett = _get_sched(sett)
+        # For visualisation
+        fig_ax_nll = None
+        fig_ax_jtv = None
 
-    # For visualisation
-    fig_ax_nll = None
-    fig_ax_jtv = None
+        # Scale lambda
+        cnt_scl = 0
+        for c in range(len(x)):
+            y[c].lam = sett.reg_scl[cnt_scl] * y[c].lam0
 
-    # Scale lambda
-    cnt_scl = 0
-    for c in range(len(x)):
-        y[c].lam = sett.reg_scl[cnt_scl] * y[c].lam0
+        # Get ADMM step-size
+        rho = step_size(x, y, sett, verbose=True)
 
-    # Get ADMM step-size
-    rho = step_size(x, y, sett, verbose=True)
-
-    if sett.max_iter > 0:
-        # Get ADMM variables (only if algorithm is run)
-        z, w = admm_aux(y, sett)
-
-    # ----------
-    # ITERATE:
-    # Updates model in an alternating fashion, until a convergence threshold is met
-    # on the model negative log-likelihood.
-    # ----------
-    next_reg_scl = False  # For registration, makes sure there is at least two registration updates for each scale level
-    obj = torch.zeros(sett.max_iter, 3, dtype=torch.float64, device=sett.device)
-    tmp = torch.zeros_like(y[0].dat)  # for holding rhs in y-update, and jtv in u-update
-    t_iter = timer() if sett.do_print else 0
-    for n_iter in range(sett.max_iter):
-
-        if n_iter == 0:
-            t00 = print_info('fit-start', sett, len(x), N, sett.device,
-                             sett.max_iter, sett.tolerance)  # PRINT
+        if sett.max_iter > 0:
+            # Get ADMM variables (only if algorithm is run)
+            z, w = admm_aux(y, sett)
 
         # ----------
-        # UPDATE: image
+        # ITERATE:
+        # Updates model in an alternating fashion, until a convergence threshold is met
+        # on the model negative log-likelihood.
         # ----------
-        y, z, w, tmp, obj = update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett)
+        obj = torch.zeros(sett.max_iter, 3, dtype=torch.float64, device=sett.device)
+        tmp = torch.zeros_like(y[0].dat)  # for holding rhs in y-update, and jtv in u-update
+        t_iter = timer() if sett.do_print else 0
+        for n_iter in range(sett.max_iter):
 
-        # Show JTV
-        if sett.show_jtv:
-            fig_ax_jtv = show_slices(img=tmp, fig_ax=fig_ax_jtv, title='JTV',
-                                     cmap='coolwarm', fig_num=98)
+            if n_iter == 0:
+                t00 = print_info('fit-start', sett, len(x), N, sett.device,
+                                 sett.max_iter, sett.tolerance)  # PRINT
+
+            # ----------
+            # UPDATE: image
+            # ----------
+            y, z, w, tmp, obj = update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett)
+
+            # Show JTV
+            if sett.show_jtv:
+                fig_ax_jtv = show_slices(img=tmp, fig_ax=fig_ax_jtv, title='JTV',
+                                         cmap='coolwarm', fig_num=98)
+
+            # ----------
+            # Check convergence
+            # ----------
+            if sett.plot_conv:  # Plot algorithm convergence
+                fig_ax_nll = plot_convergence(vals=obj[:n_iter + 1, :], fig_ax=fig_ax_nll, fig_num=99,
+                                              legend=['-ln(p(y|x))', '-ln(p(x|y))', '-ln(p(y))'])
+            gain = get_gain(obj[:n_iter + 1, 0], monotonicity='decreasing')
+            t_iter = print_info('fit-ll', sett, 'y', n_iter, obj[n_iter, :], gain, t_iter)
+            # Converged?
+            if cnt_scl >= (sett.reg_scl.numel() - 1) and \
+                    ((gain.abs() < sett.tolerance) or (n_iter >= (sett.max_iter - 1))):
+                _ = print_info('fit-finish', sett, t00, n_iter)
+                break  # Finished
+
+            # ----------
+            # UPDATE: even/odd scaling
+            # ----------
+            if sett.scaling:
+
+                t0 = print_info('fit-update', sett, 's', n_iter)  # PRINT
+                # Do update
+                x, _ = update_scaling(x, y, sett, max_niter_gn=3, num_linesearch=6, verbose=0)
+                _ = print_info('fit-done', sett, t0)  # PRINT
+                # Print parameter estimates
+                _ = print_info('scl-param', sett, x, t0)
+
+            # ----------
+            # UPDATE: rigid_q
+            # ----------
+            if sett.unified_rigid and n_iter > 0 \
+                and (n_iter % sett.rigid_mod) == 0:
+
+                t0 = print_info('fit-update', sett, 'q', n_iter)  # PRINT
+                x, _ = update_rigid(x, y, sett,
+                    mean_correct=False, max_niter_gn=3, num_linesearch=6, verbose=0, samp=sett.rigid_samp)
+                _ = print_info('fit-done', sett, t0)  # PRINT
+                # Print parameter estimates
+                _ = print_info('reg-param', sett, x, t0)
+
+            # ----------
+            # Coarse-to-fine scaling of regularisation
+            # ----------
+            if cnt_scl + 1 < len(sett.reg_scl) and gain.abs() < 1e-3:
+                cnt_scl += 1
+                # Coarse-to-fine scaling of lambda
+                for c in range(len(x)):
+                    y[c].lam = sett.reg_scl[cnt_scl] * y[c].lam0
+                # Also update ADMM step-size
+                rho = step_size(x, y, sett)
 
         # ----------
-        # Check convergence
+        # Get rigid matrices
         # ----------
-        if sett.plot_conv:  # Plot algorithm convergence
-            fig_ax_nll = plot_convergence(vals=obj[:n_iter + 1, :], fig_ax=fig_ax_nll, fig_num=99,
-                                          legend=['-ln(p(y|x))', '-ln(p(x|y))', '-ln(p(y))'])
-        gain = get_gain(obj[:n_iter + 1, 0], monotonicity='decreasing')
-        t_iter = print_info('fit-ll', sett, 'y', n_iter, obj[n_iter, :], gain, t_iter)
-        # Converged?
-        if cnt_scl >= (sett.reg_scl.numel() - 1) and ((gain.abs() < sett.tolerance) or (n_iter >= (sett.max_iter - 1))):
-            _ = print_info('fit-finish', sett, t00, n_iter)
-            break  # Finished
+        R = torch.zeros((4, 4, N), device=sett.device, dtype=torch.float64)
+        n = 0
+        for c in range(len(x)):
+            num_cn = len(x[c])
+            for cn in range(num_cn):
+                R[..., n] = dexpm(x[c][cn].rigid_q, sett.rigid_basis)[0]
+                n += 1
 
         # ----------
-        # UPDATE: even/odd scaling
+        # Process reconstruction results
         # ----------
-        if sett.scaling and sett.reg_scl[cnt_scl] <= 256:
+        y = _crop_fov(y, bb=sett.bb)
+        y, mat, pth_y = _write_data(x, y, sett, jtv=tmp)
 
-            t0 = print_info('fit-update', sett, 's', n_iter)  # PRINT
-            # Do update
-            x, _ = update_scaling(x, y, sett, max_niter_gn=3, num_linesearch=6, verbose=0)
-            _ = print_info('fit-done', sett, t0)  # PRINT
-            # Print parameter estimates
-            _ = print_info('scl-param', sett, x, t0)
-
-        # ----------
-        # UPDATE: rigid_q (not every iteration)
-        # ----------
-        if sett.unified_rigid and 0 < n_iter and cnt_scl < (sett.reg_scl.numel() - 1) \
-            and ((n_iter + 1) % sett.rigid_mod) == 0:
-
-            t0 = print_info('fit-update', sett, 'q', n_iter)  # PRINT
-            x, _ = update_rigid(x, y, sett, mean_correct=False, max_niter_gn=3, num_linesearch=1,
-                                verbose=0, samp=sett.rigid_samp)
-            _ = print_info('fit-done', sett, t0)  # PRINT
-            # Print parameter estimates
-            _ = print_info('reg-param', sett, x, t0)
-            if gain.abs() < 1e-3:
-                if not next_reg_scl:
-                    next_reg_scl = True
-                else:
-                    next_reg_scl = False
-                    cnt_scl += 1
-                    # Coarse-to-fine scaling of lambda
-                    for c in range(len(x)):
-                        y[c].lam = sett.reg_scl[cnt_scl] * y[c].lam0
-                    # Also update ADMM step-size
-                    rho = step_size(x, y, sett)
-
-    # ----------
-    # Get rigid matrices
-    # ----------
-    R = torch.zeros((4, 4, N), device=sett.device, dtype=torch.float64)
-    n = 0
-    for c in range(len(x)):
-        num_cn = len(x[c])
-        for cn in range(num_cn):
-            R[..., n] = dexpm(x[c][cn].rigid_q, sett.rigid_basis)[0]
-            n += 1
-
-    # ----------
-    # Process reconstruction results
-    # ----------
-    y = _crop_fov(y, bb=sett.bb)
-    y, mat, pth_y = _write_data(x, y, sett, jtv=tmp)
-
-    return y, mat, pth_y, R
+        return y, mat, pth_y, R
 
 
 def init(data, sett=Settings()):
@@ -185,29 +186,32 @@ def init(data, sett=Settings()):
         sett (Settings(), optional): Algorithm settings. Described in Settings() class.
 
     """
-    _ = print_info('init', sett)
+    with torch.no_grad():
+        _ = print_info('init', sett)
 
-    # Read and format data
-    x = _read_data(data, sett)
-    del data
-    
-    # Estimate model hyper-parameters
-    x = _estimate_hyperpar(x, sett)
-    
-    # Init registration
-    x, sett = _init_reg(x, sett)
+        # Read and format data
+        x = _read_data(data, sett)
+        del data
 
-    # Format output
-    y, sett = _format_y(x, sett)
+        # Init registration
+        x, sett = _init_reg(x, sett)
 
-    # Define projection matrices
-    x = _proj_info_add(x, y, sett)
+        # Estimate model hyper-parameters
+        x = _estimate_hyperpar(x, sett)
 
-    if False:
-        # Check adjointness of A and At operators
-        check_adjoint(po=x[0][0].po, method=sett.method, dtype=torch.float64)
+        # Format output
+        y, sett = _format_y(x, sett)
 
-    return x, y, sett
+        # Define projection matrices
+        x = _proj_info_add(x, y, sett)
+
+        # Initial guess of reconstructed images (y)
+        y = _init_y_dat(x, y, sett)
+
+        # # Check adjointness of A and At operators
+        # check_adjoint(po=x[0][0].po, method=sett.method, dtype=torch.float64)
+
+        return x, y, sett
 
 
 def _all_mat_dim_vx(x, sett):
@@ -254,13 +258,15 @@ def _crop_fov(y, bb='full'):
     vx0 = voxel_size(mat0)
     # Set cropping
     if bb == 'mni':
-        dim_mni = torch.tensor([181, 217, 181], device=y[0].dat.device,)  # Size of SPM MNI
+        dim_mni = torch.tensor([181, 231, 181], device=y[0].dat.device)  # FOV based on nitorch/data/atlas_t1.nii.gz
         dim_mni = (dim_mni / vx0).round()  # Modulate with voxel size
         off = - (dim0 - dim_mni) / 2
         dim1 = dim0 + 2 * off
+        # Note that we add an extra offset to the 'z' translation because the nitorch atlas has its
+        # origin quite low down on the head
         mat_crop = torch.tensor([[1, 0, 0, - (off[0] + 1)],
                                  [0, 1, 0, - (off[1] + 1)],
-                                 [0, 0, 1, - (off[2] + 1)],
+                                 [0, 0, 1, - (off[2] + 1 - 44 / vx0[-1])],
                                  [0, 0, 0, 1]], device=y[0].dat.device)
         mat1 = mat0.mm(mat_crop)
         dim1 = dim1.cpu().int().tolist()
@@ -270,12 +276,13 @@ def _crop_fov(y, bb='full'):
     grid = affine(dim1, mat_crop, device=y[0].dat.device, dtype=y[0].dat.dtype)
     # Do interpolation
     for c in range(len(y)):
-        dat = grid_pull(y[c].dat[None, None, ...] ,
+        dat = grid_pull(y[c].dat[None, None, ...],
                         grid, bound='zero', extrapolate=False, interpolation=0)
         # Assign
         y[c].dat = dat[0, 0, ...]
         y[c].mat = mat1
         y[c].dim = dim1
+    # show_slices(dat[0, 0, ...])
 
     return y
 
@@ -379,7 +386,7 @@ def _format_y(x, sett):
             dim = D.inverse()[:3, :3].mm(all_dim[:, 0].reshape((3, 1))).ceil().squeeze()
         else:
             # Mean space from several images
-            dim, mat, _ = mean_space(all_mat, all_dim, vx=vx_y)
+            dim, mat = max_bb(all_mat, all_dim, vx_y, mni=False)
 
     # Set method
     if do_sr:
@@ -422,30 +429,74 @@ def _format_y(x, sett):
 
 
 def _get_sched(sett):
-    """ For unified registration, define a coarse-to-fine scaling of regularisation
+    """ Define a coarse-to-fine scaling of regularisation
 
     """
-    if sett.unified_rigid:
-        # Parameters/settings
-        max = sett.rigid_sched_max
-        scl = sett.reg_scl
-        two = torch.tensor(2.0, device=sett.device, dtype=torch.float32)
-        # Build scheduler
-        sched = two ** torch.arange(0, max, step=2, device=sett.device, dtype=torch.float32).flip(dims=(0,))
-        ix = torch.min((sched - sett.reg_scl).abs(), dim=0)[1]
-        sched = sched[:ix]
-        sched = torch.cat((sched, scl.reshape(1)))
-        sett.reg_scl = sched
+    # Parameters/settings
+    if sett.sched_max < 1:
+        sett.sched_max = 1
+    if sett.rigid_mod < 1:
+        sett.rigid_mod = 1
+    scl = sett.reg_scl
+    two = torch.tensor(2.0, device=sett.device, dtype=torch.float32)
+    # Build scheduler
+    sched = two ** torch.arange(0, sett.sched_max, step=1,
+        device=sett.device, dtype=torch.float32).flip(dims=(0,))
+    ix = torch.min((sched - sett.reg_scl).abs(), dim=0)[1]
+    sched = sched[:ix]
+    sched = torch.cat((sched, scl.reshape(1)))
+    sett.reg_scl = sched
 
     return sett
 
 
 def _init_reg(x, sett):
-    """ Initialise rigid registration.
+    """ Initialise registration.
 
     """
-    # Init rigid basis
-    sett.rigid_basis = affine_basis('SE', 3, device=sett.device, dtype=torch.float64)
+    # Total number of observations
+    N = sum([len(xn) for xn in x])
+    # Get affine basis
+    sett.rigid_basis = affine_basis(basis='SE', device=sett.device, dtype=torch.float64)
+    fix = 0  # Fixed image index
+    # Make input for nitorch affine align
+    imgs = []
+    for c in range(len(x)):
+        for n in range(len(x[c])):
+            imgs.append([x[c][n].dat, x[c][n].mat])
+
+    if sett.do_coreg and N > 1:
+        # Align images, pairwise, to fixed image (fix)
+        print_info('init-reg', sett, 'co', 'begin')
+        q_est = run_affine_reg(imgs,
+            group='SE', device=sett.device, samp=(4, 2), cost_fun='nmi', verbose=False, fix=fix)[0]
+        # Apply registration transform
+        q_est = q_est.type(torch.float64)
+        R = _expm(q_est, affine_basis_new(group='SE', device=sett.device, dtype=torch.float64))
+        for i in range(len(imgs)):
+            imgs[i][1] = imgs[i][1].solve(R[i, ...])[0]
+        print_info('init-reg', sett, 'co', 'finished')
+
+    if sett.do_mni_align:
+        # Align fixed image to MNI space, and apply transformation to all images
+        print_info('init-reg', sett, 'mni', 'begin')
+        imgs1 = [imgs[fix]]
+        M_mni = mni_align(imgs1, rigid=False, modify_header=False,
+                          samp=(4, 2), device=sett.device)
+        M_mni = M_mni.type(torch.float64)
+        # Apply MNI registration transform
+        for i in range(len(imgs)):
+            imgs[i][1] = imgs[i][1].solve(M_mni[0, ...])[0]
+        print_info('init-reg', sett, 'mni', 'finished')
+
+    # Modify image affine
+    cnt = 0
+    for c in range(len(x)):
+        for n in range(len(x[c])):
+            x[c][n].mat = imgs[cnt][1]
+            cnt += 1
+
+    # Init rigid parameters (for unified rigid registration)
     for c in range(len(x)):  # Loop over channels
         for n in range(len(x[c])):  # Loop over observations of channel c
             x[c][n].rigid_q = torch.zeros(6, device=sett.device, dtype=torch.float64)

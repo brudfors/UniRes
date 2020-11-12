@@ -1,9 +1,8 @@
 from nitorch.core.kernels import smooth
-from nitorch.spatial import grid_pull, grid_push, voxel_size, im_gradient, im_divergence
+from nitorch.spatial import (grid_pull, grid_push, voxel_size, im_gradient, im_divergence)
 from nitorch.tools.spm import affine
 import torch
 from torch.nn import functional as F
-
 from .struct import ProjOp
 
 

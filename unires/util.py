@@ -71,6 +71,16 @@ def print_info(info, sett, *argv):
             vx_y = voxel_size(argv[1])
             vx_y = tuple(vx_y.tolist())
             print('\nMean space | dim={}, vx_y={}'.format(argv[0], vx_y))
+        elif info == 'init-reg':
+            if argv[1] == 'begin':
+                print('\nPerforming ', end='')
+                if argv[0] == 'mni':
+                    print('MNI ', end='')
+                elif argv[0] == 'co':
+                    print('individual ', end='')
+                print('alignment...', end='')
+            elif argv[1] == 'finished':
+                print('finished!')
     if sett.do_print >= 2:
         if info in 'reg-param':
             print('Rigid registration fit:')
