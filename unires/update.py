@@ -1,12 +1,12 @@
-from nitorch.spatial import grid_pull, voxel_size, im_gradient, im_divergence, grid_grad
-from nitorch.tools.spm import affine, dexpm, identity
+from nitorch.spatial import (grid_pull, voxel_size, im_gradient, im_divergence, grid_grad)
+from nitorch.tools.spm import (affine, dexpm, identity)
 from nitorch.core.optim import cg
 from nitorch.plot.volumes import show_slices
 from nitorch.core.math import round
 import torch
 from torch.nn import functional as F
 
-from .project import apply_scaling, proj, proj_info
+from .project import (apply_scaling, proj, proj_info)
 from .util import print_info
 
 
@@ -172,14 +172,17 @@ def update_rigid(x, y, sett, mean_correct=True, max_niter_gn=1, num_linesearch=4
     # Update rigid parameters, for all input images
     sll = torch.tensor(0, device=sett.device, dtype=torch.float64)
     for c in range(len(x)):  # Loop over channels
+        # # ----------
         # # FOR TESTING
-        # from nitorch.spm import matrix
-        # mat_re = matrix(torch.tensor([-8, 6, -3, 0, 0, 0], device=sett.device, dtype=torch.float64))
+        # from nitorch.tools.spm import matrix
+        # mat_re = matrix(torch.tensor([-12, 8.5, -7, 0, 0, 0], device=sett.device, dtype=torch.float64))
         # mat_y = y[c].mat
         # mat_y[:3, 3] = mat_re[:3, 3] + mat_y[:3, 3]
         # mat_y[:3, :3] = mat_re[:3, :3].mm(mat_y[:3, :3])
         # y[c].mat = mat_y
-        # _update_rigid_channel(c, sett.rigid_basis, verbose=2, max_niter_gn=16, samp=3)
+        # _update_rigid_channel(x[c], y[c], sett,
+        #     verbose=1, max_niter_gn=32, samp=2, num_linesearch=1, c=c)
+        # # ----------
         x[c], sllc = _update_rigid_channel(x[c], y[c], sett, max_niter_gn=max_niter_gn,
                                           num_linesearch=num_linesearch, verbose=verbose,
                                           samp=samp, c=c)
@@ -556,7 +559,7 @@ def _update_rigid_channel(xc, yc, sett, max_niter_gn=1, num_linesearch=4,
             CtC = F.conv_transpose3d(CtC, po.smo_ker, stride=po.ratio)[0, 0, ...]
 
         # Get identity grid
-        id_x = identity(dim, dtype=torch.float32, device=device)
+        id_x = identity(dim, dtype=torch.float32, device=device, jitter=False)
 
         for n_gn in range(max_niter_gn):  # Loop over Gauss-Newton iterations
 

@@ -69,6 +69,8 @@ class Settings:
     device: str = 'cuda'  # PyTorch device name
     diff: str = 'forward'  # Gradient difference operator (forward|backward|central)
     dir_out: str = None  # Directory to write output, if None uses same as input (output is prefixed 'y_')
+    do_coreg: bool = True  # NJTV coregistration of input images
+    do_mni_align: bool = False  # Align images to MNI space (rigid+isotropic scaling)
     do_print: int = 1  # Print progress to terminal (0, 1, 2, 3)
     do_proj = None  # Use projection matrices, defined in format_output()
     gap: float = 0.0  # Slice gap, between 0 and 1
@@ -85,13 +87,13 @@ class Settings:
     rho: float = None  # ADMM step-size, if None -> estimate is made
     rho_scl: float = 1.0  # Scaling of ADMM step-size
     rigid_basis = None  # Rigid transformation basis, defined in init_reg()
-    rigid_mod: int = 5  # Update rigid every rigid_mod iteration
-    rigid_sched_max: int = 14  # Start scaling at 2^rigid_sched_max
-    rigid_samp: int = 1  # Level of sub-sampling for estimating rigid registration parameters
+    rigid_mod: int = 4  # Update rigid every rigid_mod iteration
+    rigid_samp: int = 2  # Level of sub-sampling for estimating rigid registration parameters
     scaling: bool = False  # Optimise even/odd slice scaling
+    sched_max: int = 8  # Start coarse-to-fine scaling at 2^rigid_sched_max (no scaling if <= 1)
     show_hyperpar: bool = False  # Use matplotlib to visualise hyper-parameter estimates
     show_jtv: bool = False  # Show the joint total variation (JTV)
-    tolerance: float = 1e-5  # Algorithm tolerance, if zero, run to max_iter
+    tolerance: float = 0.5*1e-4  # Algorithm tolerance, if zero, run to max_iter
     unified_rigid: bool = False  # Do unified rigid registration
     vx: float = 1.0  # Reconstruction voxel size (if None, set automatically)
     write_jtv: bool = False  # Write JTV to nifti
