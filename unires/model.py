@@ -1,7 +1,8 @@
 import nibabel as nib
 from nitorch.spatial import (grid_pull, voxel_size)
 from nitorch.spatial import affine_basis as affine_basis_new
-from nitorch.tools.spm import (affine, affine_basis, dexpm, mean_space, noise_estimate, estimate_fwhm)
+from nitorch.tools.spm import (affine, affine_basis, dexpm, matrix,
+                               noise_estimate, estimate_fwhm, max_bb)
 from nitorch.tools.affine_reg import (mni_align, run_affine_reg)
 from nitorch.core.optim import (get_gain, plot_convergence)
 from nitorch.plot.volumes import show_slices
@@ -257,13 +258,15 @@ def _crop_fov(y, bb='full'):
     vx0 = voxel_size(mat0)
     # Set cropping
     if bb == 'mni':
-        dim_mni = torch.tensor([181, 217, 181], device=y[0].dat.device,)  # Size of SPM MNI
+        dim_mni = torch.tensor([181, 231, 181], device=y[0].dat.device)  # FOV based on nitorch/data/atlas_t1.nii.gz
         dim_mni = (dim_mni / vx0).round()  # Modulate with voxel size
         off = - (dim0 - dim_mni) / 2
         dim1 = dim0 + 2 * off
+        # Note that we add an extra offset to the 'z' translation because the nitorch atlas has its
+        # origin quite low down on the head
         mat_crop = torch.tensor([[1, 0, 0, - (off[0] + 1)],
                                  [0, 1, 0, - (off[1] + 1)],
-                                 [0, 0, 1, - (off[2] + 1)],
+                                 [0, 0, 1, - (off[2] + 1 - 44 / vx0[-1])],
                                  [0, 0, 0, 1]], device=y[0].dat.device)
         mat1 = mat0.mm(mat_crop)
         dim1 = dim1.cpu().int().tolist()
@@ -273,12 +276,13 @@ def _crop_fov(y, bb='full'):
     grid = affine(dim1, mat_crop, device=y[0].dat.device, dtype=y[0].dat.dtype)
     # Do interpolation
     for c in range(len(y)):
-        dat = grid_pull(y[c].dat[None, None, ...] ,
+        dat = grid_pull(y[c].dat[None, None, ...],
                         grid, bound='zero', extrapolate=False, interpolation=0)
         # Assign
         y[c].dat = dat[0, 0, ...]
         y[c].mat = mat1
         y[c].dim = dim1
+    # show_slices(dat[0, 0, ...])
 
     return y
 
@@ -382,7 +386,7 @@ def _format_y(x, sett):
             dim = D.inverse()[:3, :3].mm(all_dim[:, 0].reshape((3, 1))).ceil().squeeze()
         else:
             # Mean space from several images
-            dim, mat, _ = mean_space(all_mat, all_dim, vx=vx_y)
+            dim, mat = max_bb(all_mat, all_dim, vx_y, mni=False)
 
     # Set method
     if do_sr:
@@ -454,35 +458,36 @@ def _init_reg(x, sett):
     N = sum([len(xn) for xn in x])
     # Get affine basis
     sett.rigid_basis = affine_basis(basis='SE', device=sett.device, dtype=torch.float64)
+    fix = 0  # Fixed image index
     # Make input for nitorch affine align
     imgs = []
     for c in range(len(x)):
         for n in range(len(x[c])):
             imgs.append([x[c][n].dat, x[c][n].mat])
 
-    if sett.do_mni_align:
-        # Align to MNI
-        print_info('init-reg', sett, 'mni', 'begin')
-        M_mni = mni_align(imgs, rigid=False, modify_header=False,
-                          samp=(4, 2), device=sett.device)
-        M_mni = M_mni.type(torch.float64)
-        imgs = imgs[:-1]
-        # Apply MNI registration transform
-        for i in range(len(imgs)):
-            imgs[i][1] = imgs[i][1].solve(M_mni[i, ...])[0]
-        print_info('init-reg', sett, 'mni', 'finished')
-
     if sett.do_coreg and N > 1:
-        # Align images, again, in MNI space
+        # Align images, pairwise, to fixed image (fix)
         print_info('init-reg', sett, 'co', 'begin')
         q_est = run_affine_reg(imgs,
-            group='SE', device=sett.device, samp=2, cost_fun='nmi', verbose=False, fix=0)[0]
+            group='SE', device=sett.device, samp=(4, 2), cost_fun='nmi', verbose=False, fix=fix)[0]
         # Apply registration transform
         q_est = q_est.type(torch.float64)
         R = _expm(q_est, affine_basis_new(group='SE', device=sett.device, dtype=torch.float64))
         for i in range(len(imgs)):
             imgs[i][1] = imgs[i][1].solve(R[i, ...])[0]
         print_info('init-reg', sett, 'co', 'finished')
+
+    if sett.do_mni_align:
+        # Align fixed image to MNI space, and apply transformation to all images
+        print_info('init-reg', sett, 'mni', 'begin')
+        imgs1 = [imgs[fix]]
+        M_mni = mni_align(imgs1, rigid=False, modify_header=False,
+                          samp=(4, 2), device=sett.device)
+        M_mni = M_mni.type(torch.float64)
+        # Apply MNI registration transform
+        for i in range(len(imgs)):
+            imgs[i][1] = imgs[i][1].solve(M_mni[0, ...])[0]
+        print_info('init-reg', sett, 'mni', 'finished')
 
     # Modify image affine
     cnt = 0
