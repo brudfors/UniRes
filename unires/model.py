@@ -261,15 +261,14 @@ def _crop_fov(y, bb='full'):
     vx0 = voxel_size(mat0)
     # Set cropping
     if bb == 'mni':
-        dim_mni = torch.tensor([181, 231, 181], device=y[0].dat.device)  # FOV based on nitorch/data/atlas_t1.nii.gz
+        dim_mni = torch.tensor([176, 226, 181], device=y[0].dat.device)  # FOV based on nitorch/data/atlas_t1.nii.gz
         dim_mni = (dim_mni / vx0).round()  # Modulate with voxel size
         off = - (dim0 - dim_mni) / 2
         dim1 = dim0 + 2 * off
-        # Note that we add an extra offset to the 'z' translation because the nitorch atlas has its
-        # origin quite low down on the head
-        mat_crop = torch.tensor([[1, 0, 0, - (off[0] + 1)],
-                                 [0, 1, 0, - (off[1] + 1)],
-                                 [0, 0, 1, - (off[2] + 1 - 44 / vx0[-1])],
+        # Note that we add an extra offset to better align with the nitorch atlas' origin
+        mat_crop = torch.tensor([[1, 0, 0, - (off[0] + 1 - 4)],
+                                 [0, 1, 0, - (off[1] + 1 + 10)],
+                                 [0, 0, 1, - (off[2] + 1 - 20 / vx0[-1])],
                                  [0, 0, 0, 1]], device=y[0].dat.device)
         mat1 = mat0.mm(mat_crop)
         dim1 = dim1.cpu().int().tolist()
