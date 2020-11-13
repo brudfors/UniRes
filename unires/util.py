@@ -169,12 +169,9 @@ def read_image(data, device='cpu', is_ct=False):
     dim = tuple(dat.shape)
     # Remove NaNs
     dat[~torch.isfinite(dat)] = 0
-    if is_ct and (torch.min(dat) < 0):
+    if _is_ct(dat):
         # Input data is CT
         ct = True
-        # Winsorize CT
-        dat[dat < -1024] = -1024
-        dat[dat > 3071] = 3071
     else:
         ct = False
 
@@ -233,3 +230,15 @@ def write_image(dat, ofname, mat=torch.eye(4), header=None, dtype='float32'):
     with contextlib.suppress(FileNotFoundError):
         os.remove(ofname)
     nib.save(nii, ofname)
+
+
+def _is_ct(dat):
+    """Is image a CT scan?
+
+    """
+    ct = False
+    nm = dat.numel()
+    if torch.sum(dat < -990) > 0.01*nm:
+        ct = True
+
+    return ct
