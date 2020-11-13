@@ -73,6 +73,7 @@ def fit(x, y, sett):
         obj = torch.zeros(sett.max_iter, 3, dtype=torch.float64, device=sett.device)
         tmp = torch.zeros_like(y[0].dat)  # for holding rhs in y-update, and jtv in u-update
         t_iter = timer() if sett.do_print else 0
+        cnt_scl_iter = 0  # To ensure we do, at least, a fixed number of iterations for each scale
         for n_iter in range(sett.max_iter):
 
             if n_iter == 0:
@@ -98,8 +99,8 @@ def fit(x, y, sett):
             gain = get_gain(obj[:n_iter + 1, 0], monotonicity='decreasing')
             t_iter = print_info('fit-ll', sett, 'y', n_iter, obj[n_iter, :], gain, t_iter)
             # Converged?
-            if cnt_scl >= (sett.reg_scl.numel() - 1) and \
-                    ((gain.abs() < sett.tolerance) or (n_iter >= (sett.max_iter - 1))):
+            if cnt_scl >= (sett.reg_scl.numel() - 1) and cnt_scl_iter >= 32 \
+                and ((gain.abs() < sett.tolerance) or (n_iter >= (sett.max_iter - 1))):
                 _ = print_info('fit-finish', sett, t00, n_iter)
                 break  # Finished
 
@@ -131,13 +132,15 @@ def fit(x, y, sett):
             # ----------
             # Coarse-to-fine scaling of regularisation
             # ----------
-            if cnt_scl + 1 < len(sett.reg_scl) and gain.abs() < 1e-3:
+            if cnt_scl + 1 < len(sett.reg_scl) and cnt_scl_iter >= 16 and gain.abs() < 1e-3:
+                cnt_scl_iter = 0
                 cnt_scl += 1
                 # Coarse-to-fine scaling of lambda
                 for c in range(len(x)):
                     y[c].lam = sett.reg_scl[cnt_scl] * y[c].lam0
                 # Also update ADMM step-size
                 rho = step_size(x, y, sett)
+            cnt_scl_iter += 1
 
         # ----------
         # Get rigid matrices
