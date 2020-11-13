@@ -77,7 +77,7 @@ def print_info(info, sett, *argv):
                 if argv[0] == 'mni':
                     print('MNI ', end='')
                 elif argv[0] == 'co':
-                    print('individual ', end='')
+                    print('multi-channel ', end='')
                 print('alignment...', end='')
             elif argv[1] == 'finished':
                 print('finished!')
