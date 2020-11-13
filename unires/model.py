@@ -312,7 +312,7 @@ def _estimate_hyperpar(x, sett):
                 # Estimate noise sd from estimate of FWHM
                 sd_bg = estimate_fwhm(dat, voxel_size(x[c][n].mat), mn=20, mx=50)[1]
                 mu_bg = torch.tensor(0.0, device=dat.device, dtype=dat.dtype)
-                mu_fg = torch.tensor(5000.0, device=dat.device, dtype=dat.dtype)
+                mu_fg = torch.tensor(200.0, device=dat.device, dtype=dat.dtype)
             else:
                 # Get noise and foreground statistics
                 sd_bg, sd_fg, mu_bg, mu_fg = noise_estimate(dat, num_class=2, show_fit=sett.show_hyperpar, 
@@ -401,13 +401,6 @@ def _format_y(x, sett):
     dim = tuple(dim.int().tolist())
     _ = print_info('mean-space', sett, dim, mat)
 
-    # CT lambda fudge factor
-    ff_ct = 1.0  # Just a single CT
-    if N > 1:
-        # CT and MRIs: We need to fudge the CT scaling of lambda because the gradient
-        # distribution between CT and MRIs are so different
-        ff_ct = (16/sett.reg_scl)*25.0
-
     # Assign output
     y = []
     for c in range(len(x)):
@@ -418,9 +411,6 @@ def _format_y(x, sett):
             mu_c[n] = x[c][n].mu
         y[c].lam0 = 1 / torch.mean(mu_c)
         y[c].lam = 1 / torch.mean(mu_c)  # To facilitate rescaling
-        if x[c][0].ct:
-            y[c].lam0 *= ff_ct
-            y[c].lam *= ff_ct
         # Output image(s) dimension and orientation matrix
         y[c].dim = dim
         y[c].mat = mat.double().to(sett.device)
