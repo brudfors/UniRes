@@ -4,7 +4,9 @@ from nitorch.spatial import affine_basis as affine_basis_new
 from nitorch.tools.spm import (affine, affine_basis, dexpm, matrix,
                                noise_estimate, estimate_fwhm, max_bb)
 from nitorch.tools.affine_reg import (mni_align, run_affine_reg)
+from nitorch.tools.preproc import (atlas_crop, reset_origin)
 from nitorch.core.optim import (get_gain, plot_convergence)
+from nitorch.core.pyutils import get_pckg_data
 from nitorch.plot.volumes import show_slices
 from nitorch.core.math import round
 from nitorch.core._linalg_expm import _expm
@@ -47,7 +49,7 @@ def fit(x, y, sett):
             sett.reg_scl = sett.reg_scl.reshape(1)
 
         # Defines a coarse-to-fine scaling of regularisation
-        sett = _get_sched(sett)
+        sett = _get_sched(N, sett)
 
         # For visualisation
         fig_ax_nll = None
@@ -99,7 +101,7 @@ def fit(x, y, sett):
             gain = get_gain(obj[:n_iter + 1, 0], monotonicity='decreasing')
             t_iter = print_info('fit-ll', sett, 'y', n_iter, obj[n_iter, :], gain, t_iter)
             # Converged?
-            if cnt_scl >= (sett.reg_scl.numel() - 1) and cnt_scl_iter >= 32 \
+            if cnt_scl >= (sett.reg_scl.numel() - 1) and cnt_scl_iter >= 64 \
                 and ((gain.abs() < sett.tolerance) or (n_iter >= (sett.max_iter - 1))):
                 _ = print_info('fit-finish', sett, t00, n_iter)
                 break  # Finished
@@ -111,7 +113,7 @@ def fit(x, y, sett):
 
                 t0 = print_info('fit-update', sett, 's', n_iter)  # PRINT
                 # Do update
-                x, _ = update_scaling(x, y, sett, max_niter_gn=3, num_linesearch=6, verbose=0)
+                x, _ = update_scaling(x, y, sett, max_niter_gn=1, num_linesearch=6, verbose=0)
                 _ = print_info('fit-done', sett, t0)  # PRINT
                 # Print parameter estimates
                 _ = print_info('scl-param', sett, x, t0)
@@ -124,7 +126,7 @@ def fit(x, y, sett):
 
                 t0 = print_info('fit-update', sett, 'q', n_iter)  # PRINT
                 x, _ = update_rigid(x, y, sett,
-                    mean_correct=False, max_niter_gn=3, num_linesearch=6, verbose=0, samp=sett.rigid_samp)
+                    mean_correct=True, max_niter_gn=1, num_linesearch=6, verbose=0, samp=sett.rigid_samp)
                 _ = print_info('fit-done', sett, t0)  # PRINT
                 # Print parameter estimates
                 _ = print_info('reg-param', sett, x, t0)
@@ -143,6 +145,32 @@ def fit(x, y, sett):
             cnt_scl_iter += 1
 
         # ----------
+        # Deal with negative values that can occurs when super-resolving
+        # both MR and CT data
+        # ----------
+        if N > 1:
+            for c in range(len(x)):
+                n = 0  # Currently we only support one CT image per patient
+                if x[c][n].ct and sett.method == 'super-resolution':
+                    # Map to voxels in low-res image
+                    grid = affine(x[c][n].po.dim_y,
+                        x[c][n].po.rigid.mm(x[c][n].po.mat_x).solve(x[c][n].po.mat_y)[0].inverse(),
+                        device=sett.device, dtype=y[c].dat.dtype, jitter=False)
+                    # Mask of low-res image FOV projected into high-res space
+                    msk_fov = (grid[0, ..., 0] >= 1) & (grid[0, ..., 0] <= x[c][n].po.dim_x[0]) & \
+                              (grid[0, ..., 1] >= 1) & (grid[0, ..., 1] <= x[c][n].po.dim_x[1]) & \
+                              (grid[0, ..., 2] >= 1) & (grid[0, ..., 2] <= x[c][n].po.dim_x[2])
+                    # Resample low-res image into high-res space
+                    dat_c = grid_pull(x[c][n].dat[None, None, ...],
+                        grid, bound=sett.bound, extrapolate=False,
+                        interpolation=sett.interpolation)[0, 0, ...]
+                    # Zero voxels outside projected FOV, and set voxels inside the FOV that are positive
+                    # in the low-res data but negative in the high-res, to the their original values
+                    msk = msk_fov & (dat_c >= 0) & (y[c].dat < 0)
+                    y[c].dat[~msk_fov] = 0
+                    y[c].dat[msk] = tmp[msk]
+
+        # ----------
         # Get rigid matrices
         # ----------
         R = torch.zeros((4, 4, N), device=sett.device, dtype=torch.float64)
@@ -156,7 +184,7 @@ def fit(x, y, sett):
         # ----------
         # Process reconstruction results
         # ----------
-        y = _crop_fov(y, bb=sett.bb)
+        y = _crop_y(y, sett)
         y, mat, pth_y = _write_data(x, y, sett, jtv=tmp)
 
         return y, mat, pth_y, R
@@ -196,11 +224,19 @@ def init(data, sett=Settings()):
         x = _read_data(data, sett)
         del data
 
-        # Init registration
-        x, sett = _init_reg(x, sett)
-
         # Estimate model hyper-parameters
         x = _estimate_hyperpar(x, sett)
+
+        # Possibly, fix messed up affine in CT scans
+        x = _fix_affine(x, sett)
+
+        # Init registration, possibly:
+        # * Co-registers all input images
+        # * Aligns to MNI space
+        x, sett = _init_reg(x, sett)
+
+        # Possibly, crop FOV to brain in MNI template
+        x = _crop_x(x, sett)
 
         # Format output
         y, sett = _format_y(x, sett)
@@ -242,38 +278,58 @@ def _all_mat_dim_vx(x, sett):
     return all_mat, all_dim, all_vx
 
 
-def _crop_fov(y, bb='full'):
-    """ Crop reconstructed images FOV to a specified bounding-box.
+def _crop_x(x, sett):
+    """ Crop input images FOV to a specified bounding-box.
 
     Args:
-        y (Output()): Output data.
-        bb (string): Bounding-box ('full'|'mni'), defaults to 'full'.
+        x (Input()): Input data.
 
     Returns:
-        y (Output()): Output data.
+        x (Input()): Cropped input data.
 
     """
-    if bb == 'full':  # No cropping
+    if not sett.crop:
+        return x
+    # Do cropping
+    cnt = 0
+    for c in range(len(x)):
+        for n in range(len(x[c])):
+            x[c][n].dat, mat, x[c][n].dim = \
+                atlas_crop(x[c][n].dat, x[c][n].mat, fov='brain')
+            x[c][n].mat = mat.type(x[c][n].mat.dtype)
+            cnt += 1
+    print_info('crop', sett, cnt)
+
+    return x
+
+
+def _crop_y(y, sett):
+    """ Crop output images FOV to a fixed dimension
+
+    Args:
+        y (Input()): Output data.
+
+    Returns:
+        y (Input()): Cropped output data.
+
+    """
+    if not sett.crop or sett.method == 'denoising':
         return y
     # y image information
     dim0 = torch.tensor(y[0].dim, device=y[0].dat.device)
     mat0 = y[0].mat
     vx0 = voxel_size(mat0)
-    # Set cropping
-    if bb == 'mni':
-        dim_mni = torch.tensor([176, 226, 181], device=y[0].dat.device)  # FOV based on nitorch/data/atlas_t1.nii.gz
-        dim_mni = (dim_mni / vx0).round()  # Modulate with voxel size
-        off = - (dim0 - dim_mni) / 2
-        dim1 = dim0 + 2 * off
-        # Note that we add an extra offset to better align with the nitorch atlas' origin
-        mat_crop = torch.tensor([[1, 0, 0, - (off[0] + 1 - 4)],
-                                 [0, 1, 0, - (off[1] + 1 + 10)],
-                                 [0, 0, 1, - (off[2] + 1 - 20 / vx0[-1])],
-                                 [0, 0, 0, 1]], device=y[0].dat.device)
-        mat1 = mat0.mm(mat_crop)
-        dim1 = dim1.cpu().int().tolist()
-    else:
-        raise ValueError('Undefined bounding-box (bb)')
+    # Define cropped FOV
+    dim_mni = torch.tensor([181, 232, 181], device=y[0].dat.device)  # FOV based on nitorch/data/atlas_t1.nii.gz
+    dim_mni = (dim_mni / vx0).round()  # Modulate with voxel size
+    off = - (dim0 - dim_mni) / 2
+    dim1 = dim0 + 2 * off
+    mat_crop = torch.tensor([[1, 0, 0, - (off[0] + 1)],
+                             [0, 1, 0, - (off[1] + 1)],
+                             [0, 0, 1, - (off[2] + 1)],
+                             [0, 0, 0, 1]], device=y[0].dat.device)
+    mat1 = mat0.mm(mat_crop)
+    dim1 = dim1.cpu().int().tolist()
     # Make output grid
     grid = affine(dim1, mat_crop, device=y[0].dat.device, dtype=y[0].dat.dtype)
     # Do interpolation
@@ -303,7 +359,8 @@ def _estimate_hyperpar(x, sett):
     """
     # Print info to screen
     t0 = print_info('hyper_par', sett)
-
+    # Total number of observations
+    N = sum([len(xn) for xn in x])
     # Do estimation
     cnt = 0
     for c in range(len(x)):
@@ -314,11 +371,14 @@ def _estimate_hyperpar(x, sett):
                 # Estimate noise sd from estimate of FWHM
                 sd_bg = estimate_fwhm(dat, voxel_size(x[c][n].mat), mn=20, mx=50)[1]
                 mu_bg = torch.tensor(0.0, device=dat.device, dtype=dat.dtype)
-                mu_fg = torch.tensor(200.0, device=dat.device, dtype=dat.dtype)
+                mu_fg = torch.tensor(sett.reg_scl/8.0 * 1024.0, device=dat.device, dtype=dat.dtype)
+                if N > 1:
+                    mu_fg /= 20
             else:
                 # Get noise and foreground statistics
-                sd_bg, sd_fg, mu_bg, mu_fg = noise_estimate(dat, num_class=2, show_fit=sett.show_hyperpar, 
+                sd_bg, sd_fg, mu_bg, mu_fg = noise_estimate(dat, num_class=2, show_fit=sett.show_hyperpar,
                                                             fig_num=100 + cnt)
+                mu_bg = torch.tensor(0.0, device=dat.device, dtype=dat.dtype)
             # Set values
             x[c][n].sd = sd_bg.float()
             x[c][n].tau = 1 / sd_bg.float() ** 2
@@ -327,6 +387,23 @@ def _estimate_hyperpar(x, sett):
 
     # Print info to screen
     print_info('hyper_par', sett, x, t0)
+
+    return x
+
+
+def _fix_affine(x, sett):
+    """Fix messed up affine in CT scans.
+
+    """
+    cnt = 0
+    for c in range(len(x)):
+        for n in range(len(x[c])):
+            if x[c][n].ct and sett.do_res_origin:
+                _, x[c][n].dat, x[c][n].mat = reset_origin(
+                    (x[c][n].dat, x[c][n].mat), device=sett.device)
+                x[c][n].dim = x[c][n].dat.shape
+                cnt += 1
+    print_info('fix-affine', sett, cnt)
 
     return x
 
@@ -420,22 +497,22 @@ def _format_y(x, sett):
     return y, sett
 
 
-def _get_sched(sett):
+def _get_sched(N, sett):
     """ Define a coarse-to-fine scaling of regularisation
 
     """
     # Parameters/settings
-    if sett.sched_max < 1:
-        sett.sched_max = 1
+    if sett.sched_num < 0 or N == 1:
+        sett.sched_num = 0
     if sett.rigid_mod < 1:
         sett.rigid_mod = 1
     scl = sett.reg_scl
     two = torch.tensor(2.0, device=sett.device, dtype=torch.float32)
     # Build scheduler
-    sched = two ** torch.arange(0, sett.sched_max, step=1,
-        device=sett.device, dtype=torch.float32).flip(dims=(0,))
+    sched = two ** torch.arange(0, 32, step=1,
+                                device=sett.device, dtype=torch.float32).flip(dims=(0,))
     ix = torch.min((sched - sett.reg_scl).abs(), dim=0)[1]
-    sched = sched[:ix]
+    sched = sched[ix - sett.sched_num:ix]
     sched = torch.cat((sched, scl.reshape(1)))
     sett.reg_scl = sched
 

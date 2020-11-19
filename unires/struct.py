@@ -61,7 +61,7 @@ class Settings:
 
     """
     alpha: float = 1.0  # Relaxation parameter 0 < alpha < 2, alpha < 1: under-relaxation, alpha > 1: over-relaxation
-    bb: str = 'full'  # Output bounding box of reconstructed data ('full'|'mni'|'95')
+    crop: bool = False  # Crop input images' FOV to brain in NITorch MNI atlas
     bound: str = 'dct2'  # Boundary conditions (see nitorch.spatial)
     cgs_max_iter: int = 32  # Max conjugate gradient (CG) iterations for solving for y
     cgs_tol: float = 1e-3  # CG tolerance for solving for y
@@ -73,8 +73,9 @@ class Settings:
     do_mni_align: bool = False  # Align images to MNI space (rigid+isotropic scaling)
     do_print: int = 1  # Print progress to terminal (0, 1, 2, 3)
     do_proj = None  # Use projection matrices, defined in format_output()
+    do_res_origin = False  # Resets origin, if CT data
     gap: float = 0.0  # Slice gap, between 0 and 1
-    has_ct: bool = False  # Data could be CT (but data must contain negative values)
+    has_ct: bool = True  # Data could be CT (but data must contain negative values)
     interpolation: str = 'linear'  # Interpolation order (see nitorch.spatial)
     mat: torch.Tensor = None  # Observed image(s) affine matrix. OBS: Data needs to be given as 4D array
     max_iter: int = 512  # Max algorithm iterations
@@ -83,17 +84,17 @@ class Settings:
     plot_conv: bool = False  # Use matplotlib to plot convergence in real-time
     profile_ip: int = 0  # In-plane slice profile (0=rect|1=tri|2=gauss)
     profile_tp: int = 0  # Through-plane slice profile (0=rect|1=tri|2=gauss)
-    reg_scl: float = 8.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
-    rho: float = None  # ADMM step-size, if None -> estimate is made
+    reg_scl: float = 16.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
+    rho: float = 1.0  # ADMM step-size, if None -> estimate is made
     rho_scl: float = 1.0  # Scaling of ADMM step-size
     rigid_basis = None  # Rigid transformation basis, defined in init_reg()
-    rigid_mod: int = 4  # Update rigid every rigid_mod iteration
-    rigid_samp: int = 2  # Level of sub-sampling for estimating rigid registration parameters
+    rigid_mod: int = 1  # Update rigid every rigid_mod iteration
+    rigid_samp: int = 1  # Level of sub-sampling for estimating rigid registration parameters
     scaling: bool = True  # Optimise even/odd slice scaling
-    sched_max: int = 8  # Start coarse-to-fine scaling at 2^rigid_sched_max (no scaling if <= 1)
+    sched_num: int = 0  # Number of coarse-to-fine scalings
     show_hyperpar: bool = False  # Use matplotlib to visualise hyper-parameter estimates
     show_jtv: bool = False  # Show the joint total variation (JTV)
-    tolerance: float = 0.5*1e-4  # Algorithm tolerance, if zero, run to max_iter
+    tolerance: float = 1e-4  # Algorithm tolerance, if zero, run to max_iter
     unified_rigid: bool = True  # Do unified rigid registration
     vx: float = 1.0  # Reconstruction voxel size (if None, set automatically)
     write_jtv: bool = False  # Write JTV to nifti

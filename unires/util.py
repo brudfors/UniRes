@@ -81,6 +81,12 @@ def print_info(info, sett, *argv):
                 print('alignment...', end='')
             elif argv[1] == 'finished':
                 print('finished!')
+        elif info == 'fix-affine':
+            if argv[0] > 0:
+                print('\nFixed affine of {} CT image(s).'.format(argv[0]))
+        elif info == 'crop':
+            if argv[0] > 0 and sett.bound != 'full':
+                print('\nCropped FOV of {} input images.'.format(argv[0]))
     if sett.do_print >= 2:
         if info in 'reg-param':
             print('Rigid registration fit:')
@@ -170,7 +176,6 @@ def read_image(data, device='cpu', is_ct=False):
     # Remove NaNs
     dat[~torch.isfinite(dat)] = 0
     if _is_ct(dat):
-        # Input data is CT
         ct = True
     else:
         ct = False
