@@ -84,7 +84,7 @@ class Settings:
     plot_conv: bool = False  # Use matplotlib to plot convergence in real-time
     profile_ip: int = 0  # In-plane slice profile (0=rect|1=tri|2=gauss)
     profile_tp: int = 0  # Through-plane slice profile (0=rect|1=tri|2=gauss)
-    reg_scl: float = 16.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
+    reg_scl: float = 32.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
     rho: float = 1.0  # ADMM step-size, if None -> estimate is made
     rho_scl: float = 1.0  # Scaling of ADMM step-size
     rigid_basis = None  # Rigid transformation basis, defined in init_reg()

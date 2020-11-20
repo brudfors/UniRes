@@ -145,13 +145,13 @@ def fit(x, y, sett):
             cnt_scl_iter += 1
 
         # ----------
-        # Deal with negative values that can occurs when super-resolving
+        # Deal with negative values that can occur when super-resolving
         # both MR and CT data
         # ----------
         if N > 1:
             for c in range(len(x)):
                 n = 0  # Currently we only support one CT image per patient
-                if x[c][n].ct and sett.method == 'super-resolution':
+                if x[c][n].ct:
                     # Map to voxels in low-res image
                     grid = affine(x[c][n].po.dim_y,
                         x[c][n].po.rigid.mm(x[c][n].po.mat_x).solve(x[c][n].po.mat_y)[0].inverse(),
@@ -167,7 +167,7 @@ def fit(x, y, sett):
                     # Zero voxels outside projected FOV, and set voxels inside the FOV that are positive
                     # in the low-res data but negative in the high-res, to the their original values
                     msk = msk_fov & (dat_c >= 0) & (y[c].dat < 0)
-                    y[c].dat[~msk_fov] = 0
+                    y[c].dat[~msk_fov] = 0.0
                     y[c].dat[msk] = tmp[msk]
 
         # ----------
@@ -176,8 +176,7 @@ def fit(x, y, sett):
         R = torch.zeros((4, 4, N), device=sett.device, dtype=torch.float64)
         n = 0
         for c in range(len(x)):
-            num_cn = len(x[c])
-            for cn in range(num_cn):
+            for cn in range(len(x[c])):
                 R[..., n] = dexpm(x[c][cn].rigid_q, sett.rigid_basis)[0]
                 n += 1
 
@@ -538,7 +537,7 @@ def _init_reg(x, sett):
         # Align images, pairwise, to fixed image (fix)
         print_info('init-reg', sett, 'co', 'begin')
         q_est = run_affine_reg(imgs,
-            group='SE', device=sett.device, samp=(4, 2), cost_fun='nmi', verbose=False, fix=fix)[0]
+            group='SE', device=sett.device, samp=(4, 2, 1), cost_fun='nmi', verbose=False, fix=fix)[0]
         # Apply registration transform
         q_est = q_est.type(torch.float64)
         R = _expm(q_est, affine_basis_new(group='SE', device=sett.device, dtype=torch.float64))
@@ -551,7 +550,7 @@ def _init_reg(x, sett):
         print_info('init-reg', sett, 'mni', 'begin')
         imgs1 = [imgs[fix]]
         M_mni = mni_align(imgs1, rigid=False, modify_header=False,
-                          samp=(4, 2), device=sett.device)
+                          samp=(4, 2, 1), device=sett.device)
         M_mni = M_mni.type(torch.float64)
         # Apply MNI registration transform
         for i in range(len(imgs)):

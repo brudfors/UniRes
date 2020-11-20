@@ -179,6 +179,9 @@ def read_image(data, device='cpu', is_ct=False):
         ct = True
     else:
         ct = False
+    # # Add some random noise
+    # torch.manual_seed(0)
+    # dat[dat > 0] += torch.rand_like(dat[dat > 0]) - 1 / 2
 
     return dat, dim, mat, fname, direc, nam, head, ct, var
 
