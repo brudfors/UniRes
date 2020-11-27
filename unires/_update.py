@@ -1,16 +1,20 @@
-from nitorch.spatial import (grid_pull, voxel_size, im_gradient, im_divergence, grid_grad)
-from nitorch.tools.spm import (affine, dexpm, identity)
+# 3rd party
+import torch
+from torch.nn import functional as F
+# NITorch
+from nitorch.spatial import (affine_grid, grid_pull, identity_grid,
+                             voxel_size, im_gradient, im_divergence,
+                             grid_grad)
+from nitorch.core._linalg_expm import _expm
 from nitorch.core.optim import cg
 from nitorch.plot.volumes import show_slices
 from nitorch.core.math import round
-import torch
-from torch.nn import functional as F
-
-from .project import (apply_scaling, proj, proj_info)
-from .util import print_info
+# UniRes
+from ._project import (_apply_scaling, _proj, _proj_info)
+from ._util import _print_info
 
 
-def admm_aux(y, sett):
+def _admm_aux(y, sett):
     """ Get ADMM variables z and w.
 
     Returns:
@@ -28,7 +32,7 @@ def admm_aux(y, sett):
     return z, w
 
 
-def step_size(x, y, sett, verbose=False):
+def _step_size(x, y, sett, verbose=False):
     """ ADMM step size (rho) from image statistics.
 
     Args:
@@ -53,12 +57,12 @@ def step_size(x, y, sett, verbose=False):
                 cnt += 1
         rho = sett.rho_scl * torch.sqrt(torch.mean(all_tau)) / torch.mean(all_lam)
     if verbose:
-        _ = print_info('step_size', sett, rho)  # PRINT
+        _ = _print_info('_step_size', sett, rho)  # PRINT
 
     return rho
 
 
-def update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
+def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
     """
 
 
@@ -74,13 +78,13 @@ def update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
     # ----------
     # UPDATE: y
     # ----------
-    t0 = print_info('fit-update', sett, 'y', n_iter)  # PRINT
+    t0 = _print_info('fit-update', sett, 'y', n_iter)  # PRINT
     for c in range(len(x)):  # Loop over channels
         # RHS
         tmp[:] = 0
         for n in range(len(x[c])):  # Loop over observations of channel 'c'
-            # _ = print_info('int', sett, n)  # PRINT
-            tmp += x[c][n].tau * proj('At', x[c][n].dat, x[c], y[c], method=sett.method, do=sett.do_proj,
+            # _ = _print_info('int', sett, n)  # PRINT
+            tmp += x[c][n].tau * _proj('At', x[c][n].dat, x[c], y[c], method=sett.method, do=sett.do_proj,
                                       n=n, bound=sett.bound, interpolation=sett.interpolation)
 
         # Divergence
@@ -89,7 +93,7 @@ def update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
         tmp -= y[c].lam * div
 
         # Invert y = lhs\tmp by conjugate gradients
-        lhs = lambda dat: proj('AtA', dat, x[c], y[c], method=sett.method, do=sett.do_proj, rho=rho,
+        lhs = lambda dat: _proj('AtA', dat, x[c], y[c], method=sett.method, do=sett.do_proj, rho=rho,
                                vx_y=vx_y, bound=sett.bound, interpolation=sett.interpolation, diff=sett.diff)
         cg(A=lhs, b=tmp, x=y[c].dat,
            verbose=sett.cgs_verbose,
@@ -98,9 +102,9 @@ def update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
            inplace=True,
            tolerance=sett.cgs_tol)  # OBS: y[c].dat is here updated in-place
 
-        _ = print_info('int', sett, c)  # PRINT
+        _ = _print_info('int', sett, c)  # PRINT
 
-    _ = print_info('fit-done', sett, t0)  # PRINT
+    _ = _print_info('fit-done', sett, t0)  # PRINT
 
     # ----------
     # Compute model objective function
@@ -113,7 +117,7 @@ def update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
     # ----------
     if alpha != 1:  # Use over/under-relaxation
         z_old = z.clone()
-    t0 = print_info('fit-update', sett, 'z', n_iter)  # PRINT
+    t0 = _print_info('fit-update', sett, 'z', n_iter)  # PRINT
     tmp[:] = 0
     for c in range(len(x)):
         Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
@@ -129,24 +133,24 @@ def update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
             Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
         for d in range(Dy.shape[0]):
             z[c, d, ...] = tmp * (w[c, d, ...] / rho + Dy[d, ...])
-    _ = print_info('fit-done', sett, t0)  # PRINT
+    _ = _print_info('fit-done', sett, t0)  # PRINT
 
     # ----------
     # UPDATE: w
     # ----------
-    t0 = print_info('fit-update', sett, 'w', n_iter)  # PRINT
+    t0 = _print_info('fit-update', sett, 'w', n_iter)  # PRINT
     for c in range(len(x)):  # Loop over channels
         Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
         if alpha != 1:  # Use over/under-relaxation
             Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
         w[c, ...] += rho * (Dy - z[c, ...])
-        _ = print_info('int', sett, c)  # PRINT
-    _ = print_info('fit-done', sett, t0)  # PRINT
+        _ = _print_info('int', sett, c)  # PRINT
+    _ = _print_info('fit-done', sett, t0)  # PRINT
 
     return y, z, w, tmp, obj
 
 
-def update_rigid(x, y, sett, mean_correct=True, max_niter_gn=1, num_linesearch=4, verbose=0, samp=3):
+def _update_rigid(x, y, sett, mean_correct=True, max_niter_gn=1, num_linesearch=4, verbose=0, samp=3):
     """ Updates each input image's specific registration parameters:
             x[c][n].rigid_q
         using a Gauss-Newton optimisation. After the parameters have
@@ -174,14 +178,17 @@ def update_rigid(x, y, sett, mean_correct=True, max_niter_gn=1, num_linesearch=4
     for c in range(len(x)):  # Loop over channels
         # # ----------
         # # FOR TESTING
-        # from nitorch.tools.spm import matrix
-        # mat_re = matrix(torch.tensor([-12, 8.5, -7, 0, 0, 0], device=sett.device, dtype=torch.float64))
+        # from nitorch.spatial import affine_matrix_classic
+        # mat_re = affine_matrix_classic(
+        #     torch.tensor([-12, 8.5, -7, 0, 0, 0])).\
+        #     type(torch.float64).to(sett.device)
         # mat_y = y[c].mat
         # mat_y[:3, 3] = mat_re[:3, 3] + mat_y[:3, 3]
         # mat_y[:3, :3] = mat_re[:3, :3].mm(mat_y[:3, :3])
         # y[c].mat = mat_y
-        # _update_rigid_channel(x[c], y[c], sett,
-        #     verbose=1, max_niter_gn=32, samp=2, num_linesearch=1, c=c)
+        # _update_rigid_channel(x[c], y[c], sett, verbose=1,
+        #                       max_niter_gn=32, samp=1, num_linesearch=1,
+        #                       c=c)
         # # ----------
         x[c], sllc = _update_rigid_channel(x[c], y[c], sett, max_niter_gn=max_niter_gn,
                                           num_linesearch=num_linesearch, verbose=verbose,
@@ -190,8 +197,8 @@ def update_rigid(x, y, sett, mean_correct=True, max_niter_gn=1, num_linesearch=4
 
     # Mean correct the rigid-body transforms
     if mean_correct:
-        num_q = sett.rigid_basis.shape[2]  # Number of registration parameters
-        sum_q = torch.zeros(num_q, device=sett.device, dtype=torch.float64)
+        sum_q = torch.zeros(sett.rigid_basis.shape[0],
+                            device=sett.device, dtype=torch.float64)
         num_q = 0.0
         # Sum q parameters
         for c in range(len(x)):  # Loop over channels
@@ -209,13 +216,13 @@ def update_rigid(x, y, sett, mean_correct=True, max_niter_gn=1, num_linesearch=4
         # Update rigid transformations
         for c in range(len(x)):  # Loop over channels
             for n in range(len(x[c])):  # Loop over observations of channel c
-                rigid = dexpm(x[c][n].rigid_q, sett.rigid_basis)[0]
+                rigid = _expm(x[c][n].rigid_q, sett.rigid_basis)
                 x[c][n].po.rigid = rigid
 
     return x, sll
 
 
-def update_scaling(x, y, sett, max_niter_gn=1, num_linesearch=4, verbose=0):
+def _update_scaling(x, y, sett, max_niter_gn=1, num_linesearch=4, verbose=0):
     """ Updates an even/odd slice scaling parameter using Gauss-Newton
         optimisation.
 
@@ -244,7 +251,7 @@ def update_scaling(x, y, sett, max_niter_gn=1, num_linesearch=4, verbose=0):
             dim = x[c][n_x].po.dim_yx
             mat_yx = x[c][n_x].po.mat_yx
             mat_y = x[c][n_x].po.mat_y
-            rigid = dexpm(x[c][n_x].rigid_q, sett.rigid_basis)[0]
+            rigid = _expm(x[c][n_x].rigid_q, sett.rigid_basis)
             mat = rigid.mm(mat_yx).solve(mat_y)[0]  # mat_y\rigid*mat_yx
             # Observed data
             dat_x = x[c][n_x].dat
@@ -257,12 +264,13 @@ def update_scaling(x, y, sett, max_niter_gn=1, num_linesearch=4, verbose=0):
             me = _even_odd(msk, 'even', dim_thick)
             xe = xe[me]
             # Get reconstruction (without scaling)
-            grid = affine(dim, mat, device=sett.device, dtype=torch.float32, jitter=False)
-            dat_y = grid_pull(y[c].dat[None, None, ...], grid, bound=sett.bound,
-                              interpolation=sett.interpolation, extrapolate=True)
+            grid = affine_grid(mat.type(torch.float32), dim)
+            dat_y = grid_pull(y[c].dat[None, None, ...], grid[None, ...], bound=sett.bound,
+                              interpolation=sett.interpolation,
+                              extrapolate=False)
             dat_y = F.conv3d(dat_y, smo_ker, stride=ratio)[0, 0, ...]
             # Apply scaling
-            dat_y = apply_scaling(dat_y, scl, dim_thick)
+            dat_y = _apply_scaling(dat_y, scl, dim_thick)
 
             for n_gn in range(max_niter_gn):  # Loop over Gauss-Newton iterations
                 # Log-likelihood
@@ -305,7 +313,7 @@ def update_scaling(x, y, sett, max_niter_gn=1, num_linesearch=4, verbose=0):
                         # Take step
                         scl = old_scl - armijo * Update
                         # Apply scaling
-                        dat_y = apply_scaling(dat_y, scl - old_scl, dim_thick)
+                        dat_y = _apply_scaling(dat_y, scl - old_scl, dim_thick)
                         # Compute matching term
                         ll = 0.5 * tau * torch.sum((dat_x[msk] - dat_y[msk]) ** 2, dtype=torch.float64)
 
@@ -360,7 +368,7 @@ def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64):
         for n in range(len(x[c])):
             msk = x[c][n].dat != 0
             nll_xy += 0.5 * x[c][n].tau * torch.sum((x[c][n].dat[msk] -
-                                                    proj('A', y[c].dat, x[c], y[c], method=sett.method, do=sett.do_proj,
+                                                    _proj('A', y[c].dat, x[c], y[c], method=sett.method, do=sett.do_proj,
                                                          n=n, bound=sett.bound, interpolation=sett.interpolation)[msk]) ** 2,
                                                          dtype=sum_dtype)
         # Neg. log-prior term
@@ -433,7 +441,7 @@ def _rigid_match(dat_x, dat_y, po, tau, rigid, sett, CtC=None, diff=False, verbo
     Hes = None
 
     if sett.method == 'super-resolution':
-        extrapolate = True
+        extrapolate = False
         dim = dim_yx
         mat = mat_yx
     elif sett.method == 'denoising':
@@ -443,16 +451,16 @@ def _rigid_match(dat_x, dat_y, po, tau, rigid, sett, CtC=None, diff=False, verbo
 
     # Get grid
     mat = rigid.mm(mat).solve(mat_y)[0]  # mat_y\rigid*mat
-    grid = affine(dim, mat, device=dat_x.device, dtype=torch.float32, jitter=False)
+    grid = affine_grid(mat.type(torch.float32), dim)
 
     # Warp y and compute spatial derivatives
-    dat_yx = grid_pull(dat_y, grid, bound=sett.bound, extrapolate=extrapolate, interpolation=sett.interpolation)[0, 0, ...]
+    dat_yx = grid_pull(dat_y, grid[None, ...], bound=sett.bound, extrapolate=extrapolate, interpolation=sett.interpolation)[0, 0, ...]
     if sett.method == 'super-resolution':
         dat_yx = F.conv3d(dat_yx[None, None, ...], smo_ker, stride=ratio)[0, 0, ...]
         if scl != 0:
-            dat_yx = apply_scaling(dat_yx, scl, dim_thick)
+            dat_yx = _apply_scaling(dat_yx, scl, dim_thick)
     if diff:
-        gr = grid_grad(dat_y, grid, bound=sett.bound, extrapolate=extrapolate, interpolation=sett.interpolation)[0, 0, ...]
+        gr = grid_grad(dat_y, grid[None, ...], bound=sett.bound, extrapolate=extrapolate, interpolation=sett.interpolation)[0, 0, ...]
 
     if verbose >= 2:  # Show images
         show_slices(torch.stack((dat_x, dat_yx, (dat_x - dat_yx) ** 2), 3),
@@ -487,7 +495,7 @@ def _rigid_match(dat_x, dat_y, po, tau, rigid, sett, CtC=None, diff=False, verbo
 
 
 def _update_rigid_channel(xc, yc, sett, max_niter_gn=1, num_linesearch=4,
-                         verbose=0, samp=3, c=1):
+                          verbose=0, samp=3, c=1):
     """ Updates the rigid parameters for all images of one channel.
 
     Args:
@@ -508,7 +516,7 @@ def _update_rigid_channel(xc, yc, sett, max_niter_gn=1, num_linesearch=4,
     # Parameters
     device = yc.dat.device
     method = sett.method
-    num_q = sett.rigid_basis.shape[2]
+    num_q = sett.rigid_basis.shape[0]
     lkp = [[0, 3, 4], [3, 1, 5], [4, 5, 2]]
     one = torch.tensor(1.0, device=device, dtype=torch.float64)
 
@@ -521,12 +529,11 @@ def _update_rigid_channel(xc, yc, sett, max_niter_gn=1, num_linesearch=4,
         q = xc[n_x].rigid_q
         tau = xc[n_x].tau
         armijo = torch.tensor(1, device=device, dtype=q.dtype)
-        po = proj_info(xc[n_x].po.dim_y, xc[n_x].po.mat_y, xc[n_x].po.dim_x,
-                            xc[n_x].po.mat_x, rigid=xc[n_x].po.rigid, prof_ip=sett.profile_ip,
-                            prof_tp=sett.profile_tp, gap=sett.gap, device=device,
-                            scl=xc[n_x].po.scl, samp=samp)
-
-        # Superres or denoising?
+        po = _proj_info(xc[n_x].po.dim_y, xc[n_x].po.mat_y, xc[n_x].po.dim_x,
+                       xc[n_x].po.mat_x, rigid=xc[n_x].po.rigid, prof_ip=sett.profile_ip,
+                       prof_tp=sett.profile_tp, gap=sett.gap, device=device,
+                       scl=xc[n_x].po.scl, samp=samp)
+        # Method
         if method == 'super-resolution':
             dim = po.dim_yx
             mat = po.mat_yx
@@ -537,13 +544,13 @@ def _update_rigid_channel(xc, yc, sett, max_niter_gn=1, num_linesearch=4,
         # Do sub-sampling?
         if samp > 0 and po.D_x is not None:
             # Lowres
-            grid = affine(po.dim_x, po.D_x, device=device, dtype=torch.float32)
-            dat_x = grid_pull(xc[n_x].dat[None, None, ...], grid, bound='zero',
+            grid = affine_grid(po.D_x.type(torch.float32), po.dim_x)
+            dat_x = grid_pull(xc[n_x].dat[None, None, ...], grid[None, ...], bound='zero',
                               extrapolate=False, interpolation=0)[0, 0, ...]
             if n_x == 0 and po.D_y is not None:
                 # Highres (only for superres)
-                grid = affine(po.dim_y, po.D_y, device=device, dtype=torch.float32)
-                dat_y = grid_pull(yc.dat[None, None, ...], grid, bound='zero',
+                grid = affine_grid(po.D_y.type(dtype=torch.float32), po.dim_y)
+                dat_y = grid_pull(yc.dat[None, None, ...], grid[None, ...], bound='zero',
                                   extrapolate=False, interpolation=0)
             else:
                 dat_y = yc.dat[None, None, ...]
@@ -559,12 +566,13 @@ def _update_rigid_channel(xc, yc, sett, max_niter_gn=1, num_linesearch=4,
             CtC = F.conv_transpose3d(CtC, po.smo_ker, stride=po.ratio)[0, 0, ...]
 
         # Get identity grid
-        id_x = identity(dim, dtype=torch.float32, device=device, jitter=False)
+        id_x = identity_grid(dim, dtype=torch.float32, device=device)
 
         for n_gn in range(max_niter_gn):  # Loop over Gauss-Newton iterations
 
             # Differentiate Rq w.r.t. q (store in d_rigid_q)
-            rigid, d_rigid = dexpm(q, sett.rigid_basis, diff=True)
+            rigid, d_rigid = _expm(q, sett.rigid_basis, grad_X=True)
+            d_rigid = d_rigid.permute((1, 2, 0))  # make compatible with old affine_basis
             d_rigid_q = torch.zeros(4, 4, num_q, device=device, dtype=torch.float64)
             for i in range(num_q):
                 d_rigid_q[:, :, i] = d_rigid[:, :, i].mm(mat).solve(po.mat_y)[0]  # mat_y\d_rigid*mat
@@ -618,7 +626,7 @@ def _update_rigid_channel(xc, yc, sett, max_niter_gn=1, num_linesearch=4,
             if num_linesearch == 0:
                 # ..without a line-search
                 q = old_q - armijo * Update
-                rigid = dexpm(q, sett.rigid_basis)[0]
+                rigid = _expm(q, sett.rigid_basis)
                 if verbose >= 1:
                     print('c={}, n={}, gn={} | q={}'.format(c, n_x, n_gn, round(q, 7).tolist()))
             else:
@@ -627,7 +635,7 @@ def _update_rigid_channel(xc, yc, sett, max_niter_gn=1, num_linesearch=4,
                     # Take step
                     q = old_q - armijo * Update
                     # Compute matching term
-                    rigid = dexpm(q, sett.rigid_basis)[0]
+                    rigid = _expm(q, sett.rigid_basis)
                     ll = _rigid_match(dat_x, dat_y, po, tau, rigid, sett,
                                       verbose=verbose)[0]
                     # Matching improved?

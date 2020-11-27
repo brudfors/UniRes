@@ -1,8 +1,7 @@
-import contextlib
 from datetime import datetime
-import nibabel as nib
 from nitorch.spatial import voxel_size
 from nitorch.core.math import round
+from nitorch.io import (map, savef)
 import os
 from timeit import default_timer as timer
 import torch
@@ -17,7 +16,7 @@ _unires_title = r"""
 """
 
 
-def print_info(info, sett, *argv):
+def _print_info(info, sett, *argv):
     """ Print algorithm info to terminal.
 
     Args:
@@ -74,13 +73,13 @@ def print_info(info, sett, *argv):
         elif info == 'init-reg':
             if argv[1] == 'begin':
                 print('\nPerforming ', end='')
-                if argv[0] == 'mni':
-                    print('MNI ', end='')
+                if argv[0] == 'atlas':
+                    print('atlas ', end='')
                 elif argv[0] == 'co':
                     print('multi-channel ', end='')
                 print('alignment...', end='')
             elif argv[1] == 'finished':
-                print('finished!')
+                print('completed in {:0.5f} seconds.'.format(timer() - argv[2]))
         elif info == 'fix-affine':
             if argv[0] > 0:
                 print('\nFixed affine of {} CT image(s).'.format(argv[0]))
@@ -92,7 +91,7 @@ def print_info(info, sett, *argv):
             print('Rigid registration fit:')
             for c in range(len(argv[0])):
                 for n in range(len(argv[0][c])):
-                    print('c={} n={} | q={}'.format(c, n, round(argv[0][c][n].rigid_q, 4).cpu().tolist()))
+                    print('c={} n={} | q={}'.format(c, n, round(argv[0][c][n].rigid_q, 4).tolist()))
         elif info in 'scl-param':
             print('Scale fit:')
             for c in range(len(argv[0])):
@@ -109,7 +108,7 @@ def print_info(info, sett, *argv):
     return timer()
 
 
-def read_image(data, device='cpu', is_ct=False):
+def _read_image(data, device='cpu', is_ct=False):
     """ Reads image data.
 
     Args:
@@ -124,34 +123,20 @@ def read_image(data, device='cpu', is_ct=False):
         fname (string): File path
         direc (string): File directory path
         nam (string): Filename
-        head (nibabel.nifti1.Nifti1Header)
-        ct (bool): Is data CT?
-        var (torch.tensor(float)): Observation uncertainty.
+        file (io.BabelArray)
+        ct (bool): Is data CT
 
     """
-    var = torch.tensor(0, dtype=torch.float32, device=device)  # Observation uncertainty
     if isinstance(data, str):
         # =================================
         # Load from file
         # =================================
-        nii = nib.load(data)
-        # Get affine matrix
-        mat = nii.affine
-        mat = torch.tensor(mat).double().to(device)
-        # Get image data
-        dat = torch.tensor(nii.get_fdata()).float().to(device)
-        # Get header, filename, etc
-        head = nii.get_header()
-        fname = nii.get_filename()
-        # Get input directory and filename
+        file = map(data)
+        dat = file.fdata(dtype=torch.float32, device=device,
+                         rand=True, cutoff=(0.0005, 0.9995))
+        mat = file.affine.to(device).type(torch.float64)
+        fname = file.filename()
         direc, nam = os.path.split(fname)
-        # Get observation uncertainty
-        slope = nii.dataobj.slope
-        dtype = nii.get_data_dtype()
-        dtypes = ['int8', 'uint8', 'int16', 'uint16', 'int32', 'uint32', 'int64', 'uint64']
-        if dtype in dtypes:
-            var = torch.tensor(slope, dtype=torch.float32, device=device)
-            var = var ** 2 / 12
     else:
         # =================================
         # Data and matrix given as list
@@ -162,87 +147,41 @@ def read_image(data, device='cpu', is_ct=False):
             dat = torch.tensor(dat)
         dat = dat.float()
         dat = dat.to(device)
+        dat[~torch.isfinite(dat)] = 0
+        # Add some random noise
+        torch.manual_seed(0)
+        dat[dat > 0] += torch.rand_like(dat[dat > 0]) - 1 / 2
         # Affine matrix
         mat = data[1]
         if not isinstance(mat, torch.Tensor):
             mat = torch.tensor(mat)
         mat = mat.double().to(device)
-        head = None
+        file = None
         fname = None
         direc = None
         nam = None
     # Get dimensions
     dim = tuple(dat.shape)
-    # Remove NaNs
-    dat[~torch.isfinite(dat)] = 0
+    # CT?
     if _is_ct(dat):
         ct = True
     else:
         ct = False
-    # # Add some random noise
-    # torch.manual_seed(0)
-    # dat[dat > 0] += torch.rand_like(dat[dat > 0]) - 1 / 2
+    # Mask
+    dat[~dat.isfinite()] = 0.0
 
-    return dat, dim, mat, fname, direc, nam, head, ct, var
+    return dat, dim, mat, fname, direc, nam, file, ct
 
 
-def write_image(dat, ofname, mat=torch.eye(4), header=None, dtype='float32'):
-    """ Writes 3D nifti data using nibabel.
-
-    Args:
-        dat (torch.tensor): Image data (W, H, D).
-        ofname (str): Output filename.
-        mat (torch.tensor, optional): Affine matrix (4, 4), defaults to identity.
-        header (nibabel.nifti1.Nifti1Header, optional): nibabel header, defaults to None.
-        dtype (str, optional): Output data type, defaults to 'float32', but uses the data type
-            in the header (if given).
+def _write_image(dat, ofname, mat=torch.eye(4), file=None,
+                 dtype='float32'):
+    """ Write data to nifti.
     """
-    # Sanity check
-    if dtype not in ['float32', 'uint8', 'int16', 'uint16']:
-        raise ValueError('Undefined data type')
-    # Get min and max
-    mn = torch.min(dat)
-    mx = torch.max(dat)
-    if header is not None:
-        # If input was integer type, make output integer type
-        dtype = header.get_data_dtype()
-        dtypes = ['int8', 'uint8', 'int16', 'uint16', 'int32', 'uint32', 'int64', 'uint64']
-        if dtype in dtypes:
-            dat = dat.int()
-    # Make nii object
-    nii = nib.Nifti1Image(dat.cpu().numpy(), header=header, affine=mat.cpu().numpy())
-    if header is None:
-        # Set data type
-        header = nii.get_header()
-        header.set_data_dtype(dtype)
-        # Set offset, slope and intercept
-        if dtype == 'float32':
-            offset = 0
-            slope = 1
-            inter = 0
-        elif dtype == 'uint8':
-            offset = 0
-            slope = (mx / 255).cpu().numpy()
-            inter = 0
-        elif dtype == 'int16':
-            offset = 0
-            slope = torch.max(mx / 32767, -mn / 32768).cpu().numpy()
-            inter = 0
-        elif dtype == 'uint16':
-            offset = 0
-            slope = torch.max(mx / 65535, -mn / 65535).cpu().numpy()
-            inter = 0
-        header.set_data_offset(offset=offset)
-        header.set_slope_inter(slope=slope, inter=inter)
-    # Write to  disk
-    with contextlib.suppress(FileNotFoundError):
-        os.remove(ofname)
-    nib.save(nii, ofname)
+    savef(dat, ofname, like=file, affine=mat)
 
 
 def _is_ct(dat):
     """Is image a CT scan?
-
     """
     ct = False
     nm = dat.numel()

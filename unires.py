@@ -1,5 +1,4 @@
-"""
-Script to process MRI and/or CT scans with UniRes.
+"""Script to process MRI and/or CT scans with UniRes.
 
 Example usage:
     python fit.py T1.nii T2.nii Flair.nii
@@ -23,19 +22,29 @@ References:
 
 from argparse import ArgumentParser
 import torch
-from unires.struct import Settings
-import unires.model as model
+from unires.struct import settings
+from unires.run import (init, fit)
 
-def fit(pth, device, dir_out, plot_conv, print_info, reg_scl,
-        show_hyperpar, show_jtv, tolerance, unified_rigid, vx):
 
+def _run(pth, device, dir_out, plot_conv, print_info, reg_scl,
+         show_hyperpar, show_jtv, tolerance, unified_rigid, vx, linear,
+         crop, do_res_origin, do_atlas_align, atlas_rigid, write_out):
+    """Fit UniRes model from the command line.
+
+    Returns
+    ----------
+    dat_y (torch.tensor): Reconstructed image data as float32, (dim_y, C).
+    mat_y (torch.tensor): Reconstructed affine matrix, (4, 4).
+    pth_y ([str, ...]): Paths to reconstructed images.
+
+    """
     # CPU/GPU?
     device = torch.device("cpu" if not torch.cuda.is_available() else device)
     torch.cuda.empty_cache()
     torch.set_grad_enabled(False)
 
     # Algorithm settings
-    s = Settings()  # Get default settings
+    s = settings()  # Get default settings
     s.device = device
     if dir_out is not None: s.dir_out = dir_out
     if plot_conv is not None: s.plot_conv = plot_conv
@@ -45,13 +54,23 @@ def fit(pth, device, dir_out, plot_conv, print_info, reg_scl,
     if show_jtv is not None: s.show_jtv = show_jtv
     if tolerance is not None: s.tolerance = tolerance
     if unified_rigid is not None: s.unified_rigid = unified_rigid
+    if crop is not None: s.crop = crop
     if vx is not None: s.vx = vx
+    if do_res_origin is not None: s.do_res_origin = do_res_origin
+    if do_atlas_align is not None: s.do_atlas_align = do_atlas_align
+    if atlas_rigid is not None: s.atlas_rigid = atlas_rigid
+    if write_out is not None: s.atlas_rigid = write_out
+    if linear:
+        s.max_iter = 0
+        s.prefix = 'l' + s.prefix
 
     # Init UniRes
-    x, y, sett = model.init(pth, s)
+    x, y, s = init(pth, s)
 
     # Fit UniRes
-    _, _, _, _ = model.fit(x, y, sett)
+    dat_y, mat_y, pth_y, _ = fit(x, y, s)
+
+    return dat_y, mat_y, pth_y
 
 
 if __name__ == "__main__":
@@ -65,12 +84,12 @@ if __name__ == "__main__":
     # Optional arguments
     parser.add_argument("--device",
                         type=str,
-                        default="cuda:0",
-                        help="PyTorch device (default: cuda:0)",)
+                        default="cuda",
+                        help="PyTorch device (default: cuda)")
     parser.add_argument("--dir_out",
                         type=str,
                         default=None,
-                        help="Directory to write output, if None uses same as input (output is prefixed 'y_')")
+                        help="Directory to write output, if None uses same as input (output is prefixed 'ur_')")
     parser.add_argument("--plot_conv",
                         type=bool,
                         default=None,
@@ -101,8 +120,32 @@ if __name__ == "__main__":
                         help="Do unified rigid registration")
     parser.add_argument("--vx",
                         type=float,
-                        default=None,
+                        default=1.25,
                         help="Reconstruction voxel size (if None, set automatically)")
+    parser.add_argument("--linear",
+                        type=bool,
+                        default=False,
+                        help="Reslice using trilinear interpolation (no super-resolution)")
+    parser.add_argument("--crop",
+                        type=bool,
+                        default=True,
+                        help="Crop input images' FOV to brain in the NITorch atlas")
+    parser.add_argument("--do_res_origin",
+                        type=bool,
+                        default=True,
+                        help="Resets origin, if CT data")
+    parser.add_argument("--do_atlas_align",
+                        type=bool,
+                        default=True,
+                        help="Align images to an atlas space")
+    parser.add_argument("--atlas_rigid",
+                        type=bool,
+                        default=True,
+                        help="Rigid or rigid+isotropic scaling alignment to atlas")
+    parser.add_argument("--write_out",
+                        type=bool,
+                        default=None,
+                        help="Write reconstructed output images")
     # Apply
     args = parser.parse_args()
-    fit(**vars(args))
+    _run(**vars(args))

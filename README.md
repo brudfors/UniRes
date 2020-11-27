@@ -79,7 +79,7 @@ pip install .
 
 Running *UniRes* should be straight forward. Let's say you have three thick-sliced MR images: `T1.nii.gz`, `T2.nii.gz` and `PD.nii.gz`, then simply run `fit_unires.py` in the terminal as:
 ``` bash
-python fit_unires.py T1.nii.gz T2.nii.gz PD.nii.gz
+python unires.py T1.nii.gz T2.nii.gz PD.nii.gz
 ```
 Three 1 mm isotropic images are written to the same folder as the input data, prefixed *y_*.
 
@@ -87,13 +87,12 @@ Three 1 mm isotropic images are written to the same folder as the input data, pr
 
 The algorithm estimates the necessary parameters from the input data, so it should, hopefully, work well out-the-box. However, a user might want to change some of the defaults, like slice-profile, slice-gap, or scale the regularisation a bit. Furthermore, instead of giving, e.g., nifti files via the command line tool (`fit.py`) it might be more desirable to interact with the nires code directly (maybe as part of some pipeline), working with the image data as `torch.tensor`. The following code snippet shows an example of how to do this:
 ``` python
-import nibabel as nib
-from unires.model import init, fit
-from unires.struct import Settings
+from unires.run import (init, fit)
+from unires.struct import settings
 
 # Algorithm settings
-s = Settings()
-s.reg_scl = 10  # scale regularisation
+s = settings()
+s.reg_scl = 32  # scale regularisation
 s.max_iter = 512  # maximum number of algorithm iterations
 s.tolerance = 1e-4  # algorithm stopping tolerance
 s.prefix = 'y_'  # prefix of reconstructed images
@@ -104,27 +103,17 @@ s.inplane_ip = 0  # in-plane slice profile (0=rect|1=tri|2=gauss)
 s.profile_tp = 0  # through-plane slice profile (0=rect|1=tri|2=gauss)
 s.write_out = False  # write reconstruced images?
 
-# Load files in list 'p' into a data array using nibabel.
-# Each element of this array should contain the image data and
-# the corresponding affine matrix (as [[dat, mat], ...]).
-data = []
-for c in range(len(p)):
-    nii = nib.load(p[c])
-    # Get affine matrix
-    mat = nii.affine
-    # Get image data
-    dat = nii.get_fdata()
-    data.append([dat, mat])
+# Init UniRes
+x, y, s = init(pth, s)
+# pth is a list of strings (nibabel compatible paths)
 
-# Init super-resolution model
-model = init(data, s)
-
-# Fit superres model
-y, mat, p_y, R = fit()
-# Outputs are: reconstructed data (y), output affine (mat), 
-# paths to reconstructions (p_y) and rigid transformation matrices (R).
+# Fit UniRes
+dat_y, mat_y, pth_y, R = fit(x, y, s)
+# Outputs are: reconstructed data (dat_y), output affine (mat_y), 
+# paths to reconstructions (pth_y) and rigid transformation matrices (R).
 ```
-More details of algorithm settings can be found in the declaration of the dataclass `Settings()` in `struct.py`.
+More details of algorithm settings can be found in the declaration of
+ the dataclass `settings()` in `struct.py`.
 
 ## 3. References
 1. Brudfors M, Balbastre Y, Nachev P, Ashburner J.

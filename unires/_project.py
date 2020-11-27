@@ -1,12 +1,12 @@
 from nitorch.core.kernels import smooth
-from nitorch.spatial import (grid_pull, grid_push, voxel_size, im_gradient, im_divergence)
-from nitorch.tools.spm import affine
+from nitorch.spatial import (affine_grid, grid_pull, grid_push,
+                             voxel_size, im_gradient, im_divergence)
 import torch
 from torch.nn import functional as F
-from .struct import ProjOp
+from .struct import _proj_op
 
 
-def apply_scaling(dat, scl, dim):
+def _apply_scaling(dat, scl, dim):
     """ Apply even/odd slice scaling.
 
     """
@@ -24,12 +24,12 @@ def apply_scaling(dat, scl, dim):
     return dat_out
 
 
-def check_adjoint(po, method, bound, interpolation, dtype=torch.float32):
+def _check_adjoint(po, method, bound, interpolation, dtype=torch.float32):
     """ Print adjointness of A and At operators:
         <Ay, x> - <Atx, y> \approx 0
 
     Args:
-        po (ProjOp()): Encodes projection operator.
+        po (_proj_op()): Encodes projection operator.
         method (string): Either 'denoising' or 'super-resolution'.
         dtype (torch.dtype, optional)
 
@@ -43,15 +43,16 @@ def check_adjoint(po, method, bound, interpolation, dtype=torch.float32):
     po.smo_ker = po.smo_ker.type(dtype)
     po.scl = po.scl.type(dtype)
     # Apply A and At operators
-    Ay = proj_apply('A', y, po, method=method, bound=bound, interpolation=interpolation)
-    Atx = proj_apply('At', x, po, method=method, bound=bound, interpolation=interpolation)
+    Ay = _proj_apply('A', y, po, method=method, bound=bound, interpolation=interpolation)
+    Atx = _proj_apply('At', x, po, method=method, bound=bound, interpolation=interpolation)
     # Check okay
     val = torch.sum(Ay * x, dtype=torch.float64) - torch.sum(Atx * y, dtype=torch.float64)
     # Print okay
     print('<Ay, x> - <Atx, y> = {}'.format(val))
 
 
-def proj(operator, dat, x, y, method='super-resolution', do=True, rho=1, n=0, vx_y=None,
+def _proj(operator, dat, x, y, method='super-resolution', do=True, 
+          rho=1, n=0, vx_y=None,
          interpolation='linear', bound='zero', diff='forward'):
     """ Projects image data by A, At or AtA.
 
@@ -74,10 +75,10 @@ def proj(operator, dat, x, y, method='super-resolution', do=True, rho=1, n=0, vx
             operator = 'none'
         dat1 = rho * y.lam ** 2 * _DtD(dat, vx_y=vx_y, bound=bound, diff=diff)
         dat = dat[None, None, ...]
-        dat = x[n].tau * proj_apply(operator, dat, x[n].po, method=method,
+        dat = x[n].tau * _proj_apply(operator, dat, x[n].po, method=method,
                                     bound=bound, interpolation=interpolation)
         for n1 in range(1, len(x)):
-            dat = dat + x[n1].tau * proj_apply(operator, dat, x[n1].po, method=method,
+            dat = dat + x[n1].tau * _proj_apply(operator, dat, x[n1].po, method=method,
                                                bound=bound, interpolation=interpolation)
         dat = dat[0, 0, ...]
         dat += dat1
@@ -85,20 +86,20 @@ def proj(operator, dat, x, y, method='super-resolution', do=True, rho=1, n=0, vx
         if not do:  # return dat
             operator = 'none'
         dat = dat[None, None, ...]
-        dat = proj_apply(operator, dat, x[n].po, method=method,
+        dat = _proj_apply(operator, dat, x[n].po, method=method,
                          bound=bound, interpolation=interpolation)
         dat = dat[0, 0, ...]
 
     return dat
 
 
-def proj_apply(operator, dat, po, method='super-resolution', bound='zero', interpolation='linear'):
+def _proj_apply(operator, dat, po, method='super-resolution', bound='zero', interpolation='linear'):
     """ Applies operator A, At  or AtA (for denoising or super-resolution).
 
     Args:
         operator (string): Either 'A', 'At', 'AtA' or 'none'.
         dat (torch.tensor()): Image data (1, 1, X_in, Y_in, Z_in).
-        po (ProjOp()): Encodes projection operator, has the following fields:
+        po (_proj_op()): Encodes projection operator, has the following fields:
             po.mat_x: Low-res affine matrix.
             po.mat_y: High-res affine matrix.
             po.mat_yx: Intermediate affine matrix.
@@ -152,25 +153,25 @@ def proj_apply(operator, dat, po, method='super-resolution', bound='zero', inter
         conv = lambda x: F.conv2d(x, smo_ker, stride=ratio)
         conv_transpose = lambda x: F.conv_transpose2d(x, smo_ker, stride=ratio)
     # Get grid
-    grid = affine(dim, mat, device=device, dtype=dtype, jitter=False)
+    grid = affine_grid(mat.type(dat.dtype), dim)[None, ...]
     # Apply projection
     if method == 'super-resolution':
-        extrapolate = True
+        extrapolate = False
         if operator == 'A':
             dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
             dat = conv(dat)
             if scl != 0:
-                dat = apply_scaling(dat, scl, dim_thick)
+                dat = _apply_scaling(dat, scl, dim_thick)
         elif operator == 'At':
             if scl != 0:
-                dat = apply_scaling(dat, scl, dim_thick)
+                dat = _apply_scaling(dat, scl, dim_thick)
             dat = conv_transpose(dat)
             dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
         elif operator == 'AtA':
             dat = grid_pull(dat, grid, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
             dat = conv(dat)
             if scl != 0:
-                dat = apply_scaling(dat, 2 * scl, dim_thick)
+                dat = _apply_scaling(dat, 2 * scl, dim_thick)
             dat = conv_transpose(dat)
             dat = grid_push(dat, grid, shape=dim_y, bound=bound, extrapolate=extrapolate, interpolation=interpolation)
     elif method == 'denoising':
@@ -186,10 +187,10 @@ def proj_apply(operator, dat, po, method='super-resolution', bound='zero', inter
     return dat
 
 
-def proj_info(dim_y, mat_y, dim_x, mat_x, rigid=None,
+def _proj_info(dim_y, mat_y, dim_x, mat_x, rigid=None,
               prof_ip=0, prof_tp=0, gap=0.0, device='cpu', scl=0.0,
               samp=0):
-    """ Define projection operator object, to be used with proj_apply.
+    """ Define projection operator object, to be used with _proj_apply.
 
     Args:
         dim_y ((int, int, int))): High-res image dimensions (3,).
@@ -204,11 +205,11 @@ def proj_info(dim_y, mat_y, dim_x, mat_x, rigid=None,
         scl (float, optional): Odd/even slice scaling, defaults to 0.
 
     Returns:
-        po (ProjOp()): Projection operator object.
+        po (_proj_op()): Projection operator object.
 
     """
     # Get projection operator object
-    po = ProjOp()
+    po = _proj_op()
     # Data types
     dtype = torch.float64
     dtype_smo_ker = torch.float32

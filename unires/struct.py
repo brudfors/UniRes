@@ -3,9 +3,8 @@ import torch
 
 
 @dataclass
-class Input:
+class _input:
     """ Algorithm input.
-
     """
     dat = None
     dim = None
@@ -15,7 +14,7 @@ class Input:
     po = None
     sd = None
     tau = None
-    head = None
+    file = None
     fname = None
     direc = None
     nam = None
@@ -23,9 +22,8 @@ class Input:
 
 
 @dataclass
-class Output:
+class _output:
     """ Algorithm output.
-
     """
     dat = None
     dim = None
@@ -34,9 +32,8 @@ class Output:
 
 
 @dataclass
-class ProjOp:
+class _proj_op:
     """ Encodes a projection operator.
-
     """
     dim_x = None
     mat_x = None
@@ -56,21 +53,22 @@ class ProjOp:
 
 
 @dataclass
-class Settings:
+class settings:
     """ Algorithm settings.
-
     """
     alpha: float = 1.0  # Relaxation parameter 0 < alpha < 2, alpha < 1: under-relaxation, alpha > 1: over-relaxation
-    crop: bool = False  # Crop input images' FOV to brain in NITorch MNI atlas
-    bound: str = 'dct2'  # Boundary conditions (see nitorch.spatial)
+    atlas_rigid: bool = True  # Rigid or rigid+isotropic scaling alignment to atlas
+    crop: bool = False  # Crop input images' FOV to brain in the NITorch atlas
+    bound: str = 'zero'  # Boundary conditions (see nitorch.spatial)
     cgs_max_iter: int = 32  # Max conjugate gradient (CG) iterations for solving for y
     cgs_tol: float = 1e-3  # CG tolerance for solving for y
     cgs_verbose: bool = False  # CG verbosity (0, 1)
+    clean_fov: bool = False  # Set voxels outside of low-res FOV, projected in high-res space, to zero
     device: str = 'cuda'  # PyTorch device name
     diff: str = 'forward'  # Gradient difference operator (forward|backward|central)
     dir_out: str = None  # Directory to write output, if None uses same as input (output is prefixed 'y_')
-    do_coreg: bool = True  # NJTV coregistration of input images
-    do_mni_align: bool = False  # Align images to MNI space (rigid+isotropic scaling)
+    do_coreg: bool = True  # Coregistration of input images
+    do_atlas_align: bool = False  # Align images to an atlas space
     do_print: int = 1  # Print progress to terminal (0, 1, 2, 3)
     do_proj = None  # Use projection matrices, defined in format_output()
     do_res_origin = False  # Resets origin, if CT data
@@ -96,6 +94,6 @@ class Settings:
     show_jtv: bool = False  # Show the joint total variation (JTV)
     tolerance: float = 1e-4  # Algorithm tolerance, if zero, run to max_iter
     unified_rigid: bool = True  # Do unified rigid registration
-    vx: float = 1.0  # Reconstruction voxel size (if None, set automatically)
+    vx: float = 1.0  # Reconstruction voxel size
     write_jtv: bool = False  # Write JTV to nifti
     write_out: bool = True  # Write reconstructed output images
