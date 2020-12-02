@@ -13,9 +13,9 @@ from .struct import settings
 from ._update import (_admm_aux, _update_admm, _update_rigid,
                      _update_scaling, _step_size)
 from ._util import _print_info
-from._core import (_crop_x, _crop_y, _estimate_hyperpar, _fix_affine,
+from._core import (_crop_y, _estimate_hyperpar, _fix_affine,
                    _format_y, _get_sched, _init_reg, _init_y_dat,
-                   _proj_info_add, _read_data, _write_data)
+                   _init_y_label, _proj_info_add, _read_data, _write_data)
 
 torch.backends.cudnn.benchmark = True
 
@@ -34,6 +34,8 @@ def fit(x, y, sett):
         mat_y (torch.tensor): Reconstructed affine matrix, (4, 4).
         pth_y ([str, ...]): Paths to reconstructed images.
         R (torch.tensor): Rigid matrices (N, 4, 4).
+        label (torch.tensor): Reconstructed label image, (dim_y).
+        pth_label str: Path to reconstructed label image.
 
     """
     with torch.no_grad():
@@ -197,9 +199,9 @@ def fit(x, y, sett):
         # ----------
         # Possibly write reconstruction results to disk
         # ----------
-        dat_y, pth_y = _write_data(x, y, sett, jtv=tmp)
+        dat_y, pth_y, label, pth_label = _write_data(x, y, sett, jtv=tmp)
 
-        return dat_y, y[0].mat, pth_y, R
+        return dat_y, y[0].mat, pth_y, R, label, pth_label
 
 
 def init(data, sett=settings()):
@@ -244,11 +246,9 @@ def init(data, sett=settings()):
 
         # Init registration, possibly:
         # * Co-registers all input images
-        # * Aligns to MNI space
+        # * Aligns to atlas space
+        # * Crops to atlas space
         x, sett = _init_reg(x, sett)
-
-        # Possibly, crop FOV to brain in MNI template
-        x = _crop_x(x, sett)
 
         # Format output
         y, sett = _format_y(x, sett)
@@ -258,6 +258,9 @@ def init(data, sett=settings()):
 
         # Initial guess of reconstructed images (y)
         y = _init_y_dat(x, y, sett)
+
+        # Initial guess of labels (if given)
+        y = _init_y_label(x, y, sett)
 
         # # Check adjointness of A and At operators
         # _check_adjoint(po=x[0][0].po, method=sett.method, dtype=torch.float64)

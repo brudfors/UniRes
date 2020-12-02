@@ -68,7 +68,7 @@ def _run(pth, device, dir_out, plot_conv, print_info, reg_scl,
     x, y, s = init(pth, s)
 
     # Fit UniRes
-    dat_y, mat_y, pth_y, _ = fit(x, y, s)
+    dat_y, mat_y, pth_y, _, _, _ = fit(x, y, s)
 
     return dat_y, mat_y, pth_y
 
@@ -120,27 +120,27 @@ if __name__ == "__main__":
                         help="Do unified rigid registration")
     parser.add_argument("--vx",
                         type=float,
-                        default=1.25,
+                        default=None,
                         help="Reconstruction voxel size (if None, set automatically)")
     parser.add_argument("--linear",
                         type=bool,
-                        default=False,
+                        default=None,
                         help="Reslice using trilinear interpolation (no super-resolution)")
     parser.add_argument("--crop",
                         type=bool,
-                        default=True,
+                        default=None,
                         help="Crop input images' FOV to brain in the NITorch atlas")
     parser.add_argument("--do_res_origin",
                         type=bool,
-                        default=True,
+                        default=None,
                         help="Resets origin, if CT data")
     parser.add_argument("--do_atlas_align",
                         type=bool,
-                        default=True,
+                        default=None,
                         help="Align images to an atlas space")
     parser.add_argument("--atlas_rigid",
                         type=bool,
-                        default=True,
+                        default=None,
                         help="Rigid or rigid+isotropic scaling alignment to atlas")
     parser.add_argument("--write_out",
                         type=bool,

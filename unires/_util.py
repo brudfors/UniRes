@@ -173,6 +173,24 @@ def _read_image(data, device='cpu', is_ct=False):
     return dat, dim, mat, fname, direc, nam, file, ct
 
 
+def _read_label(x, pth, sett):
+    """Read labels and add to input struct.
+    """
+    # Load labels
+    file = map(pth)
+    dat = file.fdata(dtype=torch.float32, device=sett.device)
+    mat = file.affine.type(torch.float64).to(sett.device)
+    # Sanity check
+    if not torch.equal(torch.as_tensor(x.dim), torch.as_tensor(dat.shape)):
+        raise ValueError('Incorrect label dimensions.')
+    if torch.any(x.mat - mat > 1e-4):
+        raise ValueError('Incorrect label affine matrix.')
+    # Append labels
+    x.label = [dat, file]
+
+    return x
+
+
 def _write_image(dat, ofname, mat=torch.eye(4), file=None,
                  dtype='float32'):
     """ Write data to nifti.

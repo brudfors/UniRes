@@ -18,7 +18,7 @@ pip install .
 
 ### 1.2. Example use case
 
-Running *UniRes* should be straight forward. Let's say you have three thick-sliced MR images: `T1.nii.gz`, `T2.nii.gz` and `PD.nii.gz`, then simply run `fit_unires.py` in the terminal as:
+Running *UniRes* should be straight forward. Let's say you have three thick-sliced MR images: `T1.nii.gz`, `T2.nii.gz` and `PD.nii.gz`, then simply run `unires.py` in the terminal as:
 ``` bash
 python unires.py T1.nii.gz T2.nii.gz PD.nii.gz
 ```
@@ -36,7 +36,7 @@ s = settings()
 s.reg_scl = 32  # scale regularisation
 s.max_iter = 512  # maximum number of algorithm iterations
 s.tolerance = 1e-4  # algorithm stopping tolerance
-s.prefix = 'y_'  # prefix of reconstructed images
+s.prefix = 'ur_'  # prefix of reconstructed images
 s.dir_out = 'path'  # output directory to write reconstructions
 s.vx = 0.8  # voxel size of reconstruced images
 s.gap = 0.1  # slice-gap
@@ -49,7 +49,7 @@ x, y, s = init(pth, s)
 # pth is a list of strings (nibabel compatible paths)
 
 # Fit UniRes
-dat_y, mat_y, pth_y, R = fit(x, y, s)
+dat_y, mat_y, pth_y, R, _, _ = fit(x, y, s)
 # Outputs are: reconstructed data (dat_y), output affine (mat_y), 
 # paths to reconstructions (pth_y) and rigid transformation matrices (R).
 ```
@@ -113,7 +113,8 @@ Let's say you have a folder named `data` in your current working directory, whic
 ``` bash
 docker run -it --rm -v $PWD/data:/home/docker/app/data unires:1.0 data/T1.nii.gz data/PD.nii.gz
 ```
-When the algorithm has finished, you will find the processed scans in the same `data` folder, prefixed `'y_'`.
+When the algorithm has finished, you will find the processed scans in
+ the same `data` folder, prefixed `'ur_'`.
 
 ## 3. References
 1. Brudfors M, Balbastre Y, Nachev P, Ashburner J.

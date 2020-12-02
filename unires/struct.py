@@ -19,6 +19,7 @@ class _input:
     direc = None
     nam = None
     rigid_q = None
+    label = None
 
 
 @dataclass
@@ -29,6 +30,7 @@ class _output:
     dim = None
     lam = None
     mat = None
+    label = None
 
 
 @dataclass
@@ -75,6 +77,9 @@ class settings:
     gap: float = 0.0  # Slice gap, between 0 and 1
     has_ct: bool = True  # Data could be CT (but data must contain negative values)
     interpolation: str = 'linear'  # Interpolation order (see nitorch.spatial)
+    label: tuple = None  # Manual labels, given as (str, (int, int))),
+    # where the first element is the path and the second element are the
+    # channel and repeat indices, respectively.
     mat: torch.Tensor = None  # Observed image(s) affine matrix. OBS: Data needs to be given as 4D array
     max_iter: int = 512  # Max algorithm iterations
     method = None  # Method name (super-resolution|denoising), defined in format_output()

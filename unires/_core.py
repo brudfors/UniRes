@@ -3,20 +3,22 @@ import os
 # 3rd party
 import torch
 # NITorch
-from nitorch.spatial import (affine_basis, affine_grid, grid_pull,
-                             voxel_size, max_bb)
+from nitorch.spatial import (affine_matrix_classic, affine_basis,
+                             affine_grid, grid_pull, voxel_size, max_bb)
 from nitorch.tools.preproc import (atlas_crop, affine_align,
                                    atlas_align, reset_origin)
 from nitorch.plot.volumes import show_slices
 from nitorch.io import map
 from nitorch.core.math import round
 from nitorch.core._linalg_expm import _expm
+from nitorch.core.pyutils import get_pckg_data
 from nitorch.tools.img_statistics import (estimate_fwhm, estimate_noise)
 from nitorch.core.constants import inf
+from nitorch.tools._preproc_fov import bb_brain
 # UniRes
 from ._project import _proj_info
 from .struct import (_input, _output)
-from ._util import (_print_info, _read_image, _write_image)
+from ._util import (_print_info, _read_image, _write_image, _read_label)
 
 
 def _all_mat_dim_vx(x, sett):
@@ -45,31 +47,6 @@ def _all_mat_dim_vx(x, sett):
     return all_mat, all_dim, all_vx
 
 
-def _crop_x(x, sett):
-    """ Crop input images FOV to a specified bounding-box.
-
-    Args:
-        x (_input()): Input data.
-
-    Returns:
-        x (_input()): Cropped input data.
-
-    """
-    if not sett.crop:
-        return x
-    # Do cropping
-    cnt = 0
-    for c in range(len(x)):
-        for n in range(len(x[c])):
-            x[c][n].dat, x[c][n].mat, _ =  atlas_crop(
-                [x[c][n].dat, x[c][n].mat], fov='brain', do_align=False)
-            x[c][n].dim = x[c][n].dat.shape
-            cnt += 1
-    _print_info('crop', sett, cnt)
-
-    return x
-
-
 def _crop_y(y, sett):
     """ Crop output images FOV to a fixed dimension
 
@@ -80,35 +57,42 @@ def _crop_y(y, sett):
         y (_output()): Cropped output data.
 
     """
-    if not sett.crop or sett.method == 'denoising':
+    if not sett.crop:
         return y
-    # y image information
-    dim0 = torch.tensor(y[0].dim, device=y[0].dat.device)
-    mat0 = y[0].mat
-    vx0 = voxel_size(mat0)
+    device = sett.device
+    # Atlas affine
+    file = map(get_pckg_data('atlas_t1'))
+    mat_mu = file.affine.type(torch.float64).to(device)
+    # Output image information
+    mat_y = y[0].mat
+    vx_y = voxel_size(mat_y)
     # Define cropped FOV
-    dim_mni = torch.tensor([181, 217, 181], device=y[0].dat.device)  # FOV
-    # based on nitorch/data/atlas_t1.nii.gz
-    dim_mni = (dim_mni / vx0).round()  # Modulate with voxel size
-    off = - (dim0 - dim_mni) / 2
-    dim1 = dim0 + 2 * off
-    mat_crop = torch.tensor([[1, 0, 0, - (off[0] + 1)],
-                             [0, 1, 0, - (off[1] + 1)],
-                             [0, 0, 1, - (off[2] + 1)],
-                             [0, 0, 0, 1]], device=y[0].dat.device)
-    mat1 = mat0.mm(mat_crop)
-    dim1 = dim1.int().tolist()
+    dim_mu = (bb_brain[1, ...] - bb_brain[0, ...] + 1) \
+        .type(torch.float64).to(device)
+    mat_bb = affine_matrix_classic(bb_brain[0, ...] - 1) \
+        .type(torch.float64).to(device)
+    # Modulate atlas affine with bb
+    mat_mu = mat_mu.mm(mat_bb)
+    # Modulate atlas with voxel size
+    mat_vx = torch.diag(torch.cat((
+        vx_y, torch.ones(1, dtype=torch.float64, device=device))))
+    mat_mu = mat_mu.mm(mat_vx)
+    dim_mu = mat_vx[:3, :3].inverse().mm(dim_mu[:, None]).floor()
     # Make output grid
-    grid = affine_grid(mat_crop.type(y[0].dat.dtype), dim1)
-    # Do interpolation
+    M = mat_mu.solve(mat_y)[0].type(y[0].dat.dtype)
+    grid = affine_grid(M, dim_mu)[None, ...]
+    # Crop
     for c in range(len(y)):
-        dat = grid_pull(y[c].dat[None, None, ...],
-                        grid[None, ...], bound='zero', extrapolate=False, interpolation=0)
-        # Assign
-        y[c].dat = dat[0, 0, ...]
-        y[c].mat = mat1
-        y[c].dim = dim1
-    # show_slices(dat[0, 0, ...])
+        y[c].dat = grid_pull(y[c].dat[None, None, ...], grid,
+                             bound='zero', extrapolate=False,
+                             interpolation=0)[0, 0, ...]
+        # Do labels?
+        if y[c].label is not None:
+            y[c].label = grid_pull(y[c].label[None, None, ...], grid,
+                                   bound='zero', extrapolate=False,
+                                   interpolation=0)[0, 0, ...]
+        y[c].mat = mat_mu
+        y[c].dim = dim_mu
 
     return y
 
@@ -170,6 +154,10 @@ def _fix_affine(x, sett):
                 x[c][n].dat, x[c][n].mat, _ = reset_origin(
                     [x[c][n].dat, x[c][n].mat], device=sett.device)
                 x[c][n].dim = x[c][n].dat.shape
+                if x[c][n].label is not None:
+                    x[c][n].label, _, _ = reset_origin(
+                        [x[c][n].label, x[c][n].mat], device=sett.device,
+                        interpolation=0)
                 cnt += 1
     _print_info('fix-affine', sett, cnt)
 
@@ -291,9 +279,10 @@ def _init_reg(x, sett):
     # Total number of observations
     N = sum([len(xn) for xn in x])
     # Set rigid affine basis
-    sett.rigid_basis = affine_basis(group='SE', device=sett.device,
-                                    dtype=torch.float64)
+    sett.rigid_basis = affine_basis(
+        group='SE', device=sett.device, dtype=torch.float64)
     fix = 0  # Fixed image index
+
     # Make input for nitorch affine align
     imgs = []
     for c in range(len(x)):
@@ -304,27 +293,56 @@ def _init_reg(x, sett):
         # Align images, pairwise, to fixed image (fix)
         t0 = _print_info('init-reg', sett, 'co', 'begin')
         mat_a = affine_align(imgs, fix=fix)[1]
-        for i in range(len(imgs)):
-            imgs[i][1] = imgs[i][1].solve(mat_a[i, ...])[0]
+        # Apply coreg transform
+        i = 0
+        for c in range(len(x)):
+            for n in range(len(x[c])):
+                imgs[i][1] = imgs[i][1].solve(mat_a[i, ...])[0]
+                i += 1
         _print_info('init-reg', sett, 'co', 'finished', t0)
 
+    mat_cso = None
     if sett.do_atlas_align:
         # Align fixed image to atlas space, and apply transformation to
         # all images
         t0 = _print_info('init-reg', sett, 'atlas', 'begin')
         imgs1 = [imgs[fix]]
-        _, mat_a, _ = atlas_align(imgs1, rigid=sett.atlas_rigid)
-        # Apply atlas registration transform
-        for i in range(len(imgs)):
-            imgs[i][1] = imgs[i][1].solve(mat_a)[0]
+        _, mat_a, _, mat_cso = atlas_align(imgs1, rigid=sett.atlas_rigid)
         _print_info('init-reg', sett, 'atlas', 'finished', t0)
 
+    if sett.crop:
+        # Crop input images FOV to a specified bounding-box.
+        i = 0
+        for c in range(len(x)):
+            for n in range(len(x[c])):
+                x[c][n].dat, mat, _ = atlas_crop(
+                    [x[c][n].dat, imgs[i][1]],
+                    fov='brain', do_align=False, mat_a=mat_cso)
+                # Do labels?
+                if x[c][n].label is not None:
+                    x[c][n].label[0], _, _ = atlas_crop(
+                        [x[c][n].label[0], imgs[i][1]],
+                        fov='brain', do_align=False, mat_a=mat_cso)                                    
+                # Assign
+                imgs[i][1] = mat
+                x[c][n].dim = x[c][n].dat.shape
+                i += 1
+        _print_info('crop', sett, i)
+
+    if sett.do_atlas_align:
+        # Apply atlas registration transform
+        i = 0
+        for c in range(len(x)):
+            for n in range(len(x[c])):
+                imgs[i][1] = imgs[i][1].solve(mat_a)[0]
+                i += 1
+
     # Modify image affine
-    cnt = 0
+    i = 0
     for c in range(len(x)):
         for n in range(len(x[c])):
-            x[c][n].mat = imgs[cnt][1]
-            cnt += 1
+            x[c][n].mat = imgs[i][1]
+            i += 1
 
     # Init rigid parameters (for unified rigid registration)
     for c in range(len(x)):  # Loop over channels
@@ -338,10 +356,9 @@ def _init_reg(x, sett):
 def _init_y_dat(x, y, sett):
     """ Make initial guesses of reconstucted image(s) using b-spline interpolation,
         with averaging if more than one observation per channel.
-
     """
-    dim_y = x[0][0].po.dim_y
-    mat_y = x[0][0].po.mat_y
+    dim_y = y[0].dim
+    mat_y = y[0].mat
     for c in range(len(x)):
         dat_y = torch.zeros(dim_y, dtype=torch.float32, device=sett.device)
         num_x = len(x[c])
@@ -349,12 +366,13 @@ def _init_y_dat(x, y, sett):
             # Get image data
             dat = x[c][n].dat[None, None, ...]
             # Make output grid
-            mat = mat_y.solve(x[c][n].po.mat_x)[0]  # mat_x\mat_y
-            grid = affine_grid(mat.type(dat.dtype), x[c][n].po.dim_y)
-            # Do interpolation
+            mat = mat_y.solve(x[c][n].mat)[0]  # mat_x\mat_y
+            grid = affine_grid(mat.type(dat.dtype), dim_y)
+            # Do resampling
             mn = torch.min(dat)
             mx = torch.max(dat)
-            dat = grid_pull(dat, grid[None, ...], bound='zero', extrapolate=False, interpolation=1)
+            dat = grid_pull(dat, grid[None, ...],
+                bound='zero', extrapolate=False, interpolation=1)
             dat[dat < mn] = mn
             dat[dat > mx] = mx
             dat_y = dat_y + dat[0, 0, ...]
@@ -363,9 +381,45 @@ def _init_y_dat(x, y, sett):
     return y
 
 
+def _init_y_label(x, y, sett):
+    """Make initial guess of labels.
+    """
+    dim_y = y[0].dim
+    mat_y = y[0].mat
+    for c in range(len(x)):
+        n = 0
+        if x[c][n].label is not None:
+            # Make output grid
+            mat = mat_y.solve(x[c][n].mat)[0]  # mat_x\mat_y
+            grid = affine_grid(mat.type(x[c][n].dat.dtype), dim_y)
+            # Do resampling
+            y[c].label = _warp_label(x[c][n].label[0], grid)
+
+    return y
+
+
+def _warp_label(label, grid):
+    """Warp a label image.
+    """
+    u = label.unique()
+    if u.numel() > 255:
+        raise ValueError('Too many label values.')
+    f1 = torch.zeros(grid.shape[:3],
+        device=label.device, dtype=label.dtype)
+    p1 = f1.clone()
+    for u1 in u:
+        g0 = (label == u1).float()
+        tmp = grid_pull(g0[None, None, ...], grid[None, ...],
+            bound='zero', extrapolate=False, interpolation=1)[0, 0, ...]
+        msk1 = tmp > p1
+        p1[msk1] = tmp[msk1]
+        f1[msk1] = u1
+
+    return f1
+
+
 def _proj_info_add(x, y, sett):
     """ Adds a projection matrix encoding to each input (x).
-
     """
     # Build each projection operator
     for c in range(len(x)):
@@ -459,6 +513,15 @@ def _read_data(data, sett):
             x[c][n].file = file
             x[c][n].ct = ct
 
+    # Add labels (if given)
+    if sett.label is not None:
+        pth_label = sett.label[0]
+        ix_cr = sett.label[1]  # Index channel and repeat
+        for c in range(len(x)):
+            for n in range(len(x[c])):
+                if c == ix_cr[0] and n == ix_cr[1]:
+                    x[c][n] = _read_label(x[c][n], pth_label, sett)
+
     return x
 
 
@@ -471,10 +534,13 @@ def _write_data(x, y, sett, jtv=None):
     Returns:
         dat_y (torch.tensor): Reconstructed image data, (dim_y, C).
         pth_y ([str, ...]): Paths to reconstructed images.
+        label : (dim_y) tensor: Reconstructed label image
+        pth_label : str, Paths to reconstructed label image.
 
     """
     # Output orientation matrix
     mat = y[0].mat
+    # Output directory
     dir_out = sett.dir_out
     if dir_out is None:
         # No output directory given, use directory of input data
@@ -484,9 +550,11 @@ def _write_data(x, y, sett, jtv=None):
             dir_out = x[0][0].direc
     if not os.path.isdir(dir_out):
         os.makedirs(dir_out, exist_ok=True)
-    # Reconstructed images
+
     prefix_y = sett.prefix
     pth_y = []
+    pth_label = None
+    label = None
     for c in range(len(x)):
         dat = y[c].dat
         mn = inf
@@ -507,10 +575,17 @@ def _write_data(x, y, sett, jtv=None):
             fname = os.path.join(dir_out, prefix_y + nam)
             pth_y.append(fname)
             _write_image(dat, fname, mat=mat, file=x[c][0].file)
+            if y[c].label is not None:
+                # Do label image
+                pth_label = os.path.join(dir_out, prefix_y + 'label_' + nam)
+                label = y[c].label
+                _write_image(label, pth_label, mat=mat,
+                             file=x[c][0].label[1])
         if c == 0:
             dat_y = dat[..., None].clone()
         else:
             dat_y = torch.cat((dat_y, dat[..., None]), dim=3)
+
     if sett.write_out and sett.mat is not None:
         # Write reconstructed images as 4D volume (because given as 4D volume)
         c = 0
@@ -521,6 +596,7 @@ def _write_data(x, y, sett, jtv=None):
         fname = os.path.join(dir_out, prefix_y + nam)
         pth_y.append(fname)
         _write_image(dat_y, fname, mat=mat, file=x[c][0].file)
+
     if sett.write_jtv and jtv is not None:
         # Write JTV
         if x[c][0].nam is None:
@@ -530,4 +606,4 @@ def _write_data(x, y, sett, jtv=None):
         fname = os.path.join(dir_out, 'jtv_' + prefix_y + nam)
         _write_image(jtv, fname, mat=mat)
 
-    return dat_y, pth_y
+    return dat_y, pth_y, label, pth_label
