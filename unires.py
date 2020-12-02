@@ -26,9 +26,10 @@ from unires.struct import settings
 from unires.run import (init, fit)
 
 
-def _run(pth, device, dir_out, plot_conv, print_info, reg_scl,
-         show_hyperpar, show_jtv, tolerance, unified_rigid, vx, linear,
-         crop, do_res_origin, do_atlas_align, atlas_rigid, write_out):
+def _run(pth, atlas_align, atlas_rigid, crop, device, dir_out,
+         linear, plot_conv, print_info, reg_scl, res_origin,
+         show_hyperpar, show_jtv, tolerance, unified_rigid, vx,
+         write_out):
     """Fit UniRes model from the command line.
 
     Returns
@@ -46,20 +47,20 @@ def _run(pth, device, dir_out, plot_conv, print_info, reg_scl,
     # Algorithm settings
     s = settings()  # Get default settings
     s.device = device
-    if dir_out is not None: s.dir_out = dir_out
-    if plot_conv is not None: s.plot_conv = plot_conv
-    if print_info is not None: s.print_info = print_info
-    if reg_scl is not None: s.reg_scl = reg_scl
-    if show_hyperpar is not None: s.show_hyperpar = show_hyperpar
-    if show_jtv is not None: s.show_jtv = show_jtv
-    if tolerance is not None: s.tolerance = tolerance
-    if unified_rigid is not None: s.unified_rigid = unified_rigid
-    if crop is not None: s.crop = crop
-    if vx is not None: s.vx = vx
-    if do_res_origin is not None: s.do_res_origin = do_res_origin
-    if do_atlas_align is not None: s.do_atlas_align = do_atlas_align
-    if atlas_rigid is not None: s.atlas_rigid = atlas_rigid
-    if write_out is not None: s.atlas_rigid = write_out
+    s.dir_out = dir_out
+    s.plot_conv = plot_conv
+    s.print_info = print_info
+    s.reg_scl = reg_scl
+    s.show_hyperpar = show_hyperpar
+    s.show_jtv = show_jtv
+    s.tolerance = tolerance
+    s.unified_rigid = unified_rigid
+    s.crop = crop
+    s.vx = vx
+    s.do_res_origin = res_origin
+    s.do_atlas_align = atlas_align
+    s.atlas_rigid = atlas_rigid
+    s.atlas_rigid = write_out
     if linear:
         s.max_iter = 0
         s.prefix = 'l' + s.prefix
@@ -74,78 +75,129 @@ def _run(pth, device, dir_out, plot_conv, print_info, reg_scl,
 
 
 if __name__ == "__main__":
+    # UniRes default settings
+    s = settings()
+    # Build parser
     parser = ArgumentParser()
-    
     # Compulsory arguments
     parser.add_argument("pth",
                         type=str,
                         nargs='+',
-                        help="<Required> nibabel compatible path(s) to subject MRIs/CT")
+                        help="<Required> nibabel compatible path(s) to "
+                             "subject MRIs/CTs.")
     # Optional arguments
+    #
+    parser.add_argument("--atlas_align",
+                        action='store_true',
+                        help="Align images to an atlas space ("
+                             "default=False).")
+    parser.add_argument('--no-atlas_align', dest='atlas_align',
+                        action='store_false')
+    parser.set_defaults(atlas_align=s.do_atlas_align)
+    #
+    parser.add_argument("--atlas_rigid",
+                        action='store_true',
+                        help="Rigid, else rigid+isotropic, alignment to "
+                             "atlas (default=True).")
+    parser.add_argument('--no-atlas_rigid', dest='atlas_rigid',
+                        action='store_false')
+    parser.set_defaults(atlas_rigid=s.atlas_rigid)
+    #
+    parser.add_argument("--crop",
+                        action='store_true',
+                        help="Crop input images' FOV to brain in the "
+                             "NITorch atlas (default=False).")
+    parser.add_argument('--no-crop', dest='crop',
+                        action='store_false')
+    parser.set_defaults(crop=s.crop)
+    #
     parser.add_argument("--device",
                         type=str,
                         default="cuda",
-                        help="PyTorch device (default: cuda)")
+                        help="PyTorch device (default='cuda').")
+    #
     parser.add_argument("--dir_out",
                         type=str,
                         default=None,
-                        help="Directory to write output, if None uses same as input (output is prefixed 'ur_')")
+                        help="Directory to write output. Default is same as "
+                             "as input data (output is prefixed 'ur_').")
+    #
+    parser.add_argument("--linear",
+                        action='store_true',
+                        help="Reslice using trilinear interpolation, i.e.,"
+                             "no super-resolution (default=False).")
+    parser.add_argument('--no-linear', dest='linear',
+                        action='store_false')
+    parser.set_defaults(linear=False)
+    #
     parser.add_argument("--plot_conv",
-                        type=bool,
-                        default=None,
-                        help="Use matplotlib to plot convergence in real-time")
+                        action='store_true',
+                        help="Use matplotlib to plot convergence in "
+                             "real-time (default=False).")
+    parser.add_argument('--no-plot_conv', dest='plot_conv',
+                        action='store_false')
+    parser.set_defaults(plot_conv=s.plot_conv)
+    #
     parser.add_argument("--print_info",
                         type=int,
                         default=None,
-                        help="Print progress to terminal (0, 1, 2)")
+                        help="Print progress to terminal (0, 1, 2, "
+                             "default=1).")
+    #
     parser.add_argument("--reg_scl",
                         type=float,
                         default=None,
-                        help="Scale regularisation estimate")
+                        help="Scale regularisation estimate (default=32).")
+    #
+    parser.add_argument("--res_origin",
+                        action='store_true',
+                        help="Resets origin, if CT data (default=False).")
+    parser.add_argument('--no-res_origin', dest='res_origin',
+                        action='store_false')
+    parser.set_defaults(res_origin=s.do_res_origin)
+    #
     parser.add_argument("--show_hyperpar",
-                        type=bool,
-                        default=None,
-                        help="Use matplotlib to visualise hyper-parameter estimates")
+                        action='store_true',
+                        help="Use matplotlib to visualise "
+                             "hyper-parameter estimates (default=False).")
+    parser.add_argument('--no-show_hyperpar', dest='show_hyperpar',
+                        action='store_false')
+    parser.set_defaults(show_hyperpar=s.show_hyperpar)
+    #
     parser.add_argument("--show_jtv",
-                        type=bool,
-                        default=None,
-                        help="Show the joint total variation (JTV)")
+                        action='store_true',
+                        help="Show the joint total variation ("
+                             "default=False).")
+    parser.add_argument('--no-show_jtv', dest='show_jtv',
+                        action='store_false')
+    parser.set_defaults(show_jtv=s.show_jtv)
+    #
     parser.add_argument("--tolerance",
                         type=float,
                         default=None,
-                        help="Algorithm tolerance, if zero, run to max_iter")
+                        help="Algorithm tolerance, if zero, run to "
+                             "max_iter (default=1e-4).")
+    #
     parser.add_argument("--unified_rigid",
-                        type=bool,
-                        default=None,
-                        help="Do unified rigid registration")
+                        action='store_true',
+                        help="Do unified rigid registration ("
+                             "default=True).")
+    parser.add_argument('--no-unified_rigid', dest='unified_rigid',
+                        action='store_false')
+    parser.set_defaults(unified_rigid=s.unified_rigid)
+    #
     parser.add_argument("--vx",
                         type=float,
                         default=None,
-                        help="Reconstruction voxel size (if None, set automatically)")
-    parser.add_argument("--linear",
-                        type=bool,
-                        default=None,
-                        help="Reslice using trilinear interpolation (no super-resolution)")
-    parser.add_argument("--crop",
-                        type=bool,
-                        default=None,
-                        help="Crop input images' FOV to brain in the NITorch atlas")
-    parser.add_argument("--do_res_origin",
-                        type=bool,
-                        default=None,
-                        help="Resets origin, if CT data")
-    parser.add_argument("--do_atlas_align",
-                        type=bool,
-                        default=None,
-                        help="Align images to an atlas space")
-    parser.add_argument("--atlas_rigid",
-                        type=bool,
-                        default=None,
-                        help="Rigid or rigid+isotropic scaling alignment to atlas")
+                        help="Reconstruction voxel size (default=1.0).")
+    #
     parser.add_argument("--write_out",
-                        type=bool,
-                        default=None,
-                        help="Write reconstructed output images")
+                        action='store_true',
+                        help="Write reconstructed output images ("
+                             "default=True).")
+    parser.add_argument('--no-write_out', dest='write_out',
+                        action='store_false')
+    parser.set_defaults(write_out=s.write_out)
     # Apply
     args = parser.parse_args()
     _run(**vars(args))
