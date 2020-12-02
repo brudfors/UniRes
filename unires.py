@@ -27,7 +27,7 @@ from unires.run import (init, fit)
 
 
 def _run(pth, atlas_align, atlas_rigid, crop, device, dir_out,
-         linear, plot_conv, print_info, reg_scl, res_origin,
+         linear, plot_conv, print_info, reg_scl, res_origin, sched,
          show_hyperpar, show_jtv, tolerance, unified_rigid, vx,
          write_out):
     """Fit UniRes model from the command line.
@@ -61,6 +61,7 @@ def _run(pth, atlas_align, atlas_rigid, crop, device, dir_out,
     s.do_atlas_align = atlas_align
     s.atlas_rigid = atlas_rigid
     s.atlas_rigid = write_out
+    s.sched_num = sched
     if linear:
         s.max_iter = 0
         s.prefix = 'l' + s.prefix
@@ -155,6 +156,12 @@ if __name__ == "__main__":
     parser.add_argument('--no-res_origin', dest='res_origin',
                         action='store_false')
     parser.set_defaults(res_origin=s.do_res_origin)
+    #
+    parser.add_argument("--sched",
+                        type=int,
+                        default=s.sched_num,
+                        help="Number of coarse-to-fine scalings ("
+                             "default=2).")
     #
     parser.add_argument("--show_hyperpar",
                         action='store_true',
