@@ -49,7 +49,7 @@ def _run(pth, atlas_align, atlas_rigid, crop, device, dir_out,
     s.device = device
     s.dir_out = dir_out
     s.plot_conv = plot_conv
-    s.print_info = print_info
+    s.do_print = print_info
     s.reg_scl = reg_scl
     s.show_hyperpar = show_hyperpar
     s.show_jtv = show_jtv
@@ -118,7 +118,7 @@ if __name__ == "__main__":
     #
     parser.add_argument("--dir_out",
                         type=str,
-                        default=None,
+                        default=s.dir_out,
                         help="Directory to write output. Default is same as "
                              "as input data (output is prefixed 'ur_').")
     #
@@ -140,13 +140,13 @@ if __name__ == "__main__":
     #
     parser.add_argument("--print_info",
                         type=int,
-                        default=None,
-                        help="Print progress to terminal (0, 1, 2, "
+                        default=s.do_print,
+                        help="Print progress to terminal (0, 1, 2; "
                              "default=1).")
     #
     parser.add_argument("--reg_scl",
                         type=float,
-                        default=None,
+                        default=s.reg_scl,
                         help="Scale regularisation estimate (default=32).")
     #
     parser.add_argument("--res_origin",
@@ -174,7 +174,7 @@ if __name__ == "__main__":
     #
     parser.add_argument("--tolerance",
                         type=float,
-                        default=None,
+                        default=s.tolerance,
                         help="Algorithm tolerance, if zero, run to "
                              "max_iter (default=1e-4).")
     #
@@ -188,7 +188,7 @@ if __name__ == "__main__":
     #
     parser.add_argument("--vx",
                         type=float,
-                        default=None,
+                        default=s.vx,
                         help="Reconstruction voxel size (default=1.0).")
     #
     parser.add_argument("--write_out",
