@@ -42,9 +42,14 @@ def _print_info(info, sett, *argv):
                                         argv[3]))
         elif info == 'fit-start':
             print('\nStarting {} (update_rigid={}, update_scaling={}) \n{} | C={} | N={} | device={} | '
-                  'max_iter={} | tol={}'.format(sett.method, sett.unified_rigid, sett.scaling,
+                  'max_iter={} | tol={} | sched_num={}'.format(
+                sett.method, sett.unified_rigid, sett.scaling,
                                                 datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-                                                argv[0], argv[1], argv[2], argv[3], argv[4]))
+                                                argv[0], argv[1],
+                                                sett.device,
+                                                sett.max_iter,
+                                                sett.tolerance,
+                                                sett.sched_num))
         elif info in 'step_size':
             print('\nADMM step-size={:0.4f}'.format(argv[0]))
         elif info == 'hyper_par':

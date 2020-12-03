@@ -78,8 +78,7 @@ def fit(x, y, sett):
         for n_iter in range(sett.max_iter):
 
             if n_iter == 0:
-                t00 = _print_info('fit-start', sett, len(x), N, sett.device,
-                                 sett.max_iter, sett.tolerance)  # PRINT
+                t00 = _print_info('fit-start', sett, len(x), N)  # PRINT
 
             # ----------
             # UPDATE: image
