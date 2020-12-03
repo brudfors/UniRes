@@ -15,6 +15,7 @@ from nitorch.core.pyutils import get_pckg_data
 from nitorch.tools.img_statistics import (estimate_fwhm, estimate_noise)
 from nitorch.core.constants import inf
 from nitorch.tools._preproc_fov import bb_brain
+from nitorch.tools._preproc_utils import _mean_space
 # UniRes
 from ._project import _proj_info
 from .struct import (_input, _output)
@@ -218,7 +219,7 @@ def _format_y(x, sett):
 
     if do_sr or sett.do_proj:
         # Get FOV of mean space
-        mat, dim = max_bb(all_mat, all_dim, vx_y)
+        mat, dim, vx_y = _mean_space(all_mat, all_dim, vx_y)
 
     # Set method
     if do_sr:
