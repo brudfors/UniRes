@@ -10,4 +10,5 @@ setup(
     author_email='brudfors@gmail.com',
     description='UniRes: Unified Super-Resolution of Neuroimaging Data',
     python_requires='>=3.6'
+
 )
