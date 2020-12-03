@@ -265,3 +265,39 @@ def init(data, sett=settings()):
         # _check_adjoint(po=x[0][0].po, method=sett.method, dtype=torch.float64)
 
         return x, y, sett
+
+
+def preproc(data, sett=settings()):
+    """Preprocess images using UniRes.
+
+    Parameters
+    ----------
+    data : (list): Path(s) to data, e.g:
+            [*/T1.nii, */T2.nii, ...]
+            or if multiple repeats:
+            [[*/T1_1.nii, */T1_2.nii, ...],
+             [*/T2_1.nii, */T2_2.nii, ...], ...]
+           (list): Image data and affine matrix(ces), e.g:
+            [[T1_dat, T1_mat], [T2_dat, T2_mat], ...]
+            where T1_dat is the image data (tensor) and T1_mat
+            is the corresponding affine matrix (tensor). If multiple
+            repeats:
+            [[[T1_1_dat, T1_1_mat], [T1_2_dat, T1_2_mat]],
+             [[T2_1_dat, T2_1_mat], [T2_2_dat, T2_2_mat]], ...]
+    sett (settings(), optional):
+        Algorithm settings. Defaults described in settings() class.
+
+    Returns
+    ----------
+    dat_y (tensor): Reconstructed image data as float32, (dim_y, C).
+    mat_y (tensor): Reconstructed affine matrix, (4, 4).
+    pth_y ([str, ...]): Paths to reconstructed images.
+
+    """
+    # Init UniRes
+    x, y, sett = init(data, sett)
+
+    # Fit UniRes
+    dat_y, mat_y, pth_y, _, _, _ = fit(x, y, sett)
+
+    return dat_y, mat_y, pth_y

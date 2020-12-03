@@ -23,7 +23,7 @@ References:
 from argparse import ArgumentParser
 import torch
 from unires.struct import settings
-from unires.run import (init, fit)
+from unires.run import preproc
 
 
 def _run(pth, atlas_align, atlas_rigid, crop, device, dir_out,
@@ -67,11 +67,8 @@ def _run(pth, atlas_align, atlas_rigid, crop, device, dir_out,
         s.max_iter = 0
         s.prefix = 'l' + s.prefix
 
-    # Init UniRes
-    x, y, s = init(pth, s)
-
-    # Fit UniRes
-    dat_y, mat_y, pth_y, _, _, _ = fit(x, y, s)
+    # Run UniRes
+    dat_y, mat_y, pth_y, _, _, _ = preproc(pth, s)
 
     return dat_y, mat_y, pth_y
 
