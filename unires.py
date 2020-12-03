@@ -27,7 +27,7 @@ from unires.run import (init, fit)
 
 
 def _run(pth, atlas_align, atlas_rigid, crop, device, dir_out,
-         linear, plot_conv, print_info, reg_scl, res_origin, sched,
+         linear, plot_conv, prefix, print_info, reg_scl, res_origin, sched,
          show_hyperpar, show_jtv, tolerance, unified_rigid, vx,
          write_out):
     """Fit UniRes model from the command line.
@@ -62,6 +62,7 @@ def _run(pth, atlas_align, atlas_rigid, crop, device, dir_out,
     s.atlas_rigid = atlas_rigid
     s.atlas_rigid = write_out
     s.sched_num = sched
+    s.prefix = prefix
     if linear:
         s.max_iter = 0
         s.prefix = 'l' + s.prefix
@@ -121,7 +122,7 @@ if __name__ == "__main__":
                         type=str,
                         default=s.dir_out,
                         help="Directory to write output. Default is same as "
-                             "as input data (output is prefixed 'ur_').")
+                             "as input data.")
     #
     parser.add_argument("--linear",
                         action='store_true',
@@ -138,6 +139,11 @@ if __name__ == "__main__":
     parser.add_argument('--no-plot_conv', dest='plot_conv',
                         action='store_false')
     parser.set_defaults(plot_conv=s.plot_conv)
+    #
+    parser.add_argument("--prefix",
+                        type=str,
+                        default=s.prefix,
+                        help="Output image(s) prefix (default='ur_').")
     #
     parser.add_argument("--print_info",
                         type=int,
