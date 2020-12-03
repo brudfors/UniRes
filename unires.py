@@ -68,7 +68,7 @@ def _run(pth, atlas_align, atlas_rigid, crop, device, dir_out,
         s.prefix = 'l' + s.prefix
 
     # Run UniRes
-    dat_y, mat_y, pth_y, _, _, _ = preproc(pth, s)
+    dat_y, mat_y, pth_y = preproc(pth, s)
 
     return dat_y, mat_y, pth_y
 
