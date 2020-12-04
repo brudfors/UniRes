@@ -60,7 +60,7 @@ def _run(pth, atlas_align, atlas_rigid, crop, device, dir_out,
     s.do_res_origin = res_origin
     s.do_atlas_align = atlas_align
     s.atlas_rigid = atlas_rigid
-    s.atlas_rigid = write_out
+    s.write_out = write_out
     s.sched_num = sched
     s.prefix = prefix
     if linear:
