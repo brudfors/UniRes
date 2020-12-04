@@ -11,7 +11,7 @@ from nitorch.plot.volumes import show_slices
 from nitorch.io import map
 from nitorch.core.math import round
 from nitorch.core._linalg_expm import _expm
-from nitorch.core.pyutils import get_pckg_data
+from nitorch.core.datasets import fetch_data
 from nitorch.tools.img_statistics import (estimate_fwhm, estimate_noise)
 from nitorch.core.constants import inf
 from nitorch.tools._preproc_fov import bb_brain
@@ -62,7 +62,7 @@ def _crop_y(y, sett):
         return y
     device = sett.device
     # Atlas affine
-    file = map(get_pckg_data('atlas_t1'))
+    file = map(fetch_data('atlas_t1'))
     mat_mu = file.affine.type(torch.float64).to(device)
     # Output image information
     mat_y = y[0].mat
