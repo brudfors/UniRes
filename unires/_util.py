@@ -29,16 +29,19 @@ def _print_info(info, sett, *argv):
     if sett.do_print >= 1:
         if info == 'init':
             print(_unires_title)
-            if type(sett.device) is torch.device:
-                print('GPU: ' + torch.cuda.get_device_name(0) + ', CUDA: ' + str(torch.cuda.is_available()))
+            device = torch.device(sett.device)
+            if device.type == 'cuda':
+                print('GPU: ' + torch.cuda.get_device_name(device.index) + ', CUDA: ' + str(torch.cuda.is_available()))
             else:
+                assert device.type == 'cpu'
                 print('CPU')
         elif info == 'fit-finish':
             print(' {} finished in {:0.5f} seconds and '
                   '{} iterations\n'.format(sett.method, timer() - argv[0], argv[1] + 1))
         elif info in 'fit-ll':
-            print('{:3} - Convergence ({} | {:0.1f} s)  | nlyx={:0.4f}, nlxy={:0.4f}, nly={:0.4f} '
-                  'gain={:0.7f}'.format(argv[1], argv[0], timer() - argv[4], argv[2][0], argv[2][1], argv[2][2],
+            nit = str(len(str(sett.max_iter)))
+            print(('{:' + nit + 'd} - Convergence ({} | {:4.1f} s)  | nlyx = {:10.4g}, nlxy = {:10.4g}, nly = {:10.4g} '
+                  'gain={:0.7f}').format(argv[1], argv[0], timer() - argv[4], argv[2][0], argv[2][1], argv[2][2],
                                         argv[3]))
         elif info == 'fit-start':
             print('\nStarting {} (update_rigid={}, update_scaling={}) \n{} | C={} | N={} | device={} | '
@@ -55,22 +58,23 @@ def _print_info(info, sett, *argv):
         elif info == 'hyper_par':
             if len(argv) == 2:
                 print('completed in {:0.5f} seconds:'.format(timer() - argv[1]))
+                nch = str(len(str(len(argv[0]))))
                 for c in range(len(argv[0])):
-                    print('c={} | tau='.format(c, argv[0][c]), end='')
+                    print(('c={:' + nch + 'd} | tau=').format(c, argv[0][c]), end='')
                     for n in range(len(argv[0][c])):
-                        print('{:0.7f}'.format(argv[0][c][n].tau), end=' ')
+                        print('{:10.4g}'.format(argv[0][c][n].tau), end=' ')
                     print('| sd='.format(c, argv[0][c]), end='')
                     for n in range(len(argv[0][c])):
-                        print('{:0.7f}'.format(argv[0][c][n].sd), end=' ')
+                        print('{:10.4g}'.format(argv[0][c][n].sd), end=' ')
                     print('| mu='.format(c, argv[0][c]), end='')
                     for n in range(len(argv[0][c])):
-                        print('{:0.7f}'.format(argv[0][c][n].mu), end=' ')
+                        print('{:10.4g}'.format(argv[0][c][n].mu), end=' ')
                     print('| ct='.format(c, argv[0][c]), end='')
                     for n in range(len(argv[0][c])):
                         print('{}'.format(argv[0][c][n].ct), end=' ')
                     print()
             else:
-                print('\nEstimating model hyper-parameters...', end='')
+                print('\nEstimating model hyper-parameters... ', end='')
         elif info == 'mean-space':
             vx_y = voxel_size(argv[1])
             vx_y = tuple(vx_y.tolist())
@@ -82,7 +86,7 @@ def _print_info(info, sett, *argv):
                     print('atlas ', end='')
                 elif argv[0] == 'co':
                     print('multi-channel ', end='')
-                print('alignment...', end='')
+                print('alignment... ', end='')
             elif argv[1] == 'finished':
                 print('completed in {:0.5f} seconds.'.format(timer() - argv[2]))
         elif info == 'fix-affine':
@@ -94,19 +98,24 @@ def _print_info(info, sett, *argv):
     if sett.do_print >= 2:
         if info in 'reg-param':
             print('Rigid registration fit:')
+            nch = str(len(str(len(argv[0]))))
+            nrp = str(len(str(max(len(ch) for ch in argv[0]))))
             for c in range(len(argv[0])):
                 for n in range(len(argv[0][c])):
-                    print('c={} n={} | q={}'.format(c, n, round(argv[0][c][n].rigid_q, 4).tolist()))
+                    print(('c={:' + nch + 'd} n={:' + nrp + 'd} | q={}').format(c, n, round(argv[0][c][n].rigid_q, 4).tolist()))
         elif info in 'scl-param':
             print('Scale fit:')
+            nch = str(len(str(len(argv[0]))))
+            nrp = str(len(str(max(len(ch) for ch in argv[0]))))
             for c in range(len(argv[0])):
                 for n in range(len(argv[0][c])):
-                    print('c={} n={} | exp(s)={}'.format(c, n, round(argv[0][c][n].po.scl.exp(), 4)))
+                    print(('c={:' + nch + 'd} n={:' + nrp + 'd} | exp(s)={}').format(c, n, round(argv[0][c][n].po.scl.exp(), 4)))
     if sett.do_print >= 3:
         if info == 'fit-done':
             print('(completed in {:0.5f} seconds)'.format(timer() - argv[0]))
         elif info == 'fit-update':
-            print('{:3} - Updating {:2}   | '.format(argv[1] + 1, argv[0]), end='')
+            nit = str(len(str(sett.max_iter)))
+            print(('{:' + nit + 'd} - Updating {:2}   | ').format(argv[1] + 1, argv[0]), end='')
         elif info == 'int':
             print('{}'.format(argv[0]), end=' ')
 
