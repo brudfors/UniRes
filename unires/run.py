@@ -97,7 +97,7 @@ def fit(x, y, sett):
                 fig_ax_nll = plot_convergence(vals=obj[:n_iter + 1, :], fig_ax=fig_ax_nll, fig_num=99,
                                               legend=['-ln(p(y|x))', '-ln(p(x|y))', '-ln(p(y))'])
             gain = get_gain(obj[:n_iter + 1, 0], monotonicity='decreasing')
-            t_iter = _print_info('fit-ll', sett, 'y', n_iter, obj[n_iter, :], gain, t_iter)
+            t_iter = _print_info('fit-ll', sett, n_iter, obj[n_iter, :], gain, t_iter)
             # Converged?
             if cnt_scl >= (sett.reg_scl.numel() - 1) and cnt_scl_iter > 20 \
                 and ((gain.abs() < sett.tolerance) or (n_iter >= (sett.max_iter - 1))):

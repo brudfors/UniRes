@@ -40,9 +40,9 @@ def _print_info(info, sett, *argv):
                   '{} iterations\n'.format(sett.method, timer() - argv[0], argv[1] + 1))
         elif info in 'fit-ll':
             nit = str(len(str(sett.max_iter)))
-            print(('{:' + nit + 'd} - Convergence ({} | {:4.1f} s)  | nlyx = {:10.4g}, nlxy = {:10.4g}, nly = {:10.4g}, '
-                  'gain={:10.7f}').format(argv[1], argv[0], timer() - argv[4], argv[2][0], argv[2][1], argv[2][2],
-                                        argv[3]))
+            print(('{:' + nit + 'd} - Convergence ({:4.1f} s)  | nlyx = {:10.4g}, nlxy = {:10.4g}, nly = {:10.4g}, '
+                  'gain = {:10.7f}').format(argv[0], timer() - argv[3], argv[1][0], argv[1][1], argv[1][2],
+                                        argv[2]))
         elif info == 'fit-start':
             print('\nStarting {} (update_rigid={}, update_scaling={}) \n{} | C={} | N={} | device={} | '
                   'max_iter={} | tol={} | sched_num={}'.format(
