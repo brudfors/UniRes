@@ -84,7 +84,8 @@ def _print_info(info, sett, *argv):
             if argv[1] == 'begin':
                 print('\nPerforming ', end='')
                 if argv[0] == 'atlas':
-                    print('atlas ', end='')
+                    method = 'rigid' if sett.atlas_rigid else 'rigid+scale'
+                    print(method + ' atlas ', end='')
                 elif argv[0] == 'co':
                     print('multi-channel ', end='')
                 print('alignment... ', end='')
