@@ -31,7 +31,8 @@ def _print_info(info, sett, *argv):
             print(_unires_title)
             device = torch.device(sett.device)
             if device.type == 'cuda':
-                print('GPU: ' + torch.cuda.get_device_name(device.index) + ', CUDA: ' + str(torch.cuda.is_available()))
+                print('GPU: ' + torch.cuda.get_device_name(device.index) + ', CUDA: ' + str(torch.cuda.is_available())
+                       + ', PyTorch: ' + str(torch.__version__))
             else:
                 assert device.type == 'cpu'
                 print('CPU')
