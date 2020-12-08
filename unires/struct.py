@@ -59,7 +59,7 @@ class settings:
     """
     def __init__(self):
         self.alpha: float = 1.0  # Relaxation parameter 0 < alpha < 2, alpha < 1: under-relaxation, alpha > 1: over-relaxation
-        self.atlas_rigid: bool = True  # Rigid or rigid+isotropic scaling alignment to atlas
+        self.atlas_rigid: bool = False  # Rigid or rigid+isotropic scaling alignment to atlas
         self.crop: bool = False  # Crop input images' FOV to brain in the NITorch atlas
         self.bound: str = 'zero'  # Boundary conditions (see nitorch.spatial)
         self.cgs_max_iter: int = 32  # Max conjugate gradient (CG) iterations for solving for y
