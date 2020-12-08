@@ -10,10 +10,10 @@ class _input:
         self.dim = None
         self.ct = None
         self.mat = None
-        self.mu = None
+        self.mu = 1.0
         self.po = None
-        self.sd = None
-        self.tau = None
+        self.sd = 1.0
+        self.tau = 1.0
         self.file = None
         self.fname = None
         self.direc = None

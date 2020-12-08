@@ -237,8 +237,9 @@ def init(data, sett=settings()):
         x = _read_data(data, sett)
         del data
 
-        # Estimate model hyper-parameters
-        x = _estimate_hyperpar(x, sett)
+        if sett.max_iter > 0:
+            # Estimate model hyper-parameters
+            x = _estimate_hyperpar(x, sett)
 
         # Possibly, fix messed up affine in CT scans
         x = _fix_affine(x, sett)
