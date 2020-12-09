@@ -31,7 +31,7 @@ def _print_info(info, sett, *argv):
             print(_unires_title)
             device = torch.device(sett.device)
             if device.type == 'cuda':
-                print('GPU: ' + torch.cuda.get_device_name(device.index) + ', CUDA: ' + str(torch.cuda.is_available())
+                print(datetime.now().strftime("%d/%m/%Y %H:%M:%S") + ' | GPU: ' + torch.cuda.get_device_name(device.index) + ', CUDA: ' + str(torch.cuda.is_available())
                        + ', PyTorch: ' + str(torch.__version__))
             else:
                 assert device.type == 'cpu'
@@ -45,10 +45,9 @@ def _print_info(info, sett, *argv):
                   'gain = {:10.7f}').format(argv[0], timer() - argv[3], argv[1][0], argv[1][1], argv[1][2],
                                         argv[2]))
         elif info == 'fit-start':
-            print('\nStarting {} (update_rigid={}, update_scaling={}) \n{} | C={} | N={} | device={} | '
+            print('\nStarting {} (update_rigid={}, update_scaling={}) \n | C={} | N={} | device={} | '
                   'max_iter={} | tol={} | sched_num={}'.format(
                 sett.method, sett.unified_rigid, sett.scaling,
-                                                datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                                                 argv[0], argv[1],
                                                 sett.device,
                                                 sett.max_iter,
@@ -79,7 +78,8 @@ def _print_info(info, sett, *argv):
         elif info == 'mean-space':
             vx_y = voxel_size(argv[1])
             vx_y = tuple(vx_y.tolist())
-            print('\nMean space | dim={}, vx_y={}'.format(argv[0], vx_y))
+            vx_y = tuple([float('%4.2f' % val) for val in vx_y])
+            print('\nMean space | dim={}, vx={}'.format(argv[0], vx_y))
         elif info == 'init-reg':
             if argv[1] == 'begin':
                 print('\nPerforming ', end='')
