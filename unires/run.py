@@ -182,8 +182,8 @@ def fit(x, y, sett):
                 # Zero voxels outside projected FOV
                 y[c].dat[~msk_fov] = 0.0
 
-        # Possibly crop reconstructed data
-        y = _crop_y(y, sett)
+        # # Possibly crop reconstructed data
+        # y = _crop_y(y, sett)
 
         # ----------
         # Get rigid matrices

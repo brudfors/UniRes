@@ -11,10 +11,10 @@ from nitorch.plot.volumes import show_slices
 from nitorch.io import map
 from nitorch.core.math import round
 from nitorch.core._linalg_expm import _expm
-from nitorch.core.datasets import fetch_data
 from nitorch.tools.img_statistics import (estimate_fwhm, estimate_noise)
 from nitorch.core.constants import inf
-from nitorch.tools._preproc_fov import bb_brain
+from nitorch.core.utils import ceil_pow
+from nitorch.tools._preproc_fov import _bb_atlas
 from nitorch.tools._preproc_utils import _mean_space
 # UniRes
 from ._project import _proj_info
@@ -61,24 +61,17 @@ def _crop_y(y, sett):
     if not sett.crop:
         return y
     device = sett.device
-    # Atlas affine
-    file = map(fetch_data('atlas_t1'))
-    mat_mu = file.affine.type(torch.float64).to(device)
     # Output image information
     mat_y = y[0].mat
     vx_y = voxel_size(mat_y)
     # Define cropped FOV
-    dim_mu = (bb_brain[1, ...] - bb_brain[0, ...] + 1) \
-        .type(torch.float64).to(device)
-    mat_bb = affine_matrix_classic(bb_brain[0, ...] - 1) \
-        .type(torch.float64).to(device)
-    # Modulate atlas affine with bb
-    mat_mu = mat_mu.mm(mat_bb)
+    mat_mu, dim_mu = _bb_atlas('atlas_t1',
+        fov=sett.fov, dtype=torch.float64, device=device)
     # Modulate atlas with voxel size
     mat_vx = torch.diag(torch.cat((
         vx_y, torch.ones(1, dtype=torch.float64, device=device))))
     mat_mu = mat_mu.mm(mat_vx)
-    dim_mu = mat_vx[:3, :3].inverse().mm(dim_mu[:, None]).floor()
+    dim_mu = mat_vx[:3, :3].inverse().mm(dim_mu[:, None]).floor().squeeze()
     # Make output grid
     M = mat_mu.solve(mat_y)[0].type(y[0].dat.dtype)
     grid = affine_grid(M, dim_mu)[None, ...]
@@ -93,7 +86,7 @@ def _crop_y(y, sett):
                                    bound='zero', extrapolate=False,
                                    interpolation=0)[0, 0, ...]
         y[c].mat = mat_mu
-        y[c].dim = dim_mu
+        y[c].dim = tuple(dim_mu.int().tolist())
 
     return y
 
@@ -221,6 +214,30 @@ def _format_y(x, sett):
         # Get FOV of mean space
         mat, dim, vx_y = _mean_space(all_mat, all_dim, vx_y)
 
+        if sett.crop:
+            # Crop output to atlas field-of-view
+            vx_y = voxel_size(mat)
+            mat_mu, dim = _bb_atlas('atlas_t1',
+                fov=sett.fov, dtype=torch.float64, device=sett.device)
+            # Modulate atlas with voxel size
+            mat_vx = torch.diag(torch.cat((
+                vx_y, torch.ones(1, dtype=torch.float64, device=sett.device))))
+            mat = mat_mu.mm(mat_vx)
+            dim = mat_vx[:3, :3].inverse().mm(dim[:, None]).floor().squeeze()
+
+    if sett.pow:
+        # Ensure output image dimensions are compatible with encode/decode
+        # architecture
+        dim2 = ceil_pow(dim, p=2.0, l=2.0)
+        dim3 = ceil_pow(dim, p=2.0, l=3.0)
+        ndim = dim2
+        ndim[dim3 < ndim] = dim3[dim3 < ndim]
+        # Modulate output affine
+        mat_bb = affine_matrix_classic(-((ndim - dim)/2).round())\
+            .type(torch.float64).to(sett.device)
+        mat = mat.mm(mat_bb)
+        dim = ndim
+
     # Set method
     if do_sr:
         sett.method = 'super-resolution'
@@ -318,12 +335,12 @@ def _init_reg(x, sett):
             for n in range(len(x[c])):
                 x[c][n].dat, mat, _ = atlas_crop(
                     [x[c][n].dat, imgs[i][1]],
-                    fov='brain', do_align=False, mat_a=mat_cso)
+                    fov=sett.fov, do_align=False, mat_a=mat_cso)
                 # Do labels?
                 if x[c][n].label is not None:
                     x[c][n].label[0], _, _ = atlas_crop(
                         [x[c][n].label[0], imgs[i][1]],
-                        fov='brain', do_align=False, mat_a=mat_cso)                                    
+                        fov=sett.fov, do_align=False, mat_a=mat_cso)
                 # Assign
                 imgs[i][1] = mat
                 x[c][n].dim = x[c][n].dat.shape

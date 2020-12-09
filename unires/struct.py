@@ -60,20 +60,21 @@ class settings:
     def __init__(self):
         self.alpha: float = 1.0  # Relaxation parameter 0 < alpha < 2, alpha < 1: under-relaxation, alpha > 1: over-relaxation
         self.atlas_rigid: bool = False  # Rigid or rigid+isotropic scaling alignment to atlas
-        self.crop: bool = False  # Crop input images' FOV to brain in the NITorch atlas
         self.bound: str = 'zero'  # Boundary conditions (see nitorch.spatial)
+        self.clean_fov: bool = False  # Set voxels outside of low-res FOV, projected in high-res space, to zero
+        self.crop: bool = False  # Crop input images' FOV to brain in the NITorch atlas
         self.cgs_max_iter: int = 32  # Max conjugate gradient (CG) iterations for solving for y
         self.cgs_tol: float = 1e-3  # CG tolerance for solving for y
         self.cgs_verbose: bool = False  # CG verbosity (0, 1)
-        self.clean_fov: bool = False  # Set voxels outside of low-res FOV, projected in high-res space, to zero
         self.device: str = 'cuda'  # PyTorch device name
         self.diff: str = 'forward'  # Gradient difference operator (forward|backward|central)
         self.dir_out: str = None  # Directory to write output, if None uses same as input (output is prefixed 'y_')
         self.do_coreg: bool = True  # Coregistration of input images
         self.do_atlas_align: bool = False  # Align images to an atlas space
         self.do_print: int = 1  # Print progress to terminal (0, 1, 2, 3)
-        self.do_proj = None  # Use projection matrices, defined in format_output()
-        self.do_res_origin = False  # Resets origin, if CT data
+        self.do_proj: bool = None  # Use projection matrices, defined in format_output()
+        self.do_res_origin: bool = False  # Resets origin, if CT data
+        self.fov: str = 'brain'  # If crop=True, uses this field-of-view ('brain'|'head').
         self.gap: float = 0.0  # Slice gap, between 0 and 1
         self.has_ct: bool = True  # Data could be CT (but data must contain negative values)
         self.interpolation: str = 'linear'  # Interpolation order (see nitorch.spatial)
@@ -83,8 +84,9 @@ class settings:
         self.mat: torch.Tensor = None  # Observed image(s) affine matrix. OBS: Data needs to be given as 4D array
         self.max_iter: int = 512  # Max algorithm iterations
         self.method = None  # Method name (super-resolution|denoising), defined in format_output()
-        self.prefix: str = 'ur_'  # Prefix for reconstructed image(s)
         self.plot_conv: bool = False  # Use matplotlib to plot convergence in real-time
+        self.pow: bool = False  # Ensure output image dimensions are compatible with encode/decode architecture
+        self.prefix: str = 'ur_'  # Prefix for reconstructed image(s)
         self.profile_ip: int = 0  # In-plane slice profile (0=rect|1=tri|2=gauss)
         self.profile_tp: int = 0  # Through-plane slice profile (0=rect|1=tri|2=gauss)
         self.reg_scl: float = 32.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
