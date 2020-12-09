@@ -238,7 +238,7 @@ def init(data, sett=settings()):
         del data
 
         if sett.max_iter > 0:
-            # Estimate model hyper-parameters
+            # Estimate model hyper-parameters (before any preprocessing is done)
             x = _estimate_hyperpar(x, sett)
 
         # Possibly, fix messed up affine in CT scans
