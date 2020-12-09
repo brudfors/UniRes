@@ -117,9 +117,7 @@ def _estimate_hyperpar(x, sett):
                 # Estimate noise sd from estimate of FWHM
                 sd_bg = estimate_fwhm(dat, voxel_size(x[c][n].mat), mn=20, mx=50)[1]
                 mu_bg = torch.tensor(0.0, device=dat.device, dtype=dat.dtype)
-                mu_fg = torch.tensor(sett.reg_scl/8.0 * 1024.0, device=dat.device, dtype=dat.dtype)
-                if N > 1:
-                    mu_fg /= 20
+                mu_fg = torch.tensor(4096, device=dat.device, dtype=dat.dtype)
             else:
                 # Get noise and foreground statistics
                 sd_bg, sd_fg, mu_bg, mu_fg = estimate_noise(dat, num_class=2, show_fit=sett.show_hyperpar,
@@ -259,6 +257,8 @@ def _format_y(x, sett):
         mu_c = torch.zeros(len(x[c]), dtype=torch.float32, device=sett.device)
         for n in range(len(x[c])):
             mu_c[n] = x[c][n].mu
+            if x[c][n].ct and sett.method == 'super-resolution':
+                mu_c[n] /= 4
         y[c].lam0 = 1 / torch.mean(mu_c)
         y[c].lam = 1 / torch.mean(mu_c)  # To facilitate rescaling
         # Output image(s) dimension and orientation matrix

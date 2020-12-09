@@ -43,6 +43,8 @@ def _step_size(x, y, sett, verbose=False):
 
     """
     rho = sett.rho
+    if _has_ct(x):
+        rho = 1.0
     if rho is not None:
         rho = torch.tensor(rho, device=sett.device, dtype=torch.float32)
     else:
@@ -60,6 +62,19 @@ def _step_size(x, y, sett, verbose=False):
         _ = _print_info('_step_size', sett, rho)  # PRINT
 
     return rho
+
+
+def _has_ct(x):
+    """ Are there CT images?
+    """
+    is_ct = False
+    for c in range(len(x)):
+        for n in range(len(x[c])):
+            if x[c][n].ct:
+                is_ct = True
+                return is_ct
+
+    return is_ct
 
 
 def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
