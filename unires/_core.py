@@ -309,7 +309,7 @@ def _init_reg(x, sett):
 
     if sett.do_coreg and N > 1:
         # Align images, pairwise, to fixed image (fix)
-        t0 = _print_info('init-reg', sett, 'co', 'begin')
+        t0 = _print_info('init-reg', sett, 'co', 'begin', N)
         mat_a = affine_align(imgs, fix=fix)[1]
         # Apply coreg transform
         i = 0
@@ -317,16 +317,16 @@ def _init_reg(x, sett):
             for n in range(len(x[c])):
                 imgs[i][1] = imgs[i][1].solve(mat_a[i, ...])[0]
                 i += 1
-        _print_info('init-reg', sett, 'co', 'finished', t0)
+        _print_info('init-reg', sett, 'co', 'finished', N, t0)
 
     mat_cso = None
     if sett.do_atlas_align:
         # Align fixed image to atlas space, and apply transformation to
         # all images
-        t0 = _print_info('init-reg', sett, 'atlas', 'begin')
+        t0 = _print_info('init-reg', sett, 'atlas', 'begin', N)
         imgs1 = [imgs[fix]]
         _, mat_a, _, mat_cso = atlas_align(imgs1, rigid=sett.atlas_rigid)
-        _print_info('init-reg', sett, 'atlas', 'finished', t0)
+        _print_info('init-reg', sett, 'atlas', 'finished', N, t0)
 
     # if sett.crop:
     #     # Crop input images FOV to a specified bounding-box.

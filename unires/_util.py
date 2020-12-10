@@ -87,10 +87,10 @@ def _print_info(info, sett, *argv):
                     method = 'rigid' if sett.atlas_rigid else 'rigid+scale'
                     print(method + ' atlas ', end='')
                 elif argv[0] == 'co':
-                    print('multi-channel ', end='')
-                print('alignment... ', end='')
+                    print('multi-channel (N=' + str(argv[2]) + ') ', end='')
+                print('alignment...', end='')
             elif argv[1] == 'finished':
-                print('completed in {:0.5f} seconds.'.format(timer() - argv[2]))
+                print('completed in {:0.5f} seconds.'.format(timer() - argv[3]))
         elif info == 'fix-affine':
             if argv[0] > 0:
                 print('\nFixed affine of {} CT image(s).'.format(argv[0]))
