@@ -328,24 +328,24 @@ def _init_reg(x, sett):
         _, mat_a, _, mat_cso = atlas_align(imgs1, rigid=sett.atlas_rigid)
         _print_info('init-reg', sett, 'atlas', 'finished', t0)
 
-    if sett.crop:
-        # Crop input images FOV to a specified bounding-box.
-        i = 0
-        for c in range(len(x)):
-            for n in range(len(x[c])):
-                x[c][n].dat, mat, _ = atlas_crop(
-                    [x[c][n].dat, imgs[i][1]],
-                    fov=sett.fov, do_align=False, mat_a=mat_cso)
-                # Do labels?
-                if x[c][n].label is not None:
-                    x[c][n].label[0], _, _ = atlas_crop(
-                        [x[c][n].label[0], imgs[i][1]],
-                        fov=sett.fov, do_align=False, mat_a=mat_cso)
-                # Assign
-                imgs[i][1] = mat
-                x[c][n].dim = x[c][n].dat.shape
-                i += 1
-        _print_info('crop', sett, i)
+    # if sett.crop:
+    #     # Crop input images FOV to a specified bounding-box.
+    #     i = 0
+    #     for c in range(len(x)):
+    #         for n in range(len(x[c])):
+    #             x[c][n].dat, mat, _ = atlas_crop(
+    #                 [x[c][n].dat, imgs[i][1]],
+    #                 fov=sett.fov, do_align=False, mat_a=mat_cso)
+    #             # Do labels?
+    #             if x[c][n].label is not None:
+    #                 x[c][n].label[0], _, _ = atlas_crop(
+    #                     [x[c][n].label[0], imgs[i][1]],
+    #                     fov=sett.fov, do_align=False, mat_a=mat_cso)
+    #             # Assign
+    #             imgs[i][1] = mat
+    #             x[c][n].dim = x[c][n].dat.shape
+    #             i += 1
+    #     _print_info('crop', sett, i)
 
     if sett.do_atlas_align:
         # Apply atlas registration transform
