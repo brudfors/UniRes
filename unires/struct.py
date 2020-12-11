@@ -60,6 +60,7 @@ class settings:
     def __init__(self):
         self.alpha: float = 1.0  # Relaxation parameter 0 < alpha < 2, alpha < 1: under-relaxation, alpha > 1: over-relaxation
         self.atlas_rigid: bool = False  # Rigid or rigid+isotropic scaling alignment to atlas
+        self.bids: bool = False  # For adding a BIDS compatible space tag ('_space-unires_')
         self.bound: str = 'zero'  # Boundary conditions (see nitorch.spatial)
         self.clean_fov: bool = False  # Set voxels outside of low-res FOV, projected in high-res space, to zero
         self.crop: bool = False  # Crop input images' FOV to brain in the NITorch atlas

@@ -207,11 +207,16 @@ def _read_label(x, pth, sett):
     return x
 
 
-def _write_image(dat, ofname, mat=torch.eye(4), file=None,
+def _write_image(dat, fname, bids=False, mat=torch.eye(4), file=None,
                  dtype='float32'):
     """ Write data to nifti.
     """
-    savef(dat, ofname, like=file, affine=mat)
+    if bids:
+        p, n = os.path.split(fname)
+        s = n.split('_')
+        fname = os.path.join(p, '_'.join(s[:-1] + ['space-unires'] + [s[-1]]))
+
+    savef(dat, fname, like=file, affine=mat)
 
 
 def _is_ct(dat):
