@@ -310,7 +310,7 @@ def _init_reg(x, sett):
     if sett.do_coreg and N > 1:
         # Align images, pairwise, to fixed image (fix)
         t0 = _print_info('init-reg', sett, 'co', 'begin', N)
-        mat_a = affine_align(imgs, fix=fix)[1]
+        mat_a = affine_align(imgs, fix=fix, device=sett.device)[1]
         # Apply coreg transform
         i = 0
         for c in range(len(x)):
@@ -325,7 +325,7 @@ def _init_reg(x, sett):
         # all images
         t0 = _print_info('init-reg', sett, 'atlas', 'begin', N)
         imgs1 = [imgs[fix]]
-        _, mat_a, _, mat_cso = atlas_align(imgs1, rigid=sett.atlas_rigid)
+        _, mat_a, _, mat_cso = atlas_align(imgs1, rigid=sett.atlas_rigid, device=sett.device)
         _print_info('init-reg', sett, 'atlas', 'finished', N, t0)
 
     # if sett.crop:
