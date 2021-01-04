@@ -540,6 +540,9 @@ def _read_data(data, sett):
                 if c == ix_cr[0] and n == ix_cr[1]:
                     x[c][n] = _read_label(x[c][n], pth_label, sett)
 
+    # Print to screen
+    _print_info('filenames', sett, x)
+
     return x
 
 
