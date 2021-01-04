@@ -77,7 +77,7 @@ def _has_ct(x):
     return is_ct
 
 
-def _precond(x, y, sett):
+def _precond(x, y, rho, sett):
     """Compute CG preconditioner.
 
     """
@@ -93,8 +93,8 @@ def _precond(x, y, sett):
         torch.ones(dm_y, device=sett.device, dtype=torch.float32)[None, None, ...],
         x[n].po,
         method=sett.method, bound=sett.bound, interpolation=sett.interpolation)
-    # + lam*2/sum(vx^2)
-    M += lam*2/torch.sum(vx**2)
+    # + 2*rho*lam**2*sum(1/vx^2) (not lam*lam?)
+    M += 2*rho*lam**2*vx.square().reciprocal().sum()
     M = M[0, 0, ...]
     # Return as lambda function
     precond = lambda x: x/M
@@ -132,8 +132,8 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
         div = im_divergence(div, vx=vx_y, bound=sett.bound, which=sett.diff)
         tmp -= y[c].lam * div
 
-        # Compute CG preconditioner
-        precond = _precond(x[c], y[c], sett)
+        # Get CG preconditioner
+        precond = _precond(x[c], y[c], rho, sett)
 
         # Invert y = lhs\tmp by conjugate gradients
         lhs = lambda dat: _proj('AtA', dat, x[c], y[c], method=sett.method, do=sett.do_proj, rho=rho,
@@ -141,7 +141,7 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
         cg(A=lhs, b=tmp, x=y[c].dat,
            verbose=sett.cgs_verbose,
            max_iter=sett.cgs_max_iter,
-           stop='residuals',
+           stop='norm',
            inplace=True,
            precond=precond,
            tolerance=sett.cgs_tol)  # OBS: y[c].dat is here updated in-place
