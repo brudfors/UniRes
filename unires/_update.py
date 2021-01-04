@@ -133,7 +133,8 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
         tmp -= y[c].lam * div
 
         # Get CG preconditioner
-        precond = _precond(x[c], y[c], rho, sett)
+        # precond = _precond(x[c], y[c], rho, sett)
+        precond = lambda x: x
 
         # Invert y = lhs\tmp by conjugate gradients
         lhs = lambda dat: _proj('AtA', dat, x[c], y[c], method=sett.method, do=sett.do_proj, rho=rho,
@@ -141,7 +142,7 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
         cg(A=lhs, b=tmp, x=y[c].dat,
            verbose=sett.cgs_verbose,
            max_iter=sett.cgs_max_iter,
-           stop='norm',
+           stop='residuals',
            inplace=True,
            precond=precond,
            tolerance=sett.cgs_tol)  # OBS: y[c].dat is here updated in-place
