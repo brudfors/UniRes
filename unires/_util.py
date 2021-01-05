@@ -63,7 +63,6 @@ def _print_info(info, sett, *argv):
                 print(('c={:}, ').format(c), end='')
                 for n in range(len(argv[0][c])):
                     print('n={:}, fname={:}'.format(n, argv[0][c][n].fname))
-            print('')
         elif info == 'hyper_par':
             if len(argv) == 2:
                 print('completed in {:0.5f} seconds:'.format(timer() - argv[1]))
