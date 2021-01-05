@@ -83,7 +83,8 @@ def fit(x, y, sett):
             # ----------
             # UPDATE: image
             # ----------
-            y, z, w, tmp, obj = _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett)
+            y, z, w, tmp, obj = _update_admm(x, y, z, w, rho, tmp, obj, n_iter,
+                                             sett)
 
             # Show JTV
             if sett.show_jtv:

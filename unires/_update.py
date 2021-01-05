@@ -10,7 +10,7 @@ from nitorch.core.optim import cg
 from nitorch.plot.volumes import show_slices
 from nitorch.core.math import round
 # UniRes
-from ._project import (_apply_scaling, _proj, _proj_info)
+from ._project import (_apply_scaling, _proj, _proj_info, _proj_apply)
 from ._util import _print_info
 
 
@@ -77,6 +77,31 @@ def _has_ct(x):
     return is_ct
 
 
+def _precond(x, y, rho, sett):
+    """Compute CG preconditioner.
+
+    """
+    if len(x) != 1:
+        raise ValueError('CG pre-conditioning only supports one repeat per contrast.')
+    # Parameters
+    n = 0
+    dm_y = y.dim
+    lam = y.lam
+    vx = voxel_size(y.mat).float()
+    # tau*At(A(1))
+    M = x[n].tau*_proj_apply('AtA',
+        torch.ones(dm_y, device=sett.device, dtype=torch.float32)[None, None, ...],
+        x[n].po,
+        method=sett.method, bound=sett.bound, interpolation=sett.interpolation)
+    # + 2*rho*lam**2*sum(1/vx^2) (not lam*lam?)
+    M += 2*rho*lam**2*vx.square().reciprocal().sum()
+    M = M[0, 0, ...]
+    # Return as lambda function
+    precond = lambda x: x/M
+
+    return precond
+
+
 def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
     """
 
@@ -107,6 +132,10 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
         div = im_divergence(div, vx=vx_y, bound=sett.bound, which=sett.diff)
         tmp -= y[c].lam * div
 
+        # Get CG preconditioner
+        # precond = _precond(x[c], y[c], rho, sett)
+        precond = lambda x: x
+
         # Invert y = lhs\tmp by conjugate gradients
         lhs = lambda dat: _proj('AtA', dat, x[c], y[c], method=sett.method, do=sett.do_proj, rho=rho,
                                vx_y=vx_y, bound=sett.bound, interpolation=sett.interpolation, diff=sett.diff)
@@ -115,6 +144,7 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
            max_iter=sett.cgs_max_iter,
            stop='residuals',
            inplace=True,
+           precond=precond,
            tolerance=sett.cgs_tol)  # OBS: y[c].dat is here updated in-place
 
         _ = _print_info('int', sett, c)  # PRINT

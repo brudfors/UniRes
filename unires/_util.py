@@ -55,6 +55,14 @@ def _print_info(info, sett, *argv):
                                                 sett.sched_num))
         elif info in 'step_size':
             print('\nADMM step-size={:0.4f}'.format(argv[0]))
+        elif info == 'filenames':
+            print('')
+            print('Input')
+            nch = str(len(str(len(argv[0]))))
+            for c in range(len(argv[0])):
+                print(('c={:}, ').format(c), end='')
+                for n in range(len(argv[0][c])):
+                    print('n={:}, fname={:}'.format(n, argv[0][c][n].fname))
         elif info == 'hyper_par':
             if len(argv) == 2:
                 print('completed in {:0.5f} seconds:'.format(timer() - argv[1]))
