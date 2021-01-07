@@ -15,7 +15,11 @@ The implementation is written in *PyTorch* and should therefore execute fast
 on the GPU. The software can be run either through **Docker** -- which ensures 
 the correct library and OS versions are used, plus requires no compilation -- 
 or directly by interfacing with the **Python** code. Both of these ways are 
-described next.
+described next. 
+
+An installation-free demo of UniRes is available:
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1Z6AsRLpTQxn-3myxOIKBRf6Lv2unqJ6G?usp=sharing "UniRes Colab Demo")
 
 ## 1. Python
 
