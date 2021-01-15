@@ -519,10 +519,10 @@ def _read_data(data, sett):
             # Get data
             if mat_vol is not None:
                 dat, dim, mat, fname, direc, nam, file, ct = \
-                    _read_image([data[..., c], mat_vol], sett.device, is_ct=sett.has_ct)
+                    _read_image([data[..., c], mat_vol], sett.device, could_be_ct=sett.ct)
             else:
                 dat, dim, mat, fname, direc, nam, file, ct = \
-                    _read_image(data[c], sett.device, is_ct=sett.has_ct)
+                    _read_image(data[c], sett.device, could_be_ct=sett.ct)
             # Assign
             x[c][n].dat = dat
             x[c][n].dim = dim

@@ -132,13 +132,13 @@ def _print_info(info, sett, *argv):
     return timer()
 
 
-def _read_image(data, device='cpu', is_ct=False):
+def _read_image(data, device='cpu', could_be_ct=False):
     """ Reads image data.
 
     Args:
         data (string|list): Path to file, or list with image data and affine matrix.
         device (string, optional): PyTorch on CPU or GPU? Defaults to 'cpu'.
-        is_ct (bool, optional): Is the image a CT scan?
+        could_be_ct (bool, optional): Could the image be a CT scan?
 
     Returns:
         dat (torch.tensor()): Image data.
@@ -187,7 +187,7 @@ def _read_image(data, device='cpu', is_ct=False):
     # Get dimensions
     dim = tuple(dat.shape)
     # CT?
-    if _is_ct(dat):
+    if could_be_ct and _is_ct(dat):
         ct = True
     else:
         ct = False

@@ -62,11 +62,12 @@ class settings:
         self.atlas_rigid: bool = False  # Rigid or rigid+isotropic scaling alignment to atlas
         self.bids: bool = False  # For adding a BIDS compatible space tag ('_space-unires_')
         self.bound: str = 'zero'  # Boundary conditions (see nitorch.spatial)
-        self.clean_fov: bool = False  # Set voxels outside of low-res FOV, projected in high-res space, to zero
-        self.crop: bool = False  # Crop input images' FOV to brain in the NITorch atlas
         self.cgs_max_iter: int = 20  # Max conjugate gradient (CG) iterations for solving for y
         self.cgs_tol: float = 1e-3  # CG tolerance for solving for y
         self.cgs_verbose: bool = False  # CG verbosity (0, 1)
+        self.clean_fov: bool = False  # Set voxels outside of low-res FOV, projected in high-res space, to zero
+        self.crop: bool = False  # Crop input images' FOV to brain in the NITorch atlas
+        self.ct: bool = False  # Data could be CT (if contain negative values)
         self.device: str = 'cuda'  # PyTorch device name
         self.diff: str = 'forward'  # Gradient difference operator (forward|backward|central)
         self.dir_out: str = None  # Directory to write output, if None uses same as input (output is prefixed 'y_')
@@ -77,7 +78,6 @@ class settings:
         self.do_res_origin: bool = False  # Resets origin, if CT data
         self.fov: str = 'head'  # If crop=True, uses this field-of-view ('brain'|'head').
         self.gap: float = 0.0  # Slice gap, between 0 and 1
-        self.has_ct: bool = True  # Data could be CT (but data must contain negative values)
         self.interpolation: str = 'linear'  # Interpolation order (see nitorch.spatial)
         self.label: tuple = None  # Manual labels, given as (str, (int, int))),
         # where the first element is the path and the second element are the

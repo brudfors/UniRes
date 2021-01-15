@@ -114,6 +114,15 @@ if __name__ == "__main__":
                         action='store_false')
     parser.set_defaults(crop=s.crop)
     #
+    parser.add_argument("--ct",
+                        action='store_true',
+                        help="Data could be CT (if contain negative values) "
+                             "[default=" + str(s.ct) +
+                             "].")
+    parser.add_argument('--no-ct', dest='ct',
+                        action='store_false')
+    parser.set_defaults(ct=s.ct)
+    #
     parser.add_argument("--device",
                         type=str,
                         default="cuda",
