@@ -225,18 +225,18 @@ def _format_y(x, sett):
             mat = mat_mu.mm(mat_vx)
             dim = mat_vx[:3, :3].inverse().mm(dim[:, None]).floor().squeeze()
 
-    if sett.pow:
-        # Ensure output image dimensions are compatible with encode/decode
-        # architecture
-        dim2 = ceil_pow(dim, p=2.0, l=2.0)
-        dim3 = ceil_pow(dim, p=2.0, l=3.0)
-        ndim = dim2
-        ndim[dim3 < ndim] = dim3[dim3 < ndim]
-        # Modulate output affine
-        mat_bb = affine_matrix_classic(-((ndim - dim)/2).round())\
-            .type(torch.float64).to(sett.device)
-        mat = mat.mm(mat_bb)
-        dim = ndim
+        if sett.pow:
+            # Ensure output image dimensions are compatible with encode/decode
+            # architecture
+            dim2 = ceil_pow(dim, p=2.0, l=2.0, mx=256)
+            dim3 = ceil_pow(dim, p=2.0, l=3.0, mx=256)
+            ndim = dim2
+            ndim[dim3 < ndim] = dim3[dim3 < ndim]
+            # Modulate output affine
+            mat_bb = affine_matrix_classic(-((ndim - dim)/2).round())\
+                .type(torch.float64).to(sett.device)
+            mat = mat.mm(mat_bb)
+            dim = ndim
 
     # Set method
     if do_sr:
