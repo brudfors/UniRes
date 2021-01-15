@@ -64,7 +64,7 @@ class settings:
         self.bound: str = 'zero'  # Boundary conditions (see nitorch.spatial)
         self.clean_fov: bool = False  # Set voxels outside of low-res FOV, projected in high-res space, to zero
         self.crop: bool = False  # Crop input images' FOV to brain in the NITorch atlas
-        self.cgs_max_iter: int = 16  # Max conjugate gradient (CG) iterations for solving for y
+        self.cgs_max_iter: int = 20  # Max conjugate gradient (CG) iterations for solving for y
         self.cgs_tol: float = 1e-3  # CG tolerance for solving for y
         self.cgs_verbose: bool = False  # CG verbosity (0, 1)
         self.device: str = 'cuda'  # PyTorch device name
@@ -75,7 +75,7 @@ class settings:
         self.do_print: int = 1  # Print progress to terminal (0, 1, 2, 3)
         self.do_proj: bool = None  # Use projection matrices, defined in format_output()
         self.do_res_origin: bool = False  # Resets origin, if CT data
-        self.fov: str = 'brain'  # If crop=True, uses this field-of-view ('brain'|'head').
+        self.fov: str = 'head'  # If crop=True, uses this field-of-view ('brain'|'head').
         self.gap: float = 0.0  # Slice gap, between 0 and 1
         self.has_ct: bool = True  # Data could be CT (but data must contain negative values)
         self.interpolation: str = 'linear'  # Interpolation order (see nitorch.spatial)
