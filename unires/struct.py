@@ -102,6 +102,6 @@ class settings:
         self.show_jtv: bool = False  # Show the joint total variation (JTV)
         self.tolerance: float = 1e-4  # Algorithm tolerance, if zero, run to max_iter
         self.unified_rigid: bool = True  # Do unified rigid registration
-        self.vx: float = 1.0  # Reconstruction voxel size
+        self.vx: float = 1.0  # Reconstruction voxel size (use 0 or None to just denoise)
         self.write_jtv: bool = False  # Write JTV to nifti
         self.write_out: bool = True  # Write reconstructed output images

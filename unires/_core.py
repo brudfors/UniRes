@@ -165,6 +165,8 @@ def _format_y(x, sett):
     """
     one = torch.tensor(1.0, device=sett.device, dtype=torch.float64)
     vx_y = sett.vx
+    if vx_y == 0:
+        vx_y = None
     if vx_y is not None:
         if isinstance(vx_y, int):
             vx_y = float(vx_y)
