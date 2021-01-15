@@ -26,8 +26,8 @@ from unires.struct import settings
 from unires.run import preproc
 
 
-def _run(pth, atlas_align, atlas_rigid, crop, device, dir_out,
-         linear, plot_conv, prefix, print_info, reg_scl, res_origin, sched,
+def _run(pth, atlas_align, atlas_rigid, crop, device, dir_out, fov,
+         linear, plot_conv, pow, prefix, print_info, reg_scl, res_origin, scale, sched,
          show_hyperpar, show_jtv, tolerance, unified_rigid, vx,
          write_out):
     """Fit UniRes model from the command line.
@@ -63,6 +63,9 @@ def _run(pth, atlas_align, atlas_rigid, crop, device, dir_out,
     s.write_out = write_out
     s.sched_num = sched
     s.prefix = prefix
+    s.scaling = scale
+    s.fov = fov
+    s.pow = pow
     if linear:
         s.max_iter = 0
         s.prefix = 'l' + s.prefix
@@ -122,6 +125,11 @@ if __name__ == "__main__":
                         help="Directory to write output. Default is same as "
                              "as input data.")
     #
+    parser.add_argument("--fov",
+                        type=str,
+                        default=s.fov,
+                        help="If crop, uses this field-of-view ('brain'|'head')")
+    #
     parser.add_argument("--linear",
                         action='store_true',
                         help="Reslice using trilinear interpolation, i.e.,"
@@ -138,6 +146,15 @@ if __name__ == "__main__":
     parser.add_argument('--no-plot_conv', dest='plot_conv',
                         action='store_false')
     parser.set_defaults(plot_conv=s.plot_conv)
+    #
+    parser.add_argument("--pow",
+                        action='store_true',
+                        help="Ensure output image dimensions are compatible with encode/decode architecture"
+                             " [default=" + str(s.pow) +
+                             "].")
+    parser.add_argument('--no-pow', dest='pow',
+                        action='store_false')
+    parser.set_defaults(pow=s.pow)
     #
     parser.add_argument("--prefix",
                         type=str,
@@ -164,6 +181,14 @@ if __name__ == "__main__":
     parser.add_argument('--no-res_origin', dest='res_origin',
                         action='store_false')
     parser.set_defaults(res_origin=s.do_res_origin)
+    #
+    parser.add_argument("--scale",
+                        action='store_true',
+                        help="Optimise even/odd slice scaling [default=" +
+                             str(s.scaling) + "].")
+    parser.add_argument('--no-scale', dest='scale',
+                        action='store_false')
+    parser.set_defaults(scale=s.scaling)
     #
     parser.add_argument("--sched",
                         type=int,
