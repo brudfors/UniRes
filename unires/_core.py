@@ -1,5 +1,6 @@
 # Python
 import os
+import math
 # 3rd party
 import torch
 # NITorch
@@ -261,8 +262,8 @@ def _format_y(x, sett):
             mu_c[n] = x[c][n].mu
             if x[c][n].ct and sett.method == 'super-resolution':
                 mu_c[n] /= 4
-        y[c].lam0 = 1 / torch.mean(mu_c)
-        y[c].lam = 1 / torch.mean(mu_c)  # To facilitate rescaling
+        y[c].lam0 = math.sqrt(1/len(x)) / torch.mean(mu_c)
+        y[c].lam = math.sqrt(1/len(x))  / torch.mean(mu_c)  # To facilitate rescaling
         # Output image(s) dimension and orientation matrix
         y[c].dim = dim
         y[c].mat = mat.double().to(sett.device)
