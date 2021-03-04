@@ -192,7 +192,7 @@ def _read_image(data, device='cpu', could_be_ct=False):
     else:
         ct = False
     # Mask
-    dat[~dat.isfinite()] = 0.0
+    dat[~torch.isfinite(dat)] = 0.0
 
     return dat, dim, mat, fname, direc, nam, file, ct
 
