@@ -572,7 +572,7 @@ def _write_data(x, y, sett, jtv=None):
             dir_out = 'UniRes-output'
         else:
             dir_out = x[0][0].direc
-    if not os.path.isdir(dir_out):
+    if sett.write_out and not os.path.isdir(dir_out):
         os.makedirs(dir_out, exist_ok=True)
 
     prefix_y = sett.prefix
