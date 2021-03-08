@@ -129,7 +129,7 @@ def fit(x, y, sett):
 
                 t0 = _print_info('fit-update', sett, 'q', n_iter)  # PRINT
                 x, _ = _update_rigid(x, y, sett,
-                    mean_correct=True, max_niter_gn=1, num_linesearch=6, verbose=0, samp=sett.rigid_samp)
+                    mean_correct=False, max_niter_gn=1, num_linesearch=6, verbose=0, samp=sett.rigid_samp)
                 _ = _print_info('fit-done', sett, t0)  # PRINT
                 # Print parameter estimates
                 _ = _print_info('reg-param', sett, x, t0)
