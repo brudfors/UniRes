@@ -207,8 +207,6 @@ def _read_label(x, pth, sett):
     # Sanity check
     if not torch.equal(torch.as_tensor(x.dim), torch.as_tensor(dat.shape)):
         raise ValueError('Incorrect label dimensions.')
-    if torch.any(x.mat - mat > 1e-4):
-        raise ValueError('Incorrect label affine matrix.')
     # Append labels
     x.label = [dat, file]
 
