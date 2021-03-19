@@ -157,7 +157,7 @@ def _read_image(data, device='cpu', could_be_ct=False):
         # =================================
         file = map(data)
         dat = file.fdata(dtype=torch.float32, device=device,
-                         rand=True, cutoff=(0.0005, 0.9995))
+                         rand=False, cutoff=None)
         mat = file.affine.to(device).type(torch.float64)
         fname = file.filename()
         direc, nam = os.path.split(fname)
