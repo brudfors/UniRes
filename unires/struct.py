@@ -62,7 +62,7 @@ class settings:
         self.atlas_rigid: bool = False  # Rigid or rigid+isotropic scaling alignment to atlas
         self.bids: bool = False  # For adding a BIDS compatible space tag ('_space-unires_')
         self.bound: str = 'zero'  # Boundary conditions (see nitorch.spatial)
-        self.cgs_max_iter: int = 20  # Max conjugate gradient (CG) iterations for solving for y
+        self.cgs_max_iter: int = 30  # Max conjugate gradient (CG) iterations for solving for y
         self.cgs_tol: float = 1e-3  # CG tolerance for solving for y
         self.cgs_verbose: bool = False  # CG verbosity (0, 1)
         self.clean_fov: bool = False  # Set voxels outside of low-res FOV, projected in high-res space, to zero
