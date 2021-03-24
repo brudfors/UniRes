@@ -62,7 +62,7 @@ class settings:
         self.atlas_rigid: bool = False  # Rigid or rigid+isotropic scaling alignment to atlas
         self.bids: bool = False  # For adding a BIDS compatible space tag ('_space-unires_')
         self.bound: str = 'zero'  # Boundary conditions (see nitorch.spatial)
-        self.cgs_max_iter: int = 30  # Max conjugate gradient (CG) iterations for solving for y
+        self.cgs_max_iter: int = 20  # Max conjugate gradient (CG) iterations for solving for y
         self.cgs_tol: float = 1e-3  # CG tolerance for solving for y
         self.cgs_verbose: bool = False  # CG verbosity (0, 1)
         self.clean_fov: bool = False  # Set voxels outside of low-res FOV, projected in high-res space, to zero
@@ -88,7 +88,7 @@ class settings:
         self.plot_conv: bool = False  # Use matplotlib to plot convergence in real-time
         self.pow: bool = False  # Ensure output image dimensions are compatible with encode/decode architecture
         self.prefix: str = 'ur_'  # Prefix for reconstructed image(s)
-        self.profile_ip: int = 0  # In-plane slice profile (0=rect|1=tri|2=gauss)
+        self.profile_ip: int = 2  # In-plane slice profile (0=rect|1=tri|2=gauss)
         self.profile_tp: int = 0  # Through-plane slice profile (0=rect|1=tri|2=gauss)
         self.reg_scl: float = 32.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
         self.rho: float = None  # ADMM step-size, if None -> estimate is made
