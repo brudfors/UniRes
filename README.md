@@ -1,4 +1,4 @@
-# UniRes: Unified Super-Resolution of Neuroimaging Data on the GPU
+# Unified Super-Resolution of Neuroimaging Data on the GPU
 <img style="float: right;" src="https://github.com/brudfors/UniRes/blob/master/figures/example_2.png" width="100%" height="100%"> 
 
 This repository implements a unified model for super-resolving neuroimaging data 
