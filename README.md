@@ -1,9 +1,9 @@
-# UniRes: Unified Super-Resolution of Neuroimaging Data
+# Unified Super-Resolution of Neuroimaging Data on the GPU
 <img style="float: right;" src="https://github.com/brudfors/UniRes/blob/master/figures/example_2.png" width="100%" height="100%"> 
 
 This repository implements a unified model for super-resolving neuroimaging data 
 (MRI and CT scans), which combines: super-resolution with a multi-channel denoising 
-prior, rigid registration and correction for interleaved slice acquisition. 
+prior, rigid registration and a correction for interleaved slice acquisition. 
 The archetype use-case is when having multiple scans of the same subject 
 (e.g., T1w, T2w and FLAIR MRIs) and an analysis requires these scans to be 
 represented on the same grid (i.e., having the same image size, affine matrix 
@@ -17,7 +17,7 @@ the correct library and OS versions are used, plus requires no compilation --
 or directly by interfacing with the **Python** code. Both of these ways are 
 described next. 
 
-An installation-free demo of UniRes is available:
+An installation-free demo of UniRes is available in Colab:
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1Z6AsRLpTQxn-3myxOIKBRf6Lv2unqJ6G?usp=sharing "UniRes Colab Demo")
 
@@ -53,6 +53,11 @@ As an example, the voxel size of the super-resolved data is here set to
  1.5 mm isotropic:
 ``` bash
 python unires.py --vx 1.5 T1.nii.gz T2.nii.gz PD.nii.gz
+```
+There is also an option that makes images registered and defined on the same grid, 
+**across subjects**, where the grid size is optimal from a CNN fitting perspective:
+``` bash
+python unires.py --common_output T1.nii.gz T2.nii.gz PD.nii.gz
 ```
 
 ## 2. Running through NVIDIA Docker
