@@ -59,12 +59,11 @@ def fit(x, y, sett):
         cnt_scl = 0
         for c in range(len(x)):
             y[c].lam = sett.reg_scl[cnt_scl] * y[c].lam0
-
-        # Get ADMM step-size
-        rho = _step_size(x, y, sett, verbose=True)
-
+            
         if sett.max_iter > 0:
-            # Get ADMM variables (only if algorithm is run)
+            # Get ADMM step-size
+            rho = _step_size(x, y, sett, verbose=True)
+            # Get ADMM variables
             z, w = _admm_aux(y, sett)
 
         # ----------
@@ -252,14 +251,14 @@ def init(data, sett=settings()):
         # Possibly, fix messed up affine in CT scans
         x = _fix_affine(x, sett)
 
+        # Force in-plane resolution of observed data to be greater or equal to recon vx
+        x = _resample_inplane(x, sett)
+
         # Init registration, possibly:
         # * Co-registers all input images
         # * Aligns to atlas space
         # * Crops to atlas space
         x, sett = _init_reg(x, sett)
-
-        # Force in-plane resolution of observed data to be not smaller than recon vx
-        x = _resample_inplane(x, sett)
 
         # Format output
         y, sett = _format_y(x, sett)

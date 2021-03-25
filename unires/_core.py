@@ -322,7 +322,6 @@ def _init_reg(x, sett):
                 i += 1
         _print_info('init-reg', sett, 'co', 'finished', N, t0)
 
-    mat_cso = None
     if sett.do_atlas_align:
         # Align fixed image to atlas space, and apply transformation to
         # all images
@@ -330,8 +329,6 @@ def _init_reg(x, sett):
         imgs1 = [imgs[fix]]
         _, mat_a, _, mat_cso = atlas_align(imgs1, rigid=sett.atlas_rigid, device=sett.device)
         _print_info('init-reg', sett, 'atlas', 'finished', N, t0)
-
-    if sett.do_atlas_align:
         # Apply atlas registration transform
         i = 0
         for c in range(len(x)):
@@ -364,6 +361,7 @@ def _init_y_dat(x, y, sett):
     for c in range(len(x)):
         dat_y = torch.zeros(dim_y, dtype=torch.float32, device=sett.device)
         num_x = len(x[c])
+        sm    = torch.zeros_like(dat_y)
         for n in range(num_x):
             # Get image data
             dat = x[c][n].dat[None, None, ...]
@@ -377,8 +375,10 @@ def _init_y_dat(x, y, sett):
                 bound='zero', extrapolate=False, interpolation=1)
             dat[dat < mn] = mn
             dat[dat > mx] = mx
+            sm = sm + (dat[0, 0, ...].round() != 0)
             dat_y = dat_y + dat[0, 0, ...]
-        y[c].dat = dat_y / num_x
+        sm[sm == 0] = 1
+        y[c].dat = dat_y / sm
 
     return y
 
@@ -439,9 +439,10 @@ def _proj_info_add(x, y, sett):
 
 
 def _resample_inplane(x, sett):
-    """Force in-plane resolution of observed data to be not smaller than recon vx.
+    """Force in-plane resolution of observed data to be greater or equal to recon vx.
     """
     if sett.force_inplane_res:
+        I = torch.eye(4, device=sett.device, dtype=torch.float64)
         for c in range(len(x)):
             for n in range(len(x[c])):
                 # get image data
@@ -450,11 +451,12 @@ def _resample_inplane(x, sett):
                 dim_x = torch.as_tensor(x[c][n].dim, device=sett.device, dtype=torch.float64)
                 vx_x = voxel_size(mat_x)
                 # make grid
-                D = sett.vx * torch.eye(4, device=sett.device, dtype=torch.float64)
+                D = I.clone()
                 for i in range(3):
                     D[i, i] = sett.vx / vx_x[i]
-                    D[i, i] = D[i, i].clamp(1)
-                if torch.all(D.diag() == 1):
+                    if D[i, i] < 1.0:
+                        D[i, i] = 1
+                if float((I - D).abs().sum()) < 1e-4:
                     continue
                 mat_x = mat_x.matmul(D)
                 dim_x = D[:3, :3].inverse().mm(dim_x[:, None]).floor().squeeze().cpu().int().tolist()
@@ -514,7 +516,7 @@ def _read_data(data, sett):
                 x[c].append(_input())
                 # Get data
                 dat, dim, mat, fname, direc, nam, file, ct = \
-                    _read_image(data[c][n], sett.device, is_ct=sett.has_ct)
+                    _read_image(data[c][n], sett.device, could_be_ct=sett.ct)
                 # Assign
                 x[c][n].dat = dat
                 x[c][n].dim = dim

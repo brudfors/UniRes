@@ -59,7 +59,7 @@ def _step_size(x, y, sett, verbose=False):
                 cnt += 1
         rho = sett.rho_scl * torch.sqrt(torch.mean(all_tau)) / torch.mean(all_lam)
     if verbose:
-        _ = _print_info('_step_size', sett, rho)  # PRINT
+        _ = _print_info('step_size', sett, rho)  # PRINT
 
     return rho
 
@@ -412,10 +412,9 @@ def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64):
         # Neg. log-likelihood term
         for n in range(len(x[c])):
             msk = x[c][n].dat != 0
-            nll_xy += 0.5 * x[c][n].tau * torch.sum((x[c][n].dat[msk] -
-                                                    _proj('A', y[c].dat, x[c], y[c], method=sett.method, do=sett.do_proj,
-                                                         n=n, bound=sett.bound, interpolation=sett.interpolation)[msk]) ** 2,
-                                                         dtype=sum_dtype)
+            Ay = _proj('A', y[c].dat, x[c], y[c],
+                n=n, method=sett.method, do=sett.do_proj, bound=sett.bound, interpolation=sett.interpolation)
+            nll_xy += 0.5 * x[c][n].tau * torch.sum((x[c][n].dat[msk] - Ay[msk]) ** 2, dtype=sum_dtype)
         # Neg. log-prior term
         Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
         if c > 0:
