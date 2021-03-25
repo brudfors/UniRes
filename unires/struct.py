@@ -67,6 +67,7 @@ class settings:
         self.cgs_verbose: bool = False  # CG verbosity (0, 1)
         self.clean_fov: bool = False  # Set voxels outside of low-res FOV, projected in high-res space, to zero
         self.crop: bool = False  # Crop input images' FOV to brain in the NITorch atlas
+        self.common_output: bool = False  # Makes recons aligned with same grid, across subjects
         self.ct: bool = False  # Data could be CT (if contain negative values)
         self.device: str = 'cuda'  # PyTorch device name
         self.diff: str = 'forward'  # Gradient difference operator (forward|backward|central)
@@ -77,7 +78,7 @@ class settings:
         self.do_proj: bool = None  # Use projection matrices, defined in format_output()
         self.do_res_origin: bool = False  # Resets origin, if CT data
         self.force_inplane_res: bool = True  # Forces in-plane resolution of observed data to be not smaller than recon vx
-        self.fov: str = 'head'  # If crop=True, uses this field-of-view ('brain'|'head').
+        self.fov: str = 'brain'  # If crop=True, uses this field-of-view ('brain'|'head').
         self.gap: float = 0.0  # Slice gap, between 0 and 1
         self.interpolation: str = 'linear'  # Interpolation order (see nitorch.spatial)
         self.label: tuple = None  # Manual labels, given as (str, (int, int))),
@@ -91,14 +92,14 @@ class settings:
         self.prefix: str = 'ur_'  # Prefix for reconstructed image(s)
         self.profile_ip: int = 2  # In-plane slice profile (0=rect|1=tri|2=gauss)
         self.profile_tp: int = 0  # Through-plane slice profile (0=rect|1=tri|2=gauss)
-        self.reg_scl: float = 32.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
+        self.reg_scl: float = 5.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
         self.rho: float = None  # ADMM step-size, if None -> estimate is made
         self.rho_scl: float = 1.0  # Scaling of ADMM step-size
         self.rigid_basis = None  # Rigid transformation basis, defined in init_reg()
         self.rigid_mod: int = 1  # Update rigid every rigid_mod iteration
         self.rigid_samp: int = 1  # Level of sub-sampling for estimating rigid registration parameters
         self.scaling: bool = True  # Optimise even/odd slice scaling
-        self.sched_num: int = 3  # Number of coarse-to-fine scalings
+        self.sched_num: int = 0  # Number of coarse-to-fine scalings
         self.show_hyperpar: bool = False  # Use matplotlib to visualise hyper-parameter estimates
         self.show_jtv: bool = False  # Show the joint total variation (JTV)
         self.tolerance: float = 1e-4  # Algorithm tolerance, if zero, run to max_iter

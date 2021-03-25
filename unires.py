@@ -26,8 +26,8 @@ from unires.struct import settings
 from unires.run import preproc
 
 
-def _run(pth, atlas_align, atlas_rigid, crop, device, dir_out, fov,
-         linear, plot_conv, pow, prefix, print_info, reg_scl, res_origin, scale, sched,
+def _run(pth, atlas_rigid, common_output, device, dir_out, fov,
+         linear, plot_conv, prefix, print_info, reg_scl, res_origin, scale, sched,
          show_hyperpar, show_jtv, tolerance, unified_rigid, vx,
          write_out):
     """Fit UniRes model from the command line.
@@ -55,17 +55,15 @@ def _run(pth, atlas_align, atlas_rigid, crop, device, dir_out, fov,
     s.show_jtv = show_jtv
     s.tolerance = tolerance
     s.unified_rigid = unified_rigid
-    s.crop = crop
+    s.common_output = common_output
     s.vx = vx
     s.do_res_origin = res_origin
     s.do_atlas_align = atlas_align
-    s.atlas_rigid = atlas_rigid
     s.write_out = write_out
     s.sched_num = sched
     s.prefix = prefix
     s.scaling = scale
     s.fov = fov
-    s.pow = pow
     if linear:
         s.max_iter = 0
         s.prefix = 'l' + s.prefix
@@ -89,14 +87,6 @@ if __name__ == "__main__":
                              "subject MRIs/CTs.")
     # Optional arguments
     #
-    parser.add_argument("--atlas_align",
-                        action='store_true',
-                        help="Align images to an atlas space ["
-                             "default=" + str(s.do_atlas_align) + "].")
-    parser.add_argument('--no-atlas_align', dest='atlas_align',
-                        action='store_false')
-    parser.set_defaults(atlas_align=s.do_atlas_align)
-    #
     parser.add_argument("--atlas_rigid",
                         action='store_true',
                         help="Rigid, else rigid+isotropic, alignment to "
@@ -105,14 +95,13 @@ if __name__ == "__main__":
                         action='store_false')
     parser.set_defaults(atlas_rigid=s.atlas_rigid)
     #
-    parser.add_argument("--crop",
+    parser.add_argument("--common_output",
                         action='store_true',
-                        help="Crop input images' FOV to brain in the "
-                             "NITorch atlas [default=" + str(s.crop) +
-                             "].")
-    parser.add_argument('--no-crop', dest='crop',
+                        help="Makes recons aligned with same grid, across subjects "
+                             "[default=" + str(s.common_output) + "].")
+    parser.add_argument('--no-common_output', dest='common_output',
                         action='store_false')
-    parser.set_defaults(crop=s.crop)
+    parser.set_defaults(crop=s.common_output)
     #
     parser.add_argument("--ct",
                         action='store_true',
@@ -155,15 +144,6 @@ if __name__ == "__main__":
     parser.add_argument('--no-plot_conv', dest='plot_conv',
                         action='store_false')
     parser.set_defaults(plot_conv=s.plot_conv)
-    #
-    parser.add_argument("--pow",
-                        action='store_true',
-                        help="Ensure output image dimensions are compatible with encode/decode architecture"
-                             " [default=" + str(s.pow) +
-                             "].")
-    parser.add_argument('--no-pow', dest='pow',
-                        action='store_false')
-    parser.set_defaults(pow=s.pow)
     #
     parser.add_argument("--prefix",
                         type=str,

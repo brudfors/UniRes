@@ -235,6 +235,12 @@ def init(data, sett=settings()):
     with torch.no_grad():
         _ = _print_info('init', sett)
 
+        if sett.common_output:
+            # Makes recons aligned with same grid, across subjects
+            sett.do_atlas_align = True
+            sett.crop = True
+            sett.pow = True
+
         # Read and format data (images and labels)
         x = _read_data(data, sett)
         del data
