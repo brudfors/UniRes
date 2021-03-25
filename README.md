@@ -1,4 +1,4 @@
-# UniRes: Unified Super-Resolution of Neuroimaging Data
+# UniRes: Unified Super-Resolution of Neuroimaging Data on the GPU
 <img style="float: right;" src="https://github.com/brudfors/UniRes/blob/master/figures/example_2.png" width="100%" height="100%"> 
 
 This repository implements a unified model for super-resolving neuroimaging data 
@@ -17,7 +17,7 @@ the correct library and OS versions are used, plus requires no compilation --
 or directly by interfacing with the **Python** code. Both of these ways are 
 described next. 
 
-An installation-free demo of UniRes is available:
+An installation-free demo of UniRes is available in Colab:
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1Z6AsRLpTQxn-3myxOIKBRf6Lv2unqJ6G?usp=sharing "UniRes Colab Demo")
 
