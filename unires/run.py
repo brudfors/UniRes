@@ -235,7 +235,7 @@ def init(data, sett=settings()):
     with torch.no_grad():
         _ = _print_info('init', sett)
 
-        # Read and format data
+        # Read and format data (images and labels)
         x = _read_data(data, sett)
         del data
 

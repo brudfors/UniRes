@@ -203,7 +203,6 @@ def _read_label(x, pth, sett):
     # Load labels
     file = map(pth)
     dat = file.fdata(dtype=torch.float32, device=sett.device)
-    mat = file.affine.type(torch.float64).to(sett.device)
     # Sanity check
     if not torch.equal(torch.as_tensor(x.dim), torch.as_tensor(dat.shape)):
         raise ValueError('Incorrect label dimensions.')
