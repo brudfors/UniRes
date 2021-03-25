@@ -11,11 +11,12 @@ and voxel size). By default, the model reconstructs 1 mm isotropic images
 with a field-of-view that contains all input scans; however, this voxel 
 size can be customised with the possibility of sub-millimetric reconstuctions. 
 The model additionally supports multiple repeats of each MR sequence. 
+There is an option that makes images registered and defined on the same grid, 
+**across subjects**, where the grid size is optimal from a CNN fitting perspective.
 The implementation is written in *PyTorch* and should therefore execute fast 
 on the GPU. The software can be run either through **Docker** -- which ensures 
 the correct library and OS versions are used, plus requires no compilation -- 
-or directly by interfacing with the **Python** code. Both of these ways are 
-described next. 
+or directly by interfacing with the **Python** code.
 
 An installation-free demo of UniRes is available in Colab:
 
