@@ -3,7 +3,7 @@
 
 This repository implements a unified model for super-resolving neuroimaging data 
 (MRI and CT scans), which combines: super-resolution with a multi-channel denoising 
-prior, rigid registration and correction for interleaved slice acquisition. 
+prior, rigid registration and a correction for interleaved slice acquisition. 
 The archetype use-case is when having multiple scans of the same subject 
 (e.g., T1w, T2w and FLAIR MRIs) and an analysis requires these scans to be 
 represented on the same grid (i.e., having the same image size, affine matrix 
