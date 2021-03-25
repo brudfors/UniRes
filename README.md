@@ -54,6 +54,11 @@ As an example, the voxel size of the super-resolved data is here set to
 ``` bash
 python unires.py --vx 1.5 T1.nii.gz T2.nii.gz PD.nii.gz
 ```
+There is also an option that makes images registered and defined on the same grid, 
+**across subjects**, where the grid size is optimal from a CNN fitting perspective:
+``` bash
+python unires.py --common_output T1.nii.gz T2.nii.gz PD.nii.gz
+```
 
 ## 2. Running through NVIDIA Docker
 This section describes setting up *UniRes* to run using NVIDIA's Docker 
