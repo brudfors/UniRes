@@ -457,6 +457,36 @@ def _proj_info_add(x, y, sett):
     return x
 
 
+def _resample_inplane(x, sett):
+    """Force in-plane resolution of observed data to be not smaller than recon vx.
+    """
+    if sett.force_inplane_res:
+        for c in range(len(x)):
+            for n in range(len(x[c])):
+                # get image data
+                dat = x[c][n].dat[None, None, ...]
+                mat_x = x[c][n].mat
+                dim_x = torch.as_tensor(x[c][n].dim, device=sett.device, dtype=torch.float64)
+                vx_x = voxel_size(mat_x)
+                # make grid
+                D = sett.vx * torch.eye(4, device=sett.device, dtype=torch.float64)
+                for i in range(3):
+                    D[i, i] = sett.vx / vx_x[i]
+                    D[i, i] = D[i, i].clamp(1)
+                if torch.all(D.diag() == 1):
+                    continue
+                mat_x = mat_x.matmul(D)
+                dim_x = D[:3, :3].inverse().mm(dim_x[:, None]).floor().squeeze().cpu().int().tolist()
+                grid = affine_grid(D.type(dat.dtype), dim_x)
+                # resample
+                dat = grid_pull(dat, grid[None, ...], bound='zero', extrapolate=False, interpolation=0)
+                # assign
+                x[c][n].dat = dat[0, 0, ...]
+                x[c][n].mat = mat_x
+                x[c][n].dim = dim_x
+
+    return x
+
 def _read_data(data, sett):
     """ Parse input data into algorithm input struct(s).
 

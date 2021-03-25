@@ -3,7 +3,7 @@ from timeit import default_timer as timer
 # 3rd party
 import torch
 # NITorch
-from nitorch.spatial import (affine_grid, grid_pull)
+from nitorch.spatial import (affine_grid, grid_pull, voxel_size)
 from nitorch.core.optim import (get_gain, plot_convergence)
 from nitorch.plot.volumes import show_slices
 from nitorch.core._linalg_expm import _expm
@@ -15,7 +15,8 @@ from ._update import (_admm_aux, _update_admm, _update_rigid,
 from ._util import _print_info
 from._core import (_crop_y, _estimate_hyperpar, _fix_affine,
                    _format_y, _get_sched, _init_reg, _init_y_dat,
-                   _init_y_label, _proj_info_add, _read_data, _write_data)
+                   _init_y_label, _proj_info_add, _read_data, _write_data,
+                   _resample_inplane)
 
 torch.backends.cudnn.benchmark = True
 
@@ -250,6 +251,9 @@ def init(data, sett=settings()):
         # * Aligns to atlas space
         # * Crops to atlas space
         x, sett = _init_reg(x, sett)
+
+        # Force in-plane resolution of observed data to be not smaller than recon vx
+        x = _resample_inplane(x, sett)
 
         # Format output
         y, sett = _format_y(x, sett)

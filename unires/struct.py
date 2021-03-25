@@ -76,6 +76,7 @@ class settings:
         self.do_print: int = 1  # Print progress to terminal (0, 1, 2, 3)
         self.do_proj: bool = None  # Use projection matrices, defined in format_output()
         self.do_res_origin: bool = False  # Resets origin, if CT data
+        self.force_inplane_res: bool = True  # Forces in-plane resolution of observed data to be not smaller than recon vx
         self.fov: str = 'head'  # If crop=True, uses this field-of-view ('brain'|'head').
         self.gap: float = 0.0  # Slice gap, between 0 and 1
         self.interpolation: str = 'linear'  # Interpolation order (see nitorch.spatial)
