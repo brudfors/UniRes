@@ -99,7 +99,7 @@ class settings:
         self.rigid_mod: int = 1  # Update rigid every rigid_mod iteration
         self.rigid_samp: int = 1  # Level of sub-sampling for estimating rigid registration parameters
         self.scaling: bool = True  # Optimise even/odd slice scaling
-        self.sched_num: int = 0  # Number of coarse-to-fine scalings
+        self.sched_num: int = 3  # Number of coarse-to-fine scalings
         self.show_hyperpar: bool = False  # Use matplotlib to visualise hyper-parameter estimates
         self.show_jtv: bool = False  # Show the joint total variation (JTV)
         self.tolerance: float = 1e-4  # Algorithm tolerance, if zero, run to max_iter
