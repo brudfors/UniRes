@@ -35,7 +35,7 @@ cd /path/to/unires
 pip install .
 ``` 
 
-### 1.2. Example use case
+### 1.2. Example use cases
 
 Running *UniRes* is straight forward. Let's say you have three 
 MR images: `T1.nii.gz`, `T2.nii.gz` and `PD.nii.gz`, then 
