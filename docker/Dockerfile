@@ -49,14 +49,10 @@ ENV PROJECT_DIR $HOME/app
 RUN mkdir $PROJECT_DIR
 WORKDIR $PROJECT_DIR
 
-# Clone UniRes (private repo)
-COPY --chown=$USER:$GID key $PROJECT_DIR
-RUN \
-    mkdir $HOME/.ssh && \
-    ssh-keyscan -t rsa github.com >> $HOME/.ssh/known_hosts && \
-    ssh-agent bash -c 'ssh-add $PROJECT_DIR/key; git clone git@github.com:brudfors/UniRes.git $PROJECT_DIR/unires'
+# Clone UniRes
+RUN git clone git@github.com:brudfors/UniRes.git $PROJECT_DIR/unires
 
-# Clone nitorch (public repo)
+# Clone nitorch
 RUN git clone https://github.com/balbasty/nitorch.git $PROJECT_DIR/nitorch
 
 # Build the conda environment
