@@ -45,7 +45,6 @@ def _preproc(pth, atlas_rigid, common_output, device, dir_out, fov,
     s.crop = crop
     if linear:
         s.max_iter = 0
-        s.prefix = 'l' + s.prefix
 
     # Run UniRes
     dat_y, mat_y, pth_y = preproc(pth, s)
