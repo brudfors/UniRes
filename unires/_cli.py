@@ -26,7 +26,7 @@ from unires.struct import settings
 from unires.run import preproc
 
 
-def _run(pth, atlas_rigid, common_output, device, dir_out, fov,
+def _preproc(pth, atlas_rigid, common_output, device, dir_out, fov,
          linear, plot_conv, prefix, print_info, reg_scl, res_origin, scale, sched,
          show_hyperpar, show_jtv, tolerance, unified_rigid, vx,
          write_out, ct, crop):
@@ -75,7 +75,7 @@ def _run(pth, atlas_rigid, common_output, device, dir_out, fov,
     return dat_y, mat_y, pth_y
 
 
-if __name__ == "__main__":
+def run():
     # UniRes default settings
     s = settings()
     # Build parser
@@ -102,7 +102,7 @@ if __name__ == "__main__":
                              "[default=" + str(s.common_output) + "].")
     parser.add_argument('--no-common_output', dest='common_output',
                         action='store_false')
-    parser.set_defaults(crop=s.common_output)
+    parser.set_defaults(common_output=s.common_output)
     #
     parser.add_argument("--ct",
                         action='store_true',
@@ -113,6 +113,14 @@ if __name__ == "__main__":
                         action='store_false')
     parser.set_defaults(ct=s.ct)
     #
+    parser.add_argument("--crop",
+                        action='store_true',
+                        help="Crop field-of-view "
+                             "[default=" + str(s.crop) + "].")
+    parser.add_argument('--no-crop', dest='crop',
+                        action='store_false')
+    parser.set_defaults(crop=s.crop)
+    #
     parser.add_argument("--device",
                         type=str,
                         default="cuda",
@@ -121,7 +129,7 @@ if __name__ == "__main__":
     parser.add_argument("--dir_out",
                         type=str,
                         default=s.dir_out,
-                        help="Directory to write output. Default is same as "
+                        help="Directory to write output. Default is same "
                              "as input data.")
     #
     parser.add_argument("--fov",
@@ -231,6 +239,7 @@ if __name__ == "__main__":
     parser.add_argument('--no-write_out', dest='write_out',
                         action='store_false')
     parser.set_defaults(write_out=s.write_out)
-    # Apply
+    #
     args = parser.parse_args()
-    _run(**vars(args))
+    # Run UniRes
+    _preproc(**vars(args))

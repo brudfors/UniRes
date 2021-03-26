@@ -159,7 +159,7 @@ def _read_image(data, device='cpu', could_be_ct=False):
                          rand=False, cutoff=None)
         mat = file.affine.to(device).type(torch.float64)
         fname = file.filename()
-        direc, nam = os.path.split(fname)
+        direc, nam = os.path.split(os.path.abspath(fname))
     else:
         # =================================
         # Data and matrix given as list
