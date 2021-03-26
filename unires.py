@@ -29,7 +29,7 @@ from unires.run import preproc
 def _run(pth, atlas_rigid, common_output, device, dir_out, fov,
          linear, plot_conv, prefix, print_info, reg_scl, res_origin, scale, sched,
          show_hyperpar, show_jtv, tolerance, unified_rigid, vx,
-         write_out):
+         write_out, ct, crop):
     """Fit UniRes model from the command line.
 
     Returns
@@ -58,12 +58,13 @@ def _run(pth, atlas_rigid, common_output, device, dir_out, fov,
     s.common_output = common_output
     s.vx = vx
     s.do_res_origin = res_origin
-    s.do_atlas_align = atlas_align
     s.write_out = write_out
     s.sched_num = sched
     s.prefix = prefix
     s.scaling = scale
     s.fov = fov
+    s.ct = ct
+    s.crop = crop
     if linear:
         s.max_iter = 0
         s.prefix = 'l' + s.prefix
