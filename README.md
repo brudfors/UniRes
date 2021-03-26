@@ -48,7 +48,7 @@ Three 1 mm isotropic images are written to the same folder as the input
  
 Algorithm options can be displayed by:
 ``` bash
-unires -h
+unires --help
 ```
 As an example, the voxel size of the super-resolved data is here set to
  1.5 mm isotropic:
