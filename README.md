@@ -37,28 +37,28 @@ pip install .
 
 ### 1.2. Example use case
 
-Running *UniRes* should be straight forward. Let's say you have three 
-thick-sliced MR images: `T1.nii.gz`, `T2.nii.gz` and `PD.nii.gz`, then 
-simply run `unires.py` in the terminal as:
+Running *UniRes* is straight forward. Let's say you have three 
+MR images: `T1.nii.gz`, `T2.nii.gz` and `PD.nii.gz`, then 
+simply run `unires` in the terminal as:
 ``` bash
-python unires.py T1.nii.gz T2.nii.gz PD.nii.gz
+unires T1.nii.gz T2.nii.gz PD.nii.gz
 ```
 Three 1 mm isotropic images are written to the same folder as the input
  data, prefixed `'ur_'`. 
  
 Algorithm options can be displayed by:
 ``` bash
-python unires.py --help
+unires --help
 ```
 As an example, the voxel size of the super-resolved data is here set to
  1.5 mm isotropic:
 ``` bash
-python unires.py --vx 1.5 T1.nii.gz T2.nii.gz PD.nii.gz
+unires --vx 1.5 T1.nii.gz T2.nii.gz PD.nii.gz
 ```
 There is also an option that makes images registered and defined on the same grid, 
 **across subjects**, where the grid size is optimal from a CNN fitting perspective:
 ``` bash
-python unires.py --common_output T1.nii.gz T2.nii.gz PD.nii.gz
+unires --common_output T1.nii.gz T2.nii.gz PD.nii.gz
 ```
 
 ## 2. Running through NVIDIA Docker
