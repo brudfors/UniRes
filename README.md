@@ -60,6 +60,11 @@ There is also an option that makes images registered and defined on the same gri
 ``` bash
 unires --common_output T1.nii.gz T2.nii.gz PD.nii.gz
 ```
+As the unified super-resolution can take a few minutes (on a fast GPU ;), it is possible to instead
+use a trilinear reslice, this is enabled by:
+``` bash
+unires --linear --common_output T1.nii.gz T2.nii.gz PD.nii.gz
+```
 
 ## 2. Running through NVIDIA Docker
 This section describes setting up *UniRes* to run using NVIDIA's Docker 
