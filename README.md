@@ -20,7 +20,7 @@ or directly by interfacing with the **Python** code.
 
 An installation-free demo of UniRes is available in Colab:
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1Z6AsRLpTQxn-3myxOIKBRf6Lv2unqJ6G?usp=sharing "UniRes Colab Demo")
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1UtxRCr486uvDPibOKqfyicGNc-y5edQR?usp=sharing "UniRes Colab Demo")
 
 ## 1. Python
 
