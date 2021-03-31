@@ -92,7 +92,7 @@ class settings:
         self.prefix: str = 'ur_'  # Prefix for reconstructed image(s)
         self.profile_ip: int = 2  # In-plane slice profile (0=rect|1=tri|2=gauss)
         self.profile_tp: int = 0  # Through-plane slice profile (0=rect|1=tri|2=gauss)
-        self.reg_scl: float = 5.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
+        self.reg_scl: float = 10.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
         self.rho: float = None  # ADMM step-size, if None -> estimate is made
         self.rho_scl: float = 1.0  # Scaling of ADMM step-size
         self.rigid_basis = None  # Rigid transformation basis, defined in init_reg()
