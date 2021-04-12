@@ -71,7 +71,7 @@ class settings:
         self.ct: bool = False  # Data could be CT (if contain negative values)
         self.device: str = 'cuda'  # PyTorch device name
         self.diff: str = 'forward'  # Gradient difference operator (forward|backward|central)
-        self.dir_out: str = None  # Directory to write output, if None uses same as input (output is prefixed 'y_')
+        self.dir_out: str = None  # Directory to write output, if None uses same as input (output is prefixed 'ur_')
         self.do_coreg: bool = True  # Coregistration of input images
         self.do_atlas_align: bool = False  # Align images to an atlas space
         self.do_print: int = 1  # Print progress to terminal (0, 1, 2, 3)
