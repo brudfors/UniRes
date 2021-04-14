@@ -148,8 +148,8 @@ def _fix_affine(x, sett):
                     [x[c][n].dat, x[c][n].mat], device=sett.device)
                 x[c][n].dim = x[c][n].dat.shape
                 if x[c][n].label is not None:
-                    x[c][n].label, _, _ = reset_origin(
-                        [x[c][n].label, x[c][n].mat], device=sett.device,
+                    x[c][n].label[0], _, _ = reset_origin(
+                        [x[c][n].label[0], x[c][n].mat], device=sett.device,
                         interpolation=0)
                 cnt += 1
     _print_info('fix-affine', sett, cnt)
