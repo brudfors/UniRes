@@ -144,13 +144,18 @@ def _fix_affine(x, sett):
     for c in range(len(x)):
         for n in range(len(x[c])):
             if x[c][n].ct and sett.do_res_origin:
-                x[c][n].dat, x[c][n].mat, _ = reset_origin(
-                    [x[c][n].dat, x[c][n].mat], device=sett.device)
-                x[c][n].dim = x[c][n].dat.shape
+                # Reset image affine
+                omat = x[c][n].mat.clone()
+                x[c][n].dat, nmat, _ = reset_origin(
+                    [x[c][n].dat, omat], device=sett.device)
+                # Do label?
                 if x[c][n].label is not None:
                     x[c][n].label[0], _, _ = reset_origin(
-                        [x[c][n].label[0], x[c][n].mat], device=sett.device,
-                        interpolation=0)
+                        [x[c][n].label[0], omat], device=sett.device, interpolation=0)
+                # Update dimension and affine
+                x[c][n].dim = x[c][n].dat.shape
+                x[c][n].mat = nmat
+                # Increment
                 cnt += 1
     _print_info('fix-affine', sett, cnt)
 
@@ -441,7 +446,7 @@ def _proj_info_add(x, y, sett):
 def _resample_inplane(x, sett):
     """Force in-plane resolution of observed data to be greater or equal to recon vx.
     """
-    if sett.force_inplane_res:
+    if sett.force_inplane_res and sett.max_iter > 0:
         I = torch.eye(4, device=sett.device, dtype=torch.float64)
         for c in range(len(x)):
             for n in range(len(x[c])):
@@ -463,6 +468,9 @@ def _resample_inplane(x, sett):
                 grid = affine_grid(D.type(dat.dtype), dim_x)
                 # resample
                 dat = grid_pull(dat, grid[None, ...], bound='zero', extrapolate=False, interpolation=0)
+                # do label
+                if x[c][n].label is not None:
+                    x[c][n].label[0] = _warp_label(x[c][n].label[0], grid)
                 # assign
                 x[c][n].dat = dat[0, 0, ...]
                 x[c][n].mat = mat_x
