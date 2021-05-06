@@ -139,11 +139,20 @@ When the algorithm has finished, you will find the processed scans in
  the same `data` folder, prefixed `'ur_'`.
 
 ## 3. References
-1. Brudfors M, Balbastre Y, Nachev P, Ashburner J.
-   A Tool for Super-Resolving Multimodal Clinical MRI.
-   2019 arXiv preprint arXiv:1909.01140. 
+``` latex
+@inproceedings{brudfors2018mri,
+  title={MRI super-resolution using multi-channel total variation},
+  author={Brudfors, Mikael and Balbastre, Ya{\"e}l and Nachev, Parashkev and Ashburner, John},
+  booktitle={Annual Conference on Medical Image Understanding and Analysis},
+  pages={217--228},
+  year={2018},
+  organization={Springer}
+}
 
-2. Brudfors M, Balbastre Y, Nachev P, Ashburner J.
-   MRI Super-Resolution Using Multi-channel Total Variation.
-   In Annual Conference on Medical Image Understanding and Analysis
-   2018 Jul 9 (pp. 217-228). Springer, Cham.   
+@article{brudfors2019tool,
+  title={A Tool for Super-Resolving Multimodal Clinical MRI},
+  author={Brudfors, Mikael and Balbastre, Yael and Nachev, Parashkev and Ashburner, John},
+  journal={arXiv preprint arXiv:1909.01140},
+  year={2019}
+}
+```
