@@ -4,10 +4,10 @@ from unires.struct import settings
 from unires.run import preproc
 
 
-def _preproc(pth, atlas_rigid, common_output, device, dir_out, fov,
-         linear, plot_conv, prefix, print_info, reg_scl, res_origin, scale, sched,
-         show_hyperpar, show_jtv, tolerance, unified_rigid, vx,
-         write_out, ct, crop):
+def _preproc(pth, atlas_rigid, common_output, device, dir_out, fov, label_file,
+             label_channel_index, label_repeat_index, linear, plot_conv, prefix,
+             print_info, reg_scl, res_origin, scale, sched, show_hyperpar, show_jtv,
+             tolerance, unified_rigid, vx, write_out, ct, crop):
     """Fit UniRes model from the command line.
 
     Returns
@@ -29,6 +29,8 @@ def _preproc(pth, atlas_rigid, common_output, device, dir_out, fov,
     s.plot_conv = plot_conv
     s.do_print = print_info
     s.reg_scl = reg_scl
+    if isinstance(label_file, str):
+        s.label = (label_file, (label_channel_index, label_repeat_index))
     s.show_hyperpar = show_hyperpar
     s.show_jtv = show_jtv
     s.tolerance = tolerance
@@ -113,6 +115,25 @@ def run():
                         type=str,
                         default=s.fov,
                         help="If crop, uses this field-of-view ('brain'|'head')")
+    #
+    parser.add_argument("--label_file",
+                        type=str,
+                        default=None,
+                        help="Path to manual label file,"
+                             " Nearest Neighbour interpolation will be applied to"
+                             " it [default= None")
+    #
+    parser.add_argument("--label_channel_index",
+                        type=int,
+                        default=0,
+                        help=" Channel index for label"
+                             "[default=0]")
+    #
+    parser.add_argument("--label_repeat_index",
+                        type=int,
+                        default=0,
+                        help=" Repeat index for label"
+                             "[default=0]")
     #
     parser.add_argument("--linear",
                         action='store_true',
