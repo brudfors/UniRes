@@ -238,7 +238,7 @@ def init(data, sett=settings()):
             # Makes recons aligned with same grid, across subjects
             sett.do_atlas_align = True
             sett.crop = True
-            sett.pow = True
+            sett.pow = 256
 
         # Read and format data (images and labels)
         x = _read_data(data, sett)

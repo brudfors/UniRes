@@ -66,6 +66,7 @@ class settings:
         self.cgs_tol: float = 1e-3  # CG tolerance for solving for y
         self.cgs_verbose: bool = False  # CG verbosity (0, 1)
         self.clean_fov: bool = False  # Set voxels outside of low-res FOV, projected in high-res space, to zero
+        self.coreg_params = {'cost_fun': 'nmi', 'group': 'SE', 'samp': (1), 'fwhm': 7, 'mean_space': False}  # parameters for coregistration
         self.crop: bool = False  # Crop input images' FOV to brain in the NITorch atlas
         self.common_output: bool = False  # Makes recons aligned with same grid, across subjects
         self.ct: bool = False  # Data could be CT (if contain negative values)
@@ -88,7 +89,7 @@ class settings:
         self.max_iter: int = 512  # Max algorithm iterations
         self.method = None  # Method name (super-resolution|denoising), defined in format_output()
         self.plot_conv: bool = False  # Use matplotlib to plot convergence in real-time
-        self.pow: bool = False  # Ensure output image dimensions are compatible with encode/decode architecture
+        self.pow: int = 0  # Ensure output image dimensions are a power of two or three, with max dimensions pow
         self.prefix: str = 'ur_'  # Prefix for reconstructed image(s)
         self.profile_ip: int = 2  # In-plane slice profile (0=rect|1=tri|2=gauss)
         self.profile_tp: int = 0  # Through-plane slice profile (0=rect|1=tri|2=gauss)
