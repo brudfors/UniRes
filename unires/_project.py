@@ -67,30 +67,33 @@ def _proj(operator, dat, x, y, method='super-resolution', do=True,
         diff (str, optional): Gradient difference operator, defaults to 'forward'.
 
     Returns:
-        dat (torch.tensor()): Projected image data (dim_y|dim_x).
+        dat_p (torch.tensor()): Projected image data (dim_y|dim_x).
 
     """
     if operator == 'AtA':
+        # AtA
+        # (dat = y)
         if not do:  # return dat
-            operator = 'none'
-        dat1 = rho * y.lam ** 2 * _DtD(dat, vx_y=vx_y, bound=bound, diff=diff)
+            operator = 'none'        
         dat = dat[None, None, ...]
-        dat = x[n].tau * _proj_apply(operator, dat, x[n].po, method=method,
+        # sum likelihood terms
+        dat_p = x[n].tau * _proj_apply(operator, dat, x[n].po, method=method,
                                     bound=bound, interpolation=interpolation)
         for n1 in range(1, len(x)):
-            dat = dat + x[n1].tau * _proj_apply(operator, dat, x[n1].po, method=method,
-                                               bound=bound, interpolation=interpolation)
-        dat = dat[0, 0, ...]
-        dat += dat1
-    else:  # A, At
+            dat_p += x[n1].tau * _proj_apply(operator, dat, x[n1].po, method=method,
+                                             bound=bound, interpolation=interpolation)
+        dat_p = dat_p[0, 0, ...]
+        # add prior term
+        dat_p += rho * y.lam ** 2 * _DtD(dat[0, 0, ...], vx_y=vx_y, bound=bound, diff=diff)
+    else:  
+        # A, At
+        # (dat = x or y)
         if not do:  # return dat
             operator = 'none'
-        dat = dat[None, None, ...]
-        dat = _proj_apply(operator, dat, x[n].po, method=method,
-                         bound=bound, interpolation=interpolation)
-        dat = dat[0, 0, ...]
+        dat_p = _proj_apply(operator, dat[None, None, ...], x[n].po, method=method,
+                         bound=bound, interpolation=interpolation)[0, 0, ...]        
 
-    return dat
+    return dat_p
 
 
 def _proj_apply(operator, dat, po, method='super-resolution', bound='zero', interpolation='linear'):

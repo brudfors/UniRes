@@ -463,7 +463,10 @@ def _resample_inplane(x, sett):
                 # make grid
                 D = I.clone()
                 for i in range(3):
-                    D[i, i] = sett.vx[i] / vx_x[i]
+                    if isinstance(sett.vx, (list, tuple)):
+                        D[i, i] = sett.vx[i] / vx_x[i]
+                    else:
+                        D[i, i] = sett.vx / vx_x[i]
                     if D[i, i] < 1.0:
                         D[i, i] = 1
                 if float((I - D).abs().sum()) < 1e-4:

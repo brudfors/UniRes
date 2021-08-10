@@ -121,7 +121,7 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
     t0 = _print_info('fit-update', sett, 'y', n_iter)  # PRINT
     for c in range(len(x)):  # Loop over channels
         # RHS
-        tmp[:] = 0
+        tmp[:] = 0.0
         for n in range(len(x[c])):  # Loop over observations of channel 'c'
             # _ = _print_info('int', sett, n)  # PRINT
             tmp += x[c][n].tau * _proj('At', x[c][n].dat, x[c], y[c], method=sett.method, do=sett.do_proj,
@@ -409,19 +409,19 @@ def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64):
     vx_y = voxel_size(y[0].mat).float()
     nll_xy = torch.tensor(0, device=sett.device, dtype=torch.float64)
     for c in range(len(x)):
-        # Neg. log-likelihood term
+        # Sum neg. log-likelihood term
         for n in range(len(x[c])):
             msk = x[c][n].dat != 0
             Ay = _proj('A', y[c].dat, x[c], y[c],
                 n=n, method=sett.method, do=sett.do_proj, bound=sett.bound, interpolation=sett.interpolation)
             nll_xy += 0.5 * x[c][n].tau * torch.sum((x[c][n].dat[msk] - Ay[msk]) ** 2, dtype=sum_dtype)
-        # Neg. log-prior term
+        # Sum neg. log-prior term
         Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
         if c > 0:
             nll_y += torch.sum(Dy ** 2, dim=0)
         else:
             nll_y = torch.sum(Dy ** 2, dim=0)
-
+    # Neg. log-prior term
     nll_y = torch.sum(torch.sqrt(nll_y), dtype=sum_dtype)
 
     return nll_xy + nll_y, nll_xy, nll_y
