@@ -41,7 +41,7 @@ However, for running on the GPU, this only works if you ensure that the PyTorch 
 pip install torch==1.9.0+cu111
 NI_COMPILED_BACKEND="C" pip install --no-build-isolation .
 ```
-where the PyTorch version matches the output of `nvcc --version`.
+where the PyTorch CUDA version matches the output of `nvcc --version`.
 
 ### 1.2. Example usage
 
