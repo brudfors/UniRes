@@ -36,7 +36,7 @@ pip install .
 ```shell
 NI_COMPILED_BACKEND="C" pip install --no-build-isolation .
 ```
-However, this only works if you ensure that the PyTorch installation uses the same CUDA version that is on your system; therefore, it might be worth installing PyTorch beforehand, *i.e.*:
+However, for running on the GPU, this only works if you ensure that the PyTorch installation uses the same CUDA version that is on your system; therefore, it might be worth installing PyTorch beforehand, *i.e.*:
 ```shell
 pip install torch==1.9.0+cu111
 NI_COMPILED_BACKEND="C" pip install --no-build-isolation .
