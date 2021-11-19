@@ -23,18 +23,27 @@ An installation-free demo of UniRes is available in Colab:
 
 ## 1. Python
 
-### 1.1. Dependencies
-The *NITorch* package is required to use *UniRes*; simply follow the quickstart 
-guide on its GitHub page: https://github.com/balbasty/nitorch.
-
-Next, activate a *NITorch* virtual environment and move to the *UniRes* project 
-directory. Then install the package using either setuptools or pip:
-``` bash
-cd /path/to/unires
+### 1.1. Installation
+Clone `UniRes`:
+```shell
+git clone https://github.com/brudfors/UniRes
+```
+Then `cd` into the `UniRes` folder and install it by:
+```shell
 pip install .
-``` 
+```
+**OBS**: The algorithm runs much faster if the compiled backend is used:
+```shell
+NI_COMPILED_BACKEND="C" pip install --no-build-isolation .
+```
+However, this only works if you ensure that the PyTorch installation uses the same CUDA version that is on your system; therefore, it might be worth installing torch beforehand, *i.e.*:
+```shell
+pip install torch==1.9.0+cu111
+NI_COMPILED_BACKEND="C" pip install --no-build-isolation .
+```
+Run the `nvcc --version` command to see what CUDA version you are using.
 
-### 1.2. Example use cases
+### 1.2. Example usage
 
 Running *UniRes* is straight forward. Let's say you have three 
 MR images: `T1.nii.gz`, `T2.nii.gz` and `PD.nii.gz`, then 
