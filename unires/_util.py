@@ -171,9 +171,6 @@ def _read_image(data, device='cpu', could_be_ct=False):
         dat = dat.float()
         dat = dat.to(device)
         dat[~torch.isfinite(dat)] = 0
-        # Add some random noise
-        torch.manual_seed(0)
-        dat[dat > 0] += torch.rand_like(dat[dat > 0]) - 1 / 2
         # Affine matrix
         mat = data[1]
         if not isinstance(mat, torch.Tensor):
@@ -184,7 +181,11 @@ def _read_image(data, device='cpu', could_be_ct=False):
         direc = None
         nam = None
     # Get dimensions
+    dat = dat.squeeze()
     dim = tuple(dat.shape)
+    if len(dim) != 3:
+        raise ValueError("Input image dimension required to be 3D, recieved {:}D!". \
+            format(len(dim)))
     # CT?
     if could_be_ct and _is_ct(dat):
         ct = True

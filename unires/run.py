@@ -162,7 +162,7 @@ def fit(x, y, sett):
                 msk_fov = torch.ones(y[c].dim, dtype=torch.bool, device=sett.device)
                 for n in range(len(x[c])):
                     # Map to voxels in low-res image
-                    M = x[c][n].po.rigid.mm(x[c][n].mat).solve(y[c].mat)[0].inverse()
+                    M = torch.linalg.solve(y[c].mat, x[c][n].po.rigid.mm(x[c][n].mat)).inverse()
                     grid = affine_grid(M.type(x[c][n].dat.dtype), y[c].dim)[None, ...]
                     # Mask of low-res image FOV projected into high-res space
                     msk_fov = msk_fov & \

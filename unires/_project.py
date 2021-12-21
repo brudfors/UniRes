@@ -144,10 +144,10 @@ def _proj_apply(operator, dat, po, method='super-resolution', bound='zero', inte
     dim_thick = po.dim_thick
     if method == 'super-resolution':
         dim = dim_yx
-        mat = rigid.mm(mat_yx).solve(mat_y)[0]  # mat_y\rigid*mat_yx
+        mat = torch.linalg.solve(mat_y, rigid.mm(mat_yx))  # mat_y\rigid*mat_yx        
     elif method == 'denoising':
         dim = dim_x
-        mat = rigid.mm(mat_x).solve(mat_y)[0]  # mat_y\rigid*mat_x
+        mat = torch.linalg.solve(mat_y, rigid.mm(mat_x))  # mat_y\rigid*mat_x        
     # Smoothing operator
     if len(ratio) == 3:  # 3D
         conv = lambda x: F.conv3d(x, smo_ker, stride=ratio)
@@ -263,7 +263,7 @@ def _proj_info(dim_y, mat_y, dim_x, mat_x, rigid=None,
             po.dim_y = D_y.inverse()[:ndim, :ndim].mm(po.dim_y[..., None]).floor().squeeze()
         po.vx_x = voxel_size(po.mat_x)
     # Make intermediate
-    ratio = torch.solve(po.mat_x, po.mat_y)[0]  # mat_y\mat_x
+    ratio = torch.linalg.solve(po.mat_y, po.mat_x)  # mat_y\mat_x
     ratio = (ratio[:ndim, :ndim] ** 2).sum(0).sqrt()
     ratio = ratio.ceil().clamp(1)  # ratio low/high >= 1
     mat_yx = torch.cat((ratio, torch.ones(1, device=device, dtype=dtype))).diag()
@@ -278,7 +278,7 @@ def _proj_info(dim_y, mat_y, dim_x, mat_x, rigid=None,
     po.smo_ker = smo_ker
     # Add offset to intermediate space
     off = torch.tensor(smo_ker.shape[-ndim:], dtype=dtype, device=device)
-    off = -(off - 1) // 2  # set offset
+    off = torch.div(-(off - 1), 2, rounding_mode='floor')  # set offset
     mat_off = torch.eye(ndim + 1, dtype=torch.float64, device=device)
     mat_off[:ndim, -1] = off
     po.dim_yx = po.dim_yx + 2 * torch.abs(off)

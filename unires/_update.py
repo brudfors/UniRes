@@ -142,7 +142,7 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
         cg(A=lhs, b=tmp, x=y[c].dat,
            verbose=sett.cgs_verbose,
            max_iter=sett.cgs_max_iter,
-           stop='residuals',
+           stop='max_gain',
            inplace=True,
            precond=precond,
            tolerance=sett.cgs_tol)  # OBS: y[c].dat is here updated in-place
@@ -297,7 +297,7 @@ def _update_scaling(x, y, sett, max_niter_gn=1, num_linesearch=4, verbose=0):
             mat_yx = x[c][n_x].po.mat_yx
             mat_y = x[c][n_x].po.mat_y
             rigid = _expm(x[c][n_x].rigid_q, sett.rigid_basis)
-            mat = rigid.mm(mat_yx).solve(mat_y)[0]  # mat_y\rigid*mat_yx
+            mat = torch.linalg.solve(mat_y, rigid.mm(mat_yx))  # mat_y\rigid*mat_yx            
             # Observed data
             dat_x = x[c][n_x].dat
             msk = dat_x != 0
@@ -494,7 +494,7 @@ def _rigid_match(dat_x, dat_y, po, tau, rigid, sett, CtC=None, diff=False, verbo
         mat = mat_x
 
     # Get grid
-    mat = rigid.mm(mat).solve(mat_y)[0]  # mat_y\rigid*mat
+    mat = torch.linalg.solve(mat_y, rigid.mm(mat))  # mat_y\rigid*mat    
     grid = affine_grid(mat.type(torch.float32), dim, jitter=False)
 
     # Warp y and compute spatial derivatives
@@ -619,7 +619,7 @@ def _update_rigid_channel(xc, yc, sett, max_niter_gn=1, num_linesearch=4,
             d_rigid = d_rigid.permute((1, 2, 0))  # make compatible with old affine_basis
             d_rigid_q = torch.zeros(4, 4, num_q, device=device, dtype=torch.float64)
             for i in range(num_q):
-                d_rigid_q[:, :, i] = d_rigid[:, :, i].mm(mat).solve(po.mat_y)[0]  # mat_y\d_rigid*mat
+                d_rigid_q[:, :, i] = torch.linalg.solve(po.mat_y, d_rigid[:, :, i].mm(mat))  # mat_y\d_rigid*mat                
 
             # Compute gradient and Hessian
             gr = torch.zeros(num_q, 1, device=device, dtype=torch.float64)
@@ -661,7 +661,7 @@ def _update_rigid_channel(xc, yc, sett, max_niter_gn=1, num_linesearch=4,
             # Hes += 1e-5*Hes.diag().max()*torch.eye(num_q, dtype=Hes.dtype, device=device)
 
             # Compute Gauss-Newton update step
-            Update = gr.solve(Hes)[0][:, 0]
+            Update = torch.linalg.solve(Hes, gr)[:, 0]
 
             # Do update..
             old_ll = ll.clone()

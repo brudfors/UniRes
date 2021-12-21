@@ -75,7 +75,7 @@ def _crop_y(y, sett):
     mat_mu = mat_mu.mm(mat_vx)
     dim_mu = mat_vx[:3, :3].inverse().mm(dim_mu[:, None]).floor().squeeze()
     # Make output grid
-    M = mat_mu.solve(mat_y)[0].type(y[0].dat.dtype)
+    M = torch.linalg.solve(mat_y, mat_mu).type(y[0].dat.dtype)
     grid = affine_grid(M, dim_mu)[None, ...]
     # Crop
     for c in range(len(y)):
@@ -122,9 +122,13 @@ def _estimate_hyperpar(x, sett):
                 mu_fg = torch.tensor(4096, device=dat.device, dtype=dat.dtype)
             else:
                 # Get noise and foreground statistics
-                sd_bg, sd_fg, mu_bg, mu_fg = estimate_noise(dat, num_class=2, show_fit=sett.show_hyperpar,
-                                                            fig_num=100 + cnt)
-                mu_bg = torch.tensor(0.0, device=dat.device, dtype=dat.dtype)
+                prm_noise, prm_not_noise = estimate_noise(
+                    dat, num_class=2, show_fit=sett.show_hyperpar,fig_num=100 + cnt
+                )
+                sd_bg = prm_noise['sd']
+                sd_fg = prm_not_noise['sd']
+                mu_bg = prm_noise['mean']
+                mu_fg = prm_not_noise['mean']
             # Set values
             x[c][n].sd = sd_bg.float()
             x[c][n].tau = 1 / sd_bg.float() ** 2
@@ -328,7 +332,7 @@ def _init_reg(x, sett):
         i = 0
         for c in range(len(x)):
             for n in range(len(x[c])):
-                imgs[i][1] = imgs[i][1].solve(mat_a[i, ...])[0]
+                imgs[i][1] = torch.linalg.solve(mat_a[i, ...], imgs[i][1])
                 i += 1
         _print_info('init-reg', sett, 'co', 'finished', N, t0)
 
@@ -343,7 +347,7 @@ def _init_reg(x, sett):
         i = 0
         for c in range(len(x)):
             for n in range(len(x[c])):
-                imgs[i][1] = imgs[i][1].solve(mat_a)[0]
+                imgs[i][1] = torch.linalg.solve(mat_a, imgs[i][1])
                 i += 1
 
     # Modify image affine (label uses the same as the image, so no need to modify that one)
@@ -376,7 +380,7 @@ def _init_y_dat(x, y, sett):
             # Get image data
             dat = x[c][n].dat[None, None, ...]
             # Make output grid
-            mat = mat_y.solve(x[c][n].mat)[0]  # mat_x\mat_y
+            mat = torch.linalg.solve(x[c][n].mat, mat_y)  # mat_x\mat_y            
             grid = affine_grid(mat.type(dat.dtype), dim_y)
             # Do resampling
             mn = torch.min(dat)
@@ -402,7 +406,7 @@ def _init_y_label(x, y, sett):
         n = 0
         if x[c][n].label is not None:
             # Make output grid
-            mat = mat_y.solve(x[c][n].mat)[0]  # mat_x\mat_y
+            mat = torch.linalg.solve(x[c][n].mat, mat_y)  # mat_x\mat_y
             grid = affine_grid(mat.type(x[c][n].dat.dtype), dim_y)
             # Do resampling
             y[c].label = _warp_label(x[c][n].label[0], grid)
