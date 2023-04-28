@@ -137,17 +137,20 @@ def fit(x, y, sett):
             # ----------
             # Coarse-to-fine scaling of regularisation
             # ----------
-            if cnt_scl + 1 < len(sett.reg_scl) and cnt_scl_iter > 16 and\
-                    gain.abs() < 1e-3:
+            if cnt_scl + 1 < len(sett.reg_scl) and cnt_scl_iter > 16 and gain.abs() < 1e-3:
                 countdown1 -= 1
                 if countdown1 == 0:
                     cnt_scl_iter = 0
                     cnt_scl += 1
                     # Coarse-to-fine scaling of lambda
+                    oreg = float(y[c].lam.cpu())
                     for c in range(len(x)):
                         y[c].lam = sett.reg_scl[cnt_scl] * y[c].lam0
+                    nreg = float(y[c].lam.cpu())
                     # Also update ADMM step-size
-                    rho = _step_size(x, y, sett)
+                    rho = _step_size(x, y, sett)                                        
+                    if sett.do_print >= 1:
+                        print(f"OBS: Regularisation changed from {oreg:.2E} to {nreg:.2E}")
             else:
                 countdown1 = 6
 
