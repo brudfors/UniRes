@@ -7,6 +7,6 @@ dependencies:
   - pytorch=1.5
   - cudatoolkit=10.1
   - nitorch
-  - nibabel
+  - nibabel=4.0.2
   - pip
   - matplotlib
