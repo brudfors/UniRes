@@ -316,7 +316,7 @@ def _init_reg(x, sett):
     # Set rigid affine basis
     sett.rigid_basis = affine_basis(
         group='SE', device=sett.device, dtype=torch.float64)
-    fix = 0  # Fixed image index
+    fix =sett.fix  # Fixed image index
 
     # Make input for nitorch affine align
     imgs = []

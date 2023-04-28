@@ -78,6 +78,7 @@ class settings:
         self.do_print: int = 1  # Print progress to terminal (0, 1, 2, 3)
         self.do_proj: bool = None  # Use projection matrices, defined in format_output()
         self.do_res_origin: bool = False  # Resets origin, if CT data
+        self.fix: int = 0  # Fixed image index for atlas alignment
         self.force_inplane_res: bool = False  # Force in-plane resolution of observed data to be greater or equal to recon vx
         self.fov: str = 'brain'  # If crop=True, uses this field-of-view ('brain'|'head').
         self.gap: float = 0.0  # Slice gap, between 0 and 1
@@ -93,13 +94,13 @@ class settings:
         self.prefix: str = 'ur_'  # Prefix for reconstructed image(s)
         self.profile_ip: int = 2  # In-plane slice profile (0=rect|1=tri|2=gauss)
         self.profile_tp: int = 0  # Through-plane slice profile (0=rect|1=tri|2=gauss)
-        self.reg_scl: float = 4.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
+        self.reg_scl: float = 1.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
         self.rho: float = None  # ADMM step-size, if None -> estimate is made
         self.rho_scl: float = 1.0  # Scaling of ADMM step-size
         self.rigid_basis = None  # Rigid transformation basis, defined in init_reg()
         self.rigid_mod: int = 1  # Update rigid every rigid_mod iteration
         self.rigid_samp: int = 1  # Level of sub-sampling for estimating rigid registration parameters
-        self.scaling: bool = True  # Optimise even/odd slice scaling
+        self.scaling: bool = False  # Optimise even/odd slice scaling
         self.sched_num: int = 3  # Number of coarse-to-fine scalings
         self.show_hyperpar: bool = False  # Use matplotlib to visualise hyper-parameter estimates
         self.show_jtv: bool = False  # Show the joint total variation (JTV)
