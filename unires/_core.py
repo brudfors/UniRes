@@ -328,12 +328,13 @@ def _init_reg(x, sett):
         # Align images, pairwise, to fixed image (fix)
         t0 = _print_info('init-reg', sett, 'co', 'begin', N)
         mat_a = affine_align(imgs, **sett.coreg_params, fix=fix, device=sett.device)[1]
+        sett.mat_coreg = mat_a
         # Apply coreg transform
         i = 0
         for c in range(len(x)):
             for n in range(len(x[c])):
                 imgs[i][1] = torch.linalg.solve(mat_a[i, ...], imgs[i][1])
-                i += 1
+                i += 1        
         _print_info('init-reg', sett, 'co', 'finished', N, t0)
 
     if sett.do_atlas_align:
@@ -342,6 +343,7 @@ def _init_reg(x, sett):
         t0 = _print_info('init-reg', sett, 'atlas', 'begin', N)
         imgs1 = [imgs[fix]]
         _, mat_a, _, mat_cso = atlas_align(imgs1, rigid=sett.atlas_rigid, device=sett.device)
+        sett.mat_atlas = mat_a
         _print_info('init-reg', sett, 'atlas', 'finished', N, t0)
         # Apply atlas registration transform
         i = 0

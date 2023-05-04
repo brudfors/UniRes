@@ -169,9 +169,9 @@ def fit(x, y, sett):
                     grid = affine_grid(M.type(x[c][n].dat.dtype), y[c].dim)[None, ...]
                     # Mask of low-res image FOV projected into high-res space
                     msk_fov = msk_fov & \
-                              (grid[0, ..., 0] >= 1) & (grid[0, ..., 0] <= x[c][n].dim[0]) & \
-                              (grid[0, ..., 1] >= 1) & (grid[0, ..., 1] <= x[c][n].dim[1]) & \
-                              (grid[0, ..., 2] >= 1) & (grid[0, ..., 2] <= x[c][n].dim[2])
+                              (grid[0, ..., 0] >= 0) & (grid[0, ..., 0] < x[c][n].dim[0]) & \
+                              (grid[0, ..., 1] >= 0) & (grid[0, ..., 1] < x[c][n].dim[1]) & \
+                              (grid[0, ..., 2] >= 0) & (grid[0, ..., 2] < x[c][n].dim[2])
                     # if x[c][n].ct:
                     #     # Resample low-res image into high-res space
                     #     dat_c = grid_pull(x[c][n].dat[None, None, ...],
