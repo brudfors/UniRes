@@ -8,13 +8,13 @@ from exp_utils import get_sett
 # Parameters
 # ----------
 # tumour scans
-ddata_lgg = '/media/smajjk/Storage/backup/Data/Challenges/BRATS-raw/nii-raw-unires-validation/TCGA-LGG'
-ddata_gbm = '/media/smajjk/Storage/backup/Data/Challenges/BRATS-raw/nii-raw-unires-validation/TCGA-GBM'
+ddata_lgg = '/workspace/data/data/tumor/lgg'
+ddata_gbm = '/workspace/data/data/tumor/gbm'
 # torch device
 device = 'cuda'
 # output stuff
-dir_results_lgg = '/media/smajjk/Storage/projects/unires/tumor/recons/LGG'
-dir_results_gbm = '/media/smajjk/Storage/projects/unires/tumor/recons/GBM'
+dir_results_lgg = '/workspace/data/experiments/tumor/recons/LGG'
+dir_results_gbm = '/workspace/data/experiments/tumor/recons/GBM'
 os.makedirs(dir_results_lgg, exist_ok=True)
 os.makedirs(dir_results_gbm, exist_ok=True)
 # testing?
@@ -54,7 +54,7 @@ for i, pth_x in enumerate(pths_gbm):
     print("=" * 32)
     print(f"pth_x[0]={pth_x[0]}\npth_x[1]={pth_x[1]}\npth_x[2]={pth_x[2]}")
     print("=" * 32)
-    
+
     folder = os.path.dirname(pth_x[0]).split('/')[-1]
     
     # reslice

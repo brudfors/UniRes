@@ -12,10 +12,10 @@ RUN pip install numpy nibabel==4.0.2
 
 WORKDIR /workspace
 RUN git clone -n https://github.com/balbasty/nitorch.git
+WORKDIR /workspace/nitorch
 RUN git checkout ad022e529a3631967f9103431231689bd12f6242
 ARG MKL_SERVICE_FORCE_INTEL=1
 ARG NI_COMPILED_BACKEND="C"
-WORKDIR /workspace/nitorch
 RUN pip install .
 
 WORKDIR /workspace

@@ -7,11 +7,11 @@ from exp_utils import get_sett
 # Parameters
 # ----------
 # wmh scans
-ddata = '/media/smajjk/Storage/backup/Data/Challenges/WMH/preproc'
+ddata = '/workspace/data/data/wmhi'
 # torch device
 device = 'cuda'
 # output stuff
-dir_results = '/media/smajjk/Storage/projects/unires/wmhi/recons'
+dir_results = '/workspace/data/experiments/wmhi/recons'
 os.makedirs(dir_results, exist_ok=True)
 # testing?
 test = False
