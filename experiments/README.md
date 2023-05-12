@@ -40,10 +40,10 @@ docker build . -t mbrudfors/unires
 
 Docker run:
 ```sh
-docker run --gpus 3 \
+docker run --gpus '"device=3"' \
     -v /home/mbrudfors/Code/UniRes:/workspace/UniRes \
     -v /raid/mbrudfors/unires:/workspace/data \
-    --rm --interactive --tty mbrudfors:unires
+    --rm --interactive --tty mbrudfors/unires
 
 cd /workspace/UniRes
 pip install -e .
