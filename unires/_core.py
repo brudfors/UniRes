@@ -123,7 +123,7 @@ def _estimate_hyperpar(x, sett):
             else:
                 # Get noise and foreground statistics
                 prm_noise, prm_not_noise = estimate_noise(
-                    dat, num_class=2, show_fit=sett.show_hyperpar,fig_num=100 + cnt
+                    dat[dat >= 0], num_class=2, show_fit=sett.show_hyperpar,fig_num=100 + cnt
                 )
                 sd_bg = prm_noise['sd']
                 sd_fg = prm_not_noise['sd']
