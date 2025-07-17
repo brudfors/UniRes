@@ -54,7 +54,7 @@ def _print_info(info, sett, *argv):
                                                 sett.tolerance,
                                                 sett.sched_num))
         elif info in 'step_size':
-            print('\nADMM step-size={:0.4f}'.format(argv[0]))
+            print('\nADMM step-size={:0.4f} | Regularisation scaling={}'.format(argv[0], sett.reg_scl.cpu()))
         elif info == 'filenames':
             print('')
             print('Input')

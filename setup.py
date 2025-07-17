@@ -7,11 +7,12 @@ setup(
     description='UniRes: Unified Super-Resolution of Medical Imaging Data',    
     entry_points={'console_scripts': ['unires=unires._cli:run']},
     install_requires=[
-        "nitorch[all]@git+https://github.com/balbasty/nitorch#2c7739ab856f07148be310f00d6690ee9378c8cf",
+        "numpy==1.26.0",
+        "nitorch[all]@git+https://github.com/balbasty/nitorch#8067d60542642a39ab6c6eb5e1157373a9d3dcc3",        
     ],
     name='unires',    
     packages=find_packages(),
-    python_requires='>=3.8',
+    python_requires='>=3.10',
     url='https://github.com/brudfors/UniRes',
-    version='0.1',        
+    version='0.3',        
 )

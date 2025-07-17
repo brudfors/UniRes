@@ -1,150 +1,113 @@
 # Unified Super-Resolution in PyTorch
+
+This repository implements an algorithm based on a unified model for super-resolving medical images (MR images and CT scans). 
+
 <img style="float: right;" src="https://github.com/brudfors/UniRes/blob/master/figures/example_2.png" width="100%" height="100%"> 
 
-This repository implements a unified model for super-resolving medical images (MRI and CT scans), which combines: super-resolution with a multi-channel denoising 
-prior, rigid registration and a correction for interleaved slice acquisition. 
-The archetype use-case is when having multiple scans of the same subject 
-(e.g., T1w, T2w and FLAIR MRIs) and an analysis requires these scans to be 
-represented on the same grid (i.e., having the same image size, affine matrix 
-and voxel size). By default, the model reconstructs 1 mm isotropic images 
-with a field-of-view that contains all input scans; however, this voxel 
-size can be customised with the possibility of sub-millimetric reconstuctions. 
-The model additionally supports multiple repeats of each MR sequence. 
-There is an option that makes images registered and defined on the same grid, 
-**across subjects**, where the grid size is optimal from a CNN fitting perspective.
-The implementation is written in *PyTorch* and should therefore execute fast 
-on the GPU. The software can be run either through **Docker** -- which ensures 
-the correct library and OS versions are used, plus requires no compilation -- 
-or directly by interfacing with the **Python** code.
+The algorithm combines:
 
-An installation-free demo of UniRes is available in Colab:
+* Image super-resolution with a multi-channel denoising prior
+* Rigid registration 
+* Correction for interleaved slice acquisition
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1UtxRCr486uvDPibOKqfyicGNc-y5edQR?usp=sharing "UniRes Colab Demo")
+These parameters are fit using an alternating optimization method, which iteratively converges to the optimal values. An initial registration step additionally ensures that all input images are well aligned before optimization begins.
 
-## 1. Python
+The algorithm is best used when having multiple scans of the same subject (e.g., T1w, T2w and FLAIR MRIs) and an analysis requires these scans to be represented on the same grid (i.e., having the same image size, affine matrix and voxel size). 
+
+By default, the model reconstructs 1 mm isotropic images with a field-of-view that contains all input scans; however, this voxel size can be customised with the possibility of **sub-millimetric reconstuctions**. The model additionally supports multiple repeats of each MR sequence. There is an option that makes images registered and defined on the same grid, **across subjects**, where the grid size is optimal from a CNN fitting perspective.
+
+See instructions below for both local and Docker installation. Additionally, there are Jupyter notebooks in the `demos` folder showing sample functionality.
+
+## 1. Local Install
+
+Follow the below instrutions to install `UniRes` locally (i.e., bare metal). 
+
+Note that the algorithm runs faster if `nitorch` (dependency) uses its compiled backend (see Section 1.1.1). Howevever, the compile time is quite slow, but only required once.
 
 ### 1.1. Installation
 Clone `UniRes`:
 ```shell
 git clone https://github.com/brudfors/UniRes
 ```
-Then `cd` into the `UniRes` folder and install it by:
+If you do not want to use the `nitorch` compiled backend (recommended), then `cd` into the `UniRes` folder and install it by:
 ```shell
-pip install .
+pip install -e .
 ```
-**OBS**: The algorithm runs much faster if the compiled backend is used:
+
+#### 1.1.1. Using `nitorch` compiled backend
+
+Prerequisites are that CUDA is installed and that `nvcc` is on the system path, and that your `torch` installation was built with the same CUDA version. 
+
+For example, if:
 ```shell
-NI_COMPILED_BACKEND="C" pip install --no-build-isolation .
+$ nvcc --version
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2024 NVIDIA Corporation
+Built on Fri_Jun_14_16:34:21_PDT_2024
+Cuda compilation tools, release 12.6, V12.6.20
+Build cuda_12.6.r12.6/compiler.34431801_0
 ```
-However, for running on the GPU, this only works if you ensure that the PyTorch installation uses the same CUDA version that is on your system; therefore, it might be worth installing PyTorch beforehand, *i.e.*:
+then install `torch` like:
 ```shell
-pip install torch==1.9.0+cu111
-NI_COMPILED_BACKEND="C" pip install --no-build-isolation .
+pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu126 
 ```
-where the PyTorch CUDA version matches the output of `nvcc --version`.
+(the correct `torch` install command can be found under *Install Torch* at [https://pytorch.org/](https://pytorch.org/))
+
+Now install `UniRes` with:
+```shell
+NI_COMPILED_BACKEND="C" pip install --no-build-isolation -e .
+```
 
 ### 1.2. Example usage
+Note that these examples are only for demonstration purposes, as the [BrainWeb](https://brainweb.bic.mni.mcgill.ca/brainweb/) images used are already 1 mm isotropic and noise free.
 
-Running *UniRes* is straight forward. Let's say you have three 
-MR images: `T1.nii.gz`, `T2.nii.gz` and `PD.nii.gz`, then 
-simply run `unires` in the terminal as:
-``` bash
-unires T1.nii.gz T2.nii.gz PD.nii.gz
+Super-resolve and align three MR images to 1 mm isotropic voxels:
+``` shell
+unires --vx 1.0 data/t1_icbm_normal_1mm_pn0_rf0.nii.gz data/t2_icbm_normal_1mm_pn0_rf0.nii.gz data/pd_icbm_normal_1mm_pn0_rf0.nii.gz
 ```
-Three 1 mm isotropic images are written to the same folder as the input
- data, prefixed `'ur_'`. 
+The processed images are written to the same folder as the input data, prefixed `'u_'`. 
  
-Algorithm options can be displayed by:
-``` bash
+Instead of super-resolution it is possible to instead use a trilinear reslice:
+``` shell
+unires --linear --vx 1.0 data/t1_icbm_normal_1mm_pn0_rf0.nii.gz data/t2_icbm_normal_1mm_pn0_rf0.nii.gz data/pd_icbm_normal_1mm_pn0_rf0.nii.gz
+```
+
+It is also possible to make images aligned and defined on the same grid **across subjects**, where the grid size is optimal from a CNN fitting perspective:
+``` shell
+unires --common_output data/t1_icbm_normal_1mm_pn0_rf0.nii.gz data/t2_icbm_normal_1mm_pn0_rf0.nii.gz data/pd_icbm_normal_1mm_pn0_rf0.nii.gz
+```
+
+There are plenty of other options that can be seen with:
+``` shell
 unires --help
 ```
-As an example, the voxel size of the super-resolved data is here set to
- 1.5 mm isotropic:
-``` bash
-unires --vx 1.5 T1.nii.gz T2.nii.gz PD.nii.gz
+
+## 2. Docker Install
+
+This section describes how to run `UniRes` using Docker. 
+
+Prerequisites are that the NVIDIA GPU driver and the NVIDIA Container Toolkit are installed on the host machine.
+
+### 2.1. Build UniRes Docker image
+First, build the `UniRes` Docker image with:
+``` shell
+docker build --rm --tag unires:0.3 .
 ```
-There is also an option that makes images registered and defined on the same grid, 
-**across subjects**, where the grid size is optimal from a CNN fitting perspective:
-``` bash
-unires --common_output T1.nii.gz T2.nii.gz PD.nii.gz
-```
-As the unified super-resolution can take a few minutes (on a fast GPU ;), it is possible to instead
-use a trilinear reslice, this is enabled by:
-``` bash
-unires --linear --common_output T1.nii.gz T2.nii.gz PD.nii.gz
+The build will use the compiled backend of `nitorch`, meaning it can take quite some time for the build to complete. 
+
+If you get an error that the host GPU and its driver are not available, make sure that the environment variable `TORCH_CUDA_ARCH_LIST` in the `Dockerfile` includes a [CUDA compute capability](https://developer.nvidia.com/cuda-gpus) supported by your GPU. You can see the compute capability of your GPU with:
+```sh
+ nvidia-smi --query-gpu=compute_cap --format=csv
 ```
 
-## 2. Running through NVIDIA Docker
-This section describes setting up *UniRes* to run using NVIDIA's Docker 
-engine on Ubuntu. As long as the NVIDIA Docker engine can be installed on 
-MS Windows or Mac OSX there is no reason that these operating systems could 
-not also be used. However, setting it up for Windows and OSX is not 
-described here.
+### 2.2. Example usage
+Note that this example is only for demonstration purposes, as the [BrainWeb](https://brainweb.bic.mni.mcgill.ca/brainweb/) images used are already 1 mm isotropic and noise free.
 
-### 2.1. Install NVIDIA driver and Docker
-Make sure that you have **installed** the **NVIDIA driver** and **Docker 
-engine** for **your Linux distribution** (you do not need to install the 
-CUDA Toolkit on the host system). These commands should install Docker:
-``` bash
-curl https://get.docker.com | sh
-sudo systemctl start docker && sudo systemctl enable docker
+Process the three simulated BrainWeb MR images in the `data` folder:
+``` shell
+docker run -it --rm --gpus all -v $PWD/data:/data unires:0.3 --vx 1.0 /data/t1_icbm_normal_1mm_pn0_rf0.nii.gz /data/t2_icbm_normal_1mm_pn0_rf0.nii.gz /data/pd_icbm_normal_1mm_pn0_rf0.nii.gz
 ```
-Regarding the NVIDIA driver, I personally like the installation guide in 
-[1] (step 2). Although this guide is targeted at Ubuntu 19.04, it should 
-generalise to other Debian/Ubuntu versions (I used it for Ubuntu 18.04). 
-
-### 2.2. Install the NVIDIA Docker engine
-Execute the following commands to install the NVIDIA Docker engine:
-``` bash
-distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
-curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
-curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | sudo tee /etc/apt/sources.list.d/nvidia-docker.list
-sudo apt-get update
-sudo apt-get install -y nvidia-docker2
-```
-Next, edit/create `/etc/docker/daemon.json` with content (e.g., by `sudo vim /etc/docker/daemon.json`):
-```
-{
-    "runtimes": {
-        "nvidia": {
-            "path": "/usr/bin/nvidia-container-runtime",
-            "runtimeArgs": []
-         } 
-    },
-    "default-runtime": "nvidia" 
-}
-```
-then do:
-``` bash
-sudo systemctl restart docker
-```
-Finally, test that it works by starting *nvidia-smi* in a Docker container:
-``` bash
-sudo docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
-```
-
-### 2.3. Build UniRes Docker image
-`cd` to the content of the `docker` folder and run the following command to 
-build the *UniRes* image:
-``` bash
-docker build --rm --tag unires:1.0 .
-```
-If there are permission issues, the following can help:
-``` bash
-sudo chmod 666 /var/run/docker.sock
-```
-Now you can run *UniRes* via Docker containers started from the `unires:1.0` 
-image!
-
-### 2.4. Process MRI scans through Docker container
-Let's say you have a folder named `data` in your current working directory, 
-which contains two MR images of the same subject: `T1.nii.gz`, `PD.nii.gz`. 
-You can then process these two scans with *UniRes* by executing:
-``` bash
-docker run -it --rm -v $PWD/data:/home/docker/app/data unires:1.0 data/T1.nii.gz data/PD.nii.gz
-```
-When the algorithm has finished, you will find the processed scans in
- the same `data` folder, prefixed `'ur_'`.
+When the algorithm has finished, you will find the processed scans in the same `data` folder, prefixed `'u_'`.
 
 ## 3. References
 ``` latex
