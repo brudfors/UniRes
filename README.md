@@ -79,6 +79,11 @@ It is also possible to make images aligned and defined on the same grid **across
 unires --common_output data/t1_icbm_normal_1mm_pn0_rf0.nii.gz data/t2_icbm_normal_1mm_pn0_rf0.nii.gz data/pd_icbm_normal_1mm_pn0_rf0.nii.gz
 ```
 
+Although the model's hyper parameters are estimated from the data, adjusting the scaling of the regularisation can sometimes be required:
+``` shell
+unires --reg_scl 10 data/t1_icbm_normal_1mm_pn0_rf0.nii.gz data/t2_icbm_normal_1mm_pn0_rf0.nii.gz data/pd_icbm_normal_1mm_pn0_rf0.nii.gz
+```
+
 There are plenty of other options that can be seen with:
 ``` shell
 unires --help
