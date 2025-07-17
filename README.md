@@ -29,7 +29,9 @@ Clone `UniRes`:
 ```shell
 git clone https://github.com/brudfors/UniRes
 ```
-If you do not want to use the `nitorch` compiled backend (recommended), then `cd` into the `UniRes` folder and install it by:
+Then `cd` into the `UniRes`.
+
+We recommend you use the `nitorch` compiled backend (see Section 1.1.1), but if you want a faster install simply do:
 ```shell
 pip install -e .
 ```
