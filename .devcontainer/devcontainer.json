@@ -1,0 +1,11 @@
+{
+  "image": "unires:0.3",
+  "forwardPorts": [8888],
+  "extensions": [
+    "ms-python.python",
+    "ms-toolsai.jupyter"
+  ],
+  "runArgs": [
+    "--gpus=all"
+  ]
+}

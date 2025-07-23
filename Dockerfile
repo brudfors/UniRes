@@ -18,9 +18,6 @@ COPY . .
 # Install unires package and its dependencies
 RUN pip install --upgrade pip setuptools wheel cython
 RUN pip install numpy==1.26.0
-ENV TORCH_CUDA_ARCH_LIST="8.6"
+ENV TORCH_CUDA_ARCH_LIST="8.9"
 ENV NI_COMPILED_BACKEND=C
 RUN pip install --no-build-isolation .
-
-# Set the default command to unires CLI tool (as installed by console_scripts)
-ENTRYPOINT ["unires"]

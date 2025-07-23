@@ -1,18 +1,18 @@
 # Unified Super-Resolution in PyTorch
 
-This repository implements an algorithm based on a unified model for super-resolving medical images (MR images and CT scans). 
+This repository implements an algorithm based on a unified model for super-resolving medical images (MR images and CT scans).
 
-<img style="float: right;" src="https://github.com/brudfors/UniRes/blob/master/figures/example_2.png" width="100%" height="100%"> 
+<img style="float: right;" src="https://github.com/brudfors/UniRes/blob/master/figures/example_2.png" width="100%" height="100%">
 
 The algorithm combines:
 
 * Image super-resolution with a multi-channel denoising prior
-* Rigid registration 
+* Rigid registration
 * Correction for interleaved slice acquisition
 
 These parameters are fit using an alternating optimization method, which iteratively converges to the optimal values. An initial registration step additionally ensures that all input images are well aligned before optimization begins.
 
-The algorithm is best used when having multiple scans of the same subject (e.g., T1w, T2w and FLAIR MRIs) and an analysis requires these scans to be represented on the same grid (i.e., having the same image size, affine matrix and voxel size). 
+The algorithm is best used when having multiple scans of the same subject (e.g., T1w, T2w and FLAIR MRIs) and an analysis requires these scans to be represented on the same grid (i.e., having the same image size, affine matrix and voxel size).
 
 By default, the model reconstructs 1 mm isotropic images with a field-of-view that contains all input scans; however, this voxel size can be customised with the possibility of **sub-millimetric reconstuctions**. The model additionally supports multiple repeats of each MR sequence. There is an option that makes images registered and defined on the same grid, **across subjects**, where the grid size is optimal from a CNN fitting perspective.
 
@@ -20,7 +20,7 @@ See instructions below for both local and Docker installation. Additionally, the
 
 ## 1. Local Install
 
-Follow the below instrutions to install `UniRes` locally (i.e., bare metal). 
+Follow the below instrutions to install `UniRes` locally (i.e., bare metal).
 
 Note that the algorithm runs faster if `nitorch` (dependency) uses its compiled backend (see Section 1.1.1). Howevever, the compile time is quite slow, but only required once.
 
@@ -38,7 +38,7 @@ pip install -e .
 
 #### 1.1.1. Using `nitorch` compiled backend
 
-Prerequisites are that CUDA is installed and that `nvcc` is on the system path, and that your `torch` installation was built with the same CUDA version. 
+Prerequisites are that CUDA is installed and that `nvcc` is on the system path, and that your `torch` installation was built with the same CUDA version.
 
 For example, if:
 ```shell
@@ -51,7 +51,7 @@ Build cuda_12.6.r12.6/compiler.34431801_0
 ```
 then install `torch` like:
 ```shell
-pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu126 
+pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu126
 ```
 (the correct `torch` install command can be found under *Install Torch* at [https://pytorch.org/](https://pytorch.org/))
 
@@ -67,8 +67,8 @@ Super-resolve and align three MR images to 1 mm isotropic voxels:
 ``` shell
 unires --vx 1.0 data/t1_icbm_normal_1mm_pn0_rf0.nii.gz data/t2_icbm_normal_1mm_pn0_rf0.nii.gz data/pd_icbm_normal_1mm_pn0_rf0.nii.gz
 ```
-The processed images are written to the same folder as the input data, prefixed `'u_'`. 
- 
+The processed images are written to the same folder as the input data, prefixed `'u_'`.
+
 Instead of super-resolution it is possible to instead use a trilinear reslice:
 ``` shell
 unires --linear --vx 1.0 data/t1_icbm_normal_1mm_pn0_rf0.nii.gz data/t2_icbm_normal_1mm_pn0_rf0.nii.gz data/pd_icbm_normal_1mm_pn0_rf0.nii.gz
@@ -91,7 +91,7 @@ unires --help
 
 ## 2. Docker Install
 
-This section describes how to run `UniRes` using Docker. 
+This section describes how to run `UniRes` using Docker.
 
 Prerequisites are that the NVIDIA GPU driver and the NVIDIA Container Toolkit are installed on the host machine.
 
@@ -100,7 +100,7 @@ First, build the `UniRes` Docker image with:
 ``` shell
 docker build --rm --tag unires:0.3 .
 ```
-The build will use the compiled backend of `nitorch`, meaning it can take quite some time for the build to complete. 
+The build will use the compiled backend of `nitorch`, meaning it can take quite some time for the build to complete.
 
 If you get an error that the host GPU and its driver are not available, make sure that the environment variable `TORCH_CUDA_ARCH_LIST` in the `Dockerfile` includes a [CUDA compute capability](https://developer.nvidia.com/cuda-gpus) supported by your GPU. You can see the compute capability of your GPU with:
 ```sh
@@ -112,9 +112,11 @@ Note that this example is only for demonstration purposes, as the [BrainWeb](htt
 
 Process the three simulated BrainWeb MR images in the `data` folder:
 ``` shell
-docker run -it --rm --gpus all -v $PWD/data:/data unires:0.3 --vx 1.0 /data/t1_icbm_normal_1mm_pn0_rf0.nii.gz /data/t2_icbm_normal_1mm_pn0_rf0.nii.gz /data/pd_icbm_normal_1mm_pn0_rf0.nii.gz
+docker run -it --rm --gpus all -v $PWD/data:/data unires:0.3 unires --vx 1.0 /data/t1_icbm_normal_1mm_pn0_rf0.nii.gz /data/t2_icbm_normal_1mm_pn0_rf0.nii.gz /data/pd_icbm_normal_1mm_pn0_rf0.nii.gz
 ```
 When the algorithm has finished, you will find the processed scans in the same `data` folder, prefixed `'u_'`.
+
+To easily test the demo notebooks in the `demos` folder, use VS Code and the "Dev Containers: Reopen in Container" command.
 
 ## 3. References
 ``` latex
