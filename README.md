@@ -119,7 +119,7 @@ When the algorithm has finished, you will find the processed scans in the same `
 To easily test the demo notebooks in the `demos` folder, use VS Code and the "Dev Containers: Reopen in Container" command.
 
 ## 3. References
-``` latex
+```BibTex
 @inproceedings{brudfors2018mri,
   title={MRI super-resolution using multi-channel total variation},
   author={Brudfors, Mikael and Balbastre, Ya{\"e}l and Nachev, Parashkev and Ashburner, John},
