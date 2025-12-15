@@ -632,13 +632,14 @@ def _write_data(x, y, sett, jtv=None):
                 nam = x[c][0].nam
             fname = os.path.join(dir_out, prefix_y + nam)
             pth_y.append(fname)
-            _write_image(dat, fname, bids=sett.bids, mat=mat, file=x[c][0].file)
+            _write_image(dat, fname, bids=sett.bids, mat=mat, file=x[c][0].file,
+                         do_print=sett.do_print > 0)
             if y[c].label is not None:
                 # Do label image
                 pth_label = os.path.join(dir_out, prefix_y + 'label_' + nam)
                 label = y[c].label
                 _write_image(label, pth_label, bids=sett.bids, mat=mat,
-                             file=x[c][0].label[1])
+                             file=x[c][0].label[1], do_print=sett.do_print > 0)
         if c == 0:
             dat_y = dat[..., None].clone()
         else:
@@ -653,7 +654,8 @@ def _write_data(x, y, sett, jtv=None):
             nam = x[c][0].nam
         fname = os.path.join(dir_out, prefix_y + nam)
         pth_y.append(fname)
-        _write_image(dat_y, fname, bids=sett.bids, mat=mat, file=x[c][0].file)
+        _write_image(dat_y, fname, bids=sett.bids, mat=mat, file=x[c][0].file,
+                     do_print=sett.do_print > 0)
 
     if sett.write_jtv and jtv is not None:
         # Write JTV

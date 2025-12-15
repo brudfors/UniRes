@@ -213,7 +213,7 @@ def _read_label(x, pth, sett):
 
 
 def _write_image(dat, fname, bids=False, mat=torch.eye(4), file=None,
-                 dtype='float32'):
+                 dtype='float32', do_print=False):
     """ Write data to nifti.
     """
     if bids:
@@ -222,7 +222,8 @@ def _write_image(dat, fname, bids=False, mat=torch.eye(4), file=None,
         fname = os.path.join(p, '_'.join(s[:-1] + ['space-unires'] + [s[-1]]))
 
     savef(dat, fname, like=file, affine=mat)
-
+    if do_print:
+        print(f"Wrote image to: {fname}")
 
 def _is_ct(dat):
     """Is image a CT scan?
