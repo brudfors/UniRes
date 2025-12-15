@@ -84,6 +84,12 @@ Although the model's hyper parameters are estimated from the data, adjusting the
 unires --reg_scl 10 data/t1_icbm_normal_1mm_pn0_rf0.nii.gz data/t2_icbm_normal_1mm_pn0_rf0.nii.gz data/pd_icbm_normal_1mm_pn0_rf0.nii.gz
 ```
 
+Finally, it is possible to do denoising with `UniRes`:
+``` shell
+unires --denoising data/t1_icbm_normal_1mm_pn0_rf0.nii.gz
+```
+if the data has negative values (e.g., CT) add the `--ct` flag.
+
 There are plenty of other options that can be seen with:
 ``` shell
 unires --help

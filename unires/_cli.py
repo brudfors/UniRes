@@ -4,7 +4,7 @@ from unires.struct import settings
 from unires.run import preproc
 
 
-def _preproc(pth, atlas_rigid, common_output, device, dir_out, fov, label_file,
+def _preproc(pth, atlas_rigid, common_output, denoising, device, dir_out, fov, label_file,
              label_channel_index, label_repeat_index, linear, plot_conv, prefix,
              print_info, reg_scl, res_origin, scale, sched, show_hyperpar, show_jtv,
              tolerance, unified_rigid, vx, write_out, ct, crop):
@@ -46,7 +46,9 @@ def _preproc(pth, atlas_rigid, common_output, device, dir_out, fov, label_file,
     s.ct = ct
     s.crop = crop
     if linear:
-        s.max_iter = 0
+        s.max_iter = 0    
+    if denoising:
+        s.vx = 0
 
     # Run UniRes
     dat_y, mat_y, pth_y = preproc(pth, s)
@@ -99,6 +101,10 @@ def run():
     parser.add_argument('--no-crop', dest='crop',
                         action='store_false')
     parser.set_defaults(crop=s.crop)
+    parser.add_argument("--denoising",
+                        action='store_true',
+                        default=False,
+                        help="Apply denoising to input data ")
     #
     parser.add_argument("--device",
                         type=str,
