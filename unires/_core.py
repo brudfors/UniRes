@@ -174,7 +174,6 @@ def _format_y(x, sett):
         y (_output()): Algorithm output struct(s).
 
     """
-    one = torch.tensor(1.0, device=sett.device, dtype=torch.float64)
     vx_y = sett.vx
     if vx_y == 0:
         vx_y = None
