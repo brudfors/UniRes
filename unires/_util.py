@@ -131,13 +131,13 @@ def _print_info(info, sett, *argv):
     return timer()
 
 
-def _read_image(data, device='cpu', could_be_ct=False):
+def _read_image(data, device='cpu', is_ct=False):
     """ Reads image data.
 
     Args:
         data (string|list): Path to file, or list with image data and affine matrix.
         device (string, optional): PyTorch on CPU or GPU? Defaults to 'cpu'.
-        could_be_ct (bool, optional): Could the image be a CT scan?
+        is_ct (bool, optional): CT scan?
 
     Returns:
         dat (torch.tensor()): Image data.
@@ -187,7 +187,7 @@ def _read_image(data, device='cpu', could_be_ct=False):
         raise ValueError("Input image dimension required to be 3D, recieved {:}D!". \
             format(len(dim)))
     # CT?
-    if could_be_ct and _is_ct(dat):
+    if is_ct:
         ct = True
     else:
         ct = False
@@ -223,14 +223,5 @@ def _write_image(dat, fname, bids=False, mat=torch.eye(4), file=None,
 
     savef(dat, fname, like=file, affine=mat)
     if do_print:
-        print(f"Wrote image to: {fname}")
+        print(f"Output saved to: {fname}")
 
-def _is_ct(dat):
-    """Is image a CT scan?
-    """
-    ct = False
-    nm = dat.numel()
-    if torch.sum(dat < -990) > 0.01*nm:
-        ct = True
-
-    return ct
