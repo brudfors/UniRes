@@ -115,20 +115,21 @@ def _estimate_hyperpar(x, sett):
         for n in range(len(x[c])):
             # Get data
             dat = x[c][n].dat
-            if x[c][n].ct:
-                # Estimate noise sd from estimate of FWHM
-                sd_bg = estimate_fwhm(dat, voxel_size(x[c][n].mat), mn=20, mx=50)[1]
-                mu_bg = torch.tensor(0.0, device=dat.device, dtype=dat.dtype)
-                mu_fg = torch.tensor(4096, device=dat.device, dtype=dat.dtype)
-            else:
-                # Get noise and foreground statistics
-                prm_noise, prm_not_noise = estimate_noise(
-                    dat[dat >= 0], num_class=2, show_fit=sett.show_hyperpar,fig_num=100 + cnt
-                )
-                sd_bg = prm_noise['sd']
-                sd_fg = prm_not_noise['sd']
-                mu_bg = prm_noise['mean']
-                mu_fg = prm_not_noise['mean']
+
+            if not x[c][n].ct:
+                # If not CT, ensure non-negative
+                dat = dat[dat >= 0]
+
+            # Get noise and foreground statistics
+            prm_noise, prm_not_noise = estimate_noise(
+                dat, num_class=2, show_fit=sett.show_hyperpar,fig_num=100 + cnt
+            )
+            
+            sd_bg = prm_noise['sd']
+            sd_fg = prm_not_noise['sd']
+            mu_bg = prm_noise['mean']
+            mu_fg = prm_not_noise['mean']
+
             # Set values
             x[c][n].sd = sd_bg.float()
             x[c][n].tau = 1 / sd_bg.float() ** 2
