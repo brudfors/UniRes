@@ -104,7 +104,7 @@ Prerequisites are that the NVIDIA GPU driver and the NVIDIA Container Toolkit ar
 ### 2.1. Build UniRes Docker image
 First, build the `UniRes` Docker image with:
 ``` shell
-docker build --rm --tag unires:0.3 .
+docker build --rm --tag unires:latest .
 ```
 The build will use the compiled backend of `nitorch`, meaning it can take quite some time for the build to complete.
 
@@ -118,7 +118,7 @@ Note that this example is only for demonstration purposes, as the [BrainWeb](htt
 
 Process the three simulated BrainWeb MR images in the `data` folder:
 ``` shell
-docker run -it --rm --gpus all -v $PWD/data:/data unires:0.3 unires --vx 1.0 /data/t1_icbm_normal_1mm_pn0_rf0.nii.gz /data/t2_icbm_normal_1mm_pn0_rf0.nii.gz /data/pd_icbm_normal_1mm_pn0_rf0.nii.gz
+docker run -it --rm --gpus all -v $PWD/data:/data unires:latest unires --vx 1.0 /data/t1_icbm_normal_1mm_pn0_rf0.nii.gz /data/t2_icbm_normal_1mm_pn0_rf0.nii.gz /data/pd_icbm_normal_1mm_pn0_rf0.nii.gz
 ```
 When the algorithm has finished, you will find the processed scans in the same `data` folder, prefixed `'u_'`.
 
