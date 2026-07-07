@@ -108,7 +108,11 @@ docker build --rm --tag unires:latest .
 ```
 The build will use the compiled backend of `nitorch`, meaning it can take quite some time for the build to complete.
 
-If you get an error that the host GPU and its driver are not available, make sure that the environment variable `TORCH_CUDA_ARCH_LIST` in the `Dockerfile` includes a [CUDA compute capability](https://developer.nvidia.com/cuda-gpus) supported by your GPU. You can see the compute capability of your GPU with:
+If you get an error that the host GPU and its driver are not available, make sure the `TORCH_CUDA_ARCH_LIST` build argument matches a [CUDA compute capability](https://developer.nvidia.com/cuda-gpus) supported by your GPU. It defaults to `8.9`; override it at build time, e.g. for an A100 (compute capability 8.0):
+``` shell
+docker build --rm --build-arg TORCH_CUDA_ARCH_LIST=8.0 --tag unires:latest .
+```
+You can see the compute capability of your GPU with:
 ```sh
  nvidia-smi --query-gpu=compute_cap --format=csv
 ```
