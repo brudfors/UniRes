@@ -65,6 +65,7 @@ class settings:
         self.cgs_max_iter: int = 20  # Max conjugate gradient (CG) iterations for solving for y
         self.cgs_tol: float = 1e-3  # CG tolerance for solving for y
         self.cgs_verbose: bool = False  # CG verbosity (0, 1)
+        self.cgs_precond: str = 'none'  # CG preconditioner: 'none' | 'jacobi' (issue #12) | 'fourier'
         self.clean_fov: bool = False  # Set voxels outside of low-res FOV, projected in high-res space, to zero
         self.coreg_params = {'cost_fun': 'nmi', 'group': 'SE', 'samp': (1), 'fwhm': 7, 'mean_space': False}  # parameters for coregistration
         self.crop: bool = False  # Crop input images' FOV to brain in the NITorch atlas

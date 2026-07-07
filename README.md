@@ -90,6 +90,14 @@ unires --denoising data/t1_icbm_normal_1mm_pn0_rf0.nii.gz
 ```
 if the data has negative values (e.g., CT) add the `--ct` flag.
 
+The image-update conjugate-gradient solver can be preconditioned to converge faster. No
+preconditioner is used by default; a Fourier (circulant) preconditioner is available and
+gives ~1.2x fewer iterations / wall-clock on the demo data (see `benchmarks/`):
+``` shell
+unires --precond fourier data/t1_icbm_normal_1mm_pn0_rf0.nii.gz ...   # circulant (fastest)
+unires --precond jacobi  data/t1_icbm_normal_1mm_pn0_rf0.nii.gz ...   # diagonal (issue #12)
+```
+
 There are plenty of other options that can be seen with:
 ``` shell
 unires --help

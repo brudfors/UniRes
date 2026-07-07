@@ -77,29 +77,95 @@ def _has_ct(x):
     return is_ct
 
 
-def _precond(x, y, rho, sett):
-    """Compute CG preconditioner.
+def _precond(method, x, y, rho, sett):
+    """Build a CG preconditioner  z = M^{-1} r  for the ADMM image update.
+
+    The image update solves H y = b with Hessian
+        H = sum_n tau_n A_n'A_n  +  rho lam^2 D'D
+    (A_n = projection/blur of channel observation n, D'D = membrane energy). A
+    preconditioner only changes CG's convergence speed, not the solution.
+
+        'none'    : identity, z = r.
+        'jacobi'  : diagonal (Jacobi) preconditioner (issue #12),
+                    M = clamp_min(sum_n tau_n A_n'A_n(1), 0) + rho lam^2 2 sum_i 1/vx_i^2,
+                    z = r / M. A_n'A_n(1) is a lumped row-sum estimate of diag(A_n'A_n);
+                    the membrane term is D'D's exact (constant) diagonal, keeping M > 0
+                    everywhere. Correct but ~no speedup here: the Hessian diagonal is
+                    nearly constant, so a diagonal preconditioner acts like a scalar,
+                    which CG is invariant to.
+        'fourier' : circulant (FFT) preconditioner. S = FFT(ifftshift(H(delta))) are the
+                    eigenvalues of the circulant approximation of H (from its point-spread
+                    function); z = IFFT(FFT(r) / S). Diagonalises the membrane D'D (a
+                    convolution) exactly and the blur A'A approximately, addressing the
+                    *spectral* ill-conditioning a diagonal cannot. ~2-3x fewer CG
+                    iterations. S is cached and rebuilt only when (rho, lam) change; cost
+                    is two FFTs per CG iteration.
+
+    Args:
+        method (str): Preconditioner, one of 'none' | 'jacobi' | 'fourier'.
+        x (list): Observations of a single channel (one or more repeats).
+        y (_output): Reconstruction of that channel.
+        rho (torch.Tensor): ADMM step-size.
+        sett (settings): Algorithm settings.
+
+    Returns:
+        precond (callable): Maps a residual r to M^{-1} r.
 
     """
-    if len(x) != 1:
-        raise ValueError('CG pre-conditioning only supports one repeat per contrast.')
-    # Parameters
-    n = 0
-    dm_y = y.dim
-    lam = y.lam
-    vx = voxel_size(y.mat).float()
-    # tau*At(A(1))
-    M = x[n].tau*_proj_apply('AtA',
-        torch.ones(dm_y, device=sett.device, dtype=torch.float32)[None, None, ...],
-        x[n].po,
-        method=sett.method, bound=sett.bound, interpolation=sett.interpolation)
-    # + 2*rho*lam**2*sum(1/vx^2) (not lam*lam?)
-    M += 2*rho*lam**2*vx.square().reciprocal().sum()
-    M = M[0, 0, ...]
-    # Return as lambda function
-    precond = lambda x: x/M
+    if method == 'none':
+        return lambda r: r
 
-    return precond
+    dm_y = y.dim
+
+    if method == 'jacobi':
+        lam = y.lam
+        vx = voxel_size(y.mat).float()
+        # Data term: sum over ALL observations. Respect do_proj so the preconditioner
+        # matches lhs = _proj('AtA', ..., do=sett.do_proj): when projection is off the
+        # operator is identity ('none'), giving the data term sum_n tau_n.
+        operator = 'AtA' if sett.do_proj else 'none'
+        ones = torch.ones(dm_y, device=sett.device, dtype=torch.float32)[None, None, ...]
+        M = x[0].tau * _proj_apply(operator, ones, x[0].po,
+                                   method=sett.method, bound=sett.bound,
+                                   interpolation=sett.interpolation)
+        for n in range(1, len(x)):
+            M += x[n].tau * _proj_apply(operator, ones, x[n].po,
+                                        method=sett.method, bound=sett.bound,
+                                        interpolation=sett.interpolation)
+        M = M[0, 0, ...]
+        M.clamp_(min=0)                                           # data term >= 0
+        M += 2 * rho * lam ** 2 * vx.square().reciprocal().sum()  # analytic membrane floor (>0)
+        M.clamp_(min=1e-7)                                        # strict positivity safeguard
+        return lambda r: r / M
+
+    if method == 'fourier':
+        # S depends only on (rho, lam, geometry). rho/lam change just a few times per fit
+        # (ADMM step-size / coarse-to-fine transitions), so cache S on the output struct and
+        # rebuild only when they change -- this removes the per-iteration PSF setup cost
+        # (one A'A per channel). Skip the cache when the geometry moves each iteration
+        # (unified rigid / slice scaling) so S never goes stale.
+        cache_ok = not (sett.unified_rigid or sett.scaling)
+        key = (float(rho), float(y.lam))
+        if cache_ok and getattr(y, '_four_key', None) == key and getattr(y, '_four_S', None) is not None:
+            S = y._four_S
+        else:
+            vx_y = voxel_size(y.mat).float()
+            # Point-spread function of the full channel Hessian: H applied to a centred
+            # impulse (same operator as the CG left-hand side, so S matches H).
+            delta = torch.zeros(dm_y, device=sett.device, dtype=torch.float32)
+            delta[tuple(d // 2 for d in dm_y)] = 1.0
+            psf = _proj('AtA', delta, x, y, method=sett.method, do=sett.do_proj, rho=rho,
+                        vx_y=vx_y, bound=sett.bound, interpolation=sett.interpolation, diff=sett.diff)
+            # Circulant eigenvalues; real for a symmetric PSF. Clamp to keep the
+            # preconditioner strictly positive-definite (guards tiny/negative values).
+            S = torch.fft.fftn(torch.fft.ifftshift(psf)).real
+            S = S.clamp_min(S.abs().max() * 1e-6)
+            if cache_ok:
+                y._four_S, y._four_key = S, key
+        return lambda r: torch.fft.ifftn(torch.fft.fftn(r) / S).real.to(r.dtype)
+
+    raise ValueError(
+        f"Unknown preconditioner '{method}' (expected 'none', 'jacobi' or 'fourier').")
 
 
 def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
@@ -132,9 +198,8 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
         div = im_divergence(div, vx=vx_y, bound=sett.bound, which=sett.diff)
         tmp -= y[c].lam * div
 
-        # Get CG preconditioner
-        # precond = _precond(x[c], y[c], rho, sett)
-        precond = lambda x: x
+        # Get CG preconditioner ('none' | 'jacobi' | 'fourier')
+        precond = _precond(sett.cgs_precond, x[c], y[c], rho, sett)
 
         # Invert y = lhs\tmp by conjugate gradients
         lhs = lambda dat: _proj('AtA', dat, x[c], y[c], method=sett.method, do=sett.do_proj, rho=rho,

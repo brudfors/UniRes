@@ -120,6 +120,9 @@ venv.bak/
 # Editor / IDE settings
 .vscode/
 
+# Benchmark output artifacts
+benchmarks/out/
+
 # mkdocs documentation
 /site
 

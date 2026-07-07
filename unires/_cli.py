@@ -5,7 +5,7 @@ from unires.run import preproc
 
 
 def _preproc(pth, atlas_rigid, common_output, denoising, device, dir_out, fov, label_file,
-             label_channel_index, label_repeat_index, linear, plot_conv, prefix,
+             label_channel_index, label_repeat_index, linear, plot_conv, precond, prefix,
              print_info, reg_scl, res_origin, scale, sched, show_hyperpar, show_jtv,
              tolerance, unified_rigid, vx, write_out, ct, crop):
     """Fit UniRes model from the command line.
@@ -27,6 +27,7 @@ def _preproc(pth, atlas_rigid, common_output, denoising, device, dir_out, fov, l
     s.device = device
     s.dir_out = dir_out
     s.plot_conv = plot_conv
+    s.cgs_precond = precond
     s.do_print = print_info
     s.reg_scl = reg_scl
     if isinstance(label_file, str):
@@ -157,6 +158,14 @@ def run():
     parser.add_argument('--no-plot_conv', dest='plot_conv',
                         action='store_false')
     parser.set_defaults(plot_conv=s.plot_conv)
+    #
+    parser.add_argument("--precond",
+                        type=str,
+                        default=s.cgs_precond,
+                        choices=['none', 'jacobi', 'fourier'],
+                        help="CG preconditioner for the image update: 'fourier' "
+                             "(circulant), 'jacobi' (diagonal, issue #12), or 'none' "
+                             "[default=" + str(s.cgs_precond) + "].")
     #
     parser.add_argument("--prefix",
                         type=str,
