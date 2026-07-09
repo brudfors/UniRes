@@ -65,6 +65,15 @@ class settings:
         self.cgs_max_iter: int = 20  # Max conjugate gradient (CG) iterations for solving for y
         self.cgs_tol: float = 1e-3  # CG tolerance for solving for y
         self.cgs_verbose: bool = False  # CG verbosity (0, 1)
+        # Deep-learning prior (RED / denoiser-as-prior, issue: DL prior). Defaults reproduce
+        # the classic multi-channel TV behaviour exactly (prior='mtv', red_mu=0).
+        self.prior: str = 'mtv'  # Image prior: 'mtv' | 'red' | 'mtv+red'
+        self.red_mu: float = 0.0  # RED denoiser-prior weight (mu); 0 disables the DL term
+        self.red_sigma: float = 0.05  # RED denoiser strength (noise level, standardised [0,1] units)
+        self.red_denoiser: str = 'gaussian'  # Denoiser backend: 'gaussian' (analytic) | 'drunet' (pretrained CNN)
+        self.red_weights: str = None  # Path to denoiser weights (None -> backend default/download)
+        self.red_linesearch: bool = True  # Backtracking line search to keep the objective monotone
+        self.red_batch: int = 16  # Slice mini-batch for 2.5D denoiser application (memory control)
         self.clean_fov: bool = False  # Set voxels outside of low-res FOV, projected in high-res space, to zero
         self.coreg_params = {'cost_fun': 'nmi', 'group': 'SE', 'samp': (1), 'fwhm': 7, 'mean_space': False}  # parameters for coregistration
         self.crop: bool = False  # Crop input images' FOV to brain in the NITorch atlas

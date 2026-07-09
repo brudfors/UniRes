@@ -60,11 +60,22 @@ def fit(x, y, sett):
         for c in range(len(x)):
             y[c].lam = sett.reg_scl[cnt_scl] * y[c].lam0
             
+        # Build the RED denoiser once (only if the DL prior is active)
+        denoiser = None
         if sett.max_iter > 0:
             # Get ADMM step-size
             rho = _step_size(x, y, sett, verbose=True)
             # Get ADMM variables
             z, w = _admm_aux(y, sett)
+            # RED denoiser-prior (issue: DL prior); classic MTV run leaves this None
+            if 'red' in getattr(sett, 'prior', 'mtv'):
+                if sett.prior == 'red':
+                    raise NotImplementedError(
+                        "prior='red' (denoiser prior without MTV) is not yet "
+                        "implemented; use 'mtv+red'.")
+                if float(sett.red_mu) > 0:
+                    from ._denoiser import make_denoiser
+                    denoiser = make_denoiser(sett)
 
         # ----------
         # ITERATE:
@@ -84,7 +95,7 @@ def fit(x, y, sett):
             # UPDATE: image
             # ----------
             y, z, w, tmp, obj = _update_admm(x, y, z, w, rho, tmp, obj, n_iter,
-                                             sett)
+                                             sett, denoiser)
 
             # Show JTV
             if sett.show_jtv:

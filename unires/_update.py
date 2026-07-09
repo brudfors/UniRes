@@ -77,6 +77,12 @@ def _has_ct(x):
     return is_ct
 
 
+def _red_active(sett):
+    """True if the RED denoiser-prior term is active (prior includes 'red' and mu>0)."""
+    return ('red' in getattr(sett, 'prior', 'mtv')
+            and float(getattr(sett, 'red_mu', 0.0)) > 0.0)
+
+
 def _precond(x, y, rho, sett):
     """Compute CG preconditioner.
 
@@ -102,7 +108,7 @@ def _precond(x, y, rho, sett):
     return precond
 
 
-def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
+def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None):
     """
 
 
@@ -114,6 +120,21 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
     one = torch.tensor(1, dtype=torch.float32, device=sett.device)
     # Over/under-relaxation parameter
     alpha = torch.tensor(sett.alpha, device=sett.device, dtype=torch.float32)
+
+    # RED denoiser-prior (issue: DL prior). Inactive unless prior includes 'red', mu>0
+    # and a denoiser was built -> then the classic MTV path below is byte-identical.
+    red = _red_active(sett) and denoiser is not None
+    mu = float(sett.red_mu) if red else 0.0
+    d = None
+    y_old = None
+    nll_old = None
+    if red:
+        # Denoised targets d_c = D_sigma(y_c^{(k)}) from the current iterate (held fixed
+        # within the solve; this is the RED half-quadratic / fixed-point step).
+        d = [denoiser.denoise(y[c].dat, sett.red_sigma) for c in range(len(x))]
+        if sett.red_linesearch:
+            y_old = [y[c].dat.clone() for c in range(len(x))]
+            nll_old = _compute_nll(x, y, sett, rho, denoiser=denoiser)[0]
 
     # ----------
     # UPDATE: y
@@ -127,10 +148,14 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
             tmp += x[c][n].tau * _proj('At', x[c][n].dat, x[c], y[c], method=sett.method, do=sett.do_proj,
                                       n=n, bound=sett.bound, interpolation=sett.interpolation)
 
-        # Divergence
+        # Divergence (MTV prior RHS term)
         div = w[c, ...] - rho * z[c, ...]
         div = im_divergence(div, vx=vx_y, bound=sett.bound, which=sett.diff)
         tmp -= y[c].lam * div
+
+        # RED prior RHS term (+ mu * d_c); mu=0 leaves the classic RHS unchanged
+        if mu:
+            tmp += mu * d[c]
 
         # Get CG preconditioner
         # precond = _precond(x[c], y[c], rho, sett)
@@ -138,7 +163,7 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
 
         # Invert y = lhs\tmp by conjugate gradients
         lhs = lambda dat: _proj('AtA', dat, x[c], y[c], method=sett.method, do=sett.do_proj, rho=rho,
-                               vx_y=vx_y, bound=sett.bound, interpolation=sett.interpolation, diff=sett.diff)
+                               mu=mu, vx_y=vx_y, bound=sett.bound, interpolation=sett.interpolation, diff=sett.diff)
         cg(A=lhs, b=tmp, x=y[c].dat,
            verbose=sett.cgs_verbose,
            max_iter=sett.cgs_max_iter,
@@ -152,10 +177,30 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
     _ = _print_info('fit-done', sett, t0)  # PRINT
 
     # ----------
+    # RED monotonicity guard: backtracking line search on the reported objective, so the
+    # DL prior can never make the displayed objective increase within an iteration.
+    # ----------
+    if red and sett.red_linesearch:
+        y_new = [y[c].dat.clone() for c in range(len(x))]
+        nll_new = _compute_nll(x, y, sett, rho, denoiser=denoiser)[0]
+        t = 1.0
+        n_ls = 0
+        while nll_new > nll_old and n_ls < 6:
+            t *= 0.5
+            n_ls += 1
+            for c in range(len(x)):
+                y[c].dat = (1.0 - t) * y_old[c] + t * y_new[c]
+            nll_new = _compute_nll(x, y, sett, rho, denoiser=denoiser)[0]
+        if nll_new > nll_old:
+            # No acceptable step found -> null step (revert), objective non-increasing.
+            for c in range(len(x)):
+                y[c].dat = y_old[c]
+
+    # ----------
     # Compute model objective function
     # ----------
     if sett.tolerance > 0:
-        obj[n_iter, 0], obj[n_iter, 1], obj[n_iter, 2] = _compute_nll(x, y, sett, rho)  # nl_pyx, nl_pxy, nl_py
+        obj[n_iter, 0], obj[n_iter, 1], obj[n_iter, 2] = _compute_nll(x, y, sett, rho, denoiser=denoiser)  # nl_pyx, nl_pxy, nl_py
 
     # ----------
     # UPDATE: z
@@ -393,7 +438,7 @@ def _update_scaling(x, y, sett, max_niter_gn=1, num_linesearch=4, verbose=0):
     return x, sll
 
 
-def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64):
+def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64, denoiser=None):
     """ Compute negative model log-likelihood.
 
     Args:
@@ -424,7 +469,19 @@ def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64):
     # Neg. log-prior term
     nll_y = torch.sum(torch.sqrt(nll_y), dtype=sum_dtype)
 
-    return nll_xy + nll_y, nll_xy, nll_y
+    # RED denoiser-prior energy: (mu/2) * sum_c <y_c, y_c - D(y_c)>. Folded into the
+    # reported total (column 0) so the convergence/monotonicity oracle reflects the
+    # true optimized objective. Columns 1,2 (data, MTV-prior) are left unchanged.
+    total = nll_xy + nll_y
+    if denoiser is not None and _red_active(sett):
+        mu = float(sett.red_mu)
+        nll_red = torch.tensor(0, device=sett.device, dtype=torch.float64)
+        for c in range(len(x)):
+            dc = denoiser.denoise(y[c].dat, sett.red_sigma)
+            nll_red += 0.5 * mu * torch.sum(y[c].dat * (y[c].dat - dc), dtype=sum_dtype)
+        total = total + nll_red
+
+    return total, nll_xy, nll_y
 
 
 def _even_odd(dat, which, dim):
