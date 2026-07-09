@@ -85,7 +85,7 @@ def run(gt, gt_mat, x, mat_x, prior, max_iter, **kw):
     # Sweep defaults tuned for speed: no line search (monotonicity verified separately),
     # large denoiser slice-batch. Callers may override via kw.
     s.red_linesearch = False
-    s.red_batch = 64
+    s.red_batch = 16
     for k, v in kw.items():
         setattr(s, k, v)
     t0 = time.time()

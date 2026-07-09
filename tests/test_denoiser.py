@@ -72,6 +72,19 @@ def test_intensity_scale_equivariance():
     assert torch.allclose(out2, out1 * 1000.0, rtol=1e-3, atol=1e-2)
 
 
+def test_denoise_cache():
+    """Cache hits on the same (tensor, version, sigma); misses after an in-place change."""
+    vol = _phantom()[1]
+    den = Denoiser(GaussianBackend(), sigma=0.05, batch=8)
+    a = den.denoise(vol)
+    b = den.denoise(vol)              # same tensor/version -> cache hit
+    assert a is b, "expected cache hit to return the identical tensor"
+    vol.add_(0.0)                     # in-place op bumps ._version -> cache miss
+    c = den.denoise(vol)
+    assert c is not a, "expected cache miss after in-place modification"
+    assert torch.allclose(c, a)       # content unchanged (add 0), values match
+
+
 def test_factory_and_defaults_preserve_master():
     s = settings()
     # Defaults must reproduce classic behaviour: no DL prior active.

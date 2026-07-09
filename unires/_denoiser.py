@@ -110,10 +110,16 @@ class Denoiser:
     each of the three axes (mini-batched), averages the three results, and undoes
     the standardisation. Returns a tensor of the same shape/dtype/device.
     """
-    def __init__(self, backend, sigma=0.05, batch=16):
+    def __init__(self, backend, sigma=0.05, batch=16, cache_size=8):
         self.backend = backend
         self.sigma = float(sigma)
         self.batch = int(batch)
+        # Small cache keyed on (data_ptr, version, sigma). Because CG updates y in
+        # place, the next iteration's RHS asks for D(y) of exactly the iterate the
+        # previous objective already denoised -> a cache halves the denoise passes.
+        self._cache = {}
+        self._cache_order = []
+        self._cache_size = int(cache_size)
 
     def _apply_axis(self, vol, sigma, axis):
         v = vol.movedim(axis, 0)          # (N, H, W)
@@ -129,14 +135,22 @@ class Denoiser:
     def denoise(self, vol, sigma=None):
         if sigma is None:
             sigma = self.sigma
+        key = (vol.data_ptr(), int(vol._version), float(sigma))
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
         orig_dtype = vol.dtype
         v, scale = _standardize(vol.float())
         acc = None
         for axis in range(3):
             r = self._apply_axis(v, sigma, axis)
             acc = r if acc is None else acc + r
-        acc = _unstandardize(acc / 3.0, scale)
-        return acc.to(orig_dtype)
+        out = _unstandardize(acc / 3.0, scale).to(orig_dtype)
+        self._cache[key] = out
+        self._cache_order.append(key)
+        if len(self._cache_order) > self._cache_size:
+            self._cache.pop(self._cache_order.pop(0), None)
+        return out
 
 
 # ----------------------------------------------------------------------------
