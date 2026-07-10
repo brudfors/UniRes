@@ -70,7 +70,8 @@ ssh root@<your-dev-pod-id>.nv-stg-dgxc.teleport.sh
 
 ```sh
 cd /workspace
-git clone -b dl-prior-red https://github.com/brudfors/UniRes.git   # or: cd UniRes && git pull
+gh auth login                                       # authenticate to GitHub (gh manages creds)
+gh repo clone brudfors/UniRes -- -b dl-prior-red    # gh drives the bundled git; later: git pull
 cd UniRes
 # fast: nitorch (the only compiled dep) is already baked, so skip deps + build isolation
 NI_COMPILED_BACKEND=C pip install -e . --no-deps --no-build-isolation

@@ -105,6 +105,17 @@ RUN printf 'torch==2.6.0\ntorchvision==0.21.0\n' > /tmp/uc.txt && \
 #   NI_COMPILED_BACKEND=C pip install -e . --no-deps --no-build-isolation
 # `--no-deps` stops pip from re-cloning/recompiling the nitorch git pin in setup.py.
 
+# GitHub CLI (gh). Deliberately a LATE layer (after the nitorch compile) so adding
+# it does NOT invalidate the cached compiled-nitorch layer on rebuild. Direct binary
+# download (like ripgrep) avoids the apt-repo dance. The pod uses `gh` for GitHub auth
+# (`gh auth login`) and `gh repo clone`; the image already ships `git`, which gh drives.
+RUN GH_VER=2.64.0 && \
+    curl -fsSL -o /tmp/gh.tgz "https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_amd64.tar.gz" && \
+    tar -xzf /tmp/gh.tgz -C /tmp && \
+    install -m 0755 "/tmp/gh_${GH_VER}_linux_amd64/bin/gh" /usr/local/bin/gh && \
+    rm -rf /tmp/gh.tgz "/tmp/gh_${GH_VER}_linux_amd64" && \
+    gh --version
+
 # --------------------------------------------------------------------------- #
 # Dev-pod essentials (no DinD).
 # --------------------------------------------------------------------------- #
