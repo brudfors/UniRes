@@ -67,7 +67,7 @@ def _smooth_bias_field(shape, device, strength=0.3, ctrl=4):
 class IXIPatches(Dataset):
     def __init__(self, root, patch=96, patches_per_epoch=20000, contrasts=CONTRASTS,
                  sigma_min=0.0, sigma_max=0.15, rician_prob=0.5, n2n=True,
-                 augment=True, cache_volumes=48, fg_frac=0.9, seed=0):
+                 augment=True, cache_volumes=64, fg_frac=0.9, p_new=0.12, seed=0):
         self.paths = list_ixi(root, contrasts)
         self.patch = int(patch)
         self.length = int(patches_per_epoch)
@@ -76,27 +76,48 @@ class IXIPatches(Dataset):
         self.n2n = bool(n2n)
         self.augment = bool(augment)
         self.fg_frac = float(fg_frac)
+        # p_new: probability of loading a NEW (uncached) volume; otherwise reuse a
+        # cached one. Reuse amortizes the (expensive) gzip .nii.gz decompression over
+        # many patches -> the loader is cache-bound, not decompress-bound.
+        self.p_new = float(p_new)
         self._cache = OrderedDict()
         self._cache_size = int(cache_volumes)
         self._base_seed = int(seed)
+        self._rng = None  # lazily created per worker
 
     def __len__(self):
         return self.length
+
+    @staticmethod
+    def _foreground_bbox(vol, thr=0.05):
+        """Cheap per-axis foreground bounding box (min/max index where any signal),
+        via reductions -- computed ONCE per volume (vs an O(vol) nonzero per patch)."""
+        m = vol > thr
+        bb = []
+        for d in range(3):
+            proj = m.any(dim=tuple(a for a in range(3) if a != d))
+            nz = torch.nonzero(proj, as_tuple=False)
+            if nz.numel():
+                bb.append((int(nz[0]), int(nz[-1]) + 1))
+            else:
+                bb.append((0, vol.shape[d]))
+        return bb
 
     def _get_volume(self, idx):
         if idx in self._cache:
             self._cache.move_to_end(idx)
             return self._cache[idx]
         vol = _load_standardized(self.paths[idx])
-        self._cache[idx] = vol
+        entry = (vol, self._foreground_bbox(vol))
+        self._cache[idx] = entry
         if len(self._cache) > self._cache_size:
             self._cache.popitem(last=False)
-        return vol
+        return entry
 
-    def _sample_patch(self, vol, rng):
+    def _sample_patch(self, vol, bbox, rng):
         p = self.patch
         shp = vol.shape
-        # pad small volumes up to the patch size
+        # pad small volumes up to the patch size (rare for IXI 256^2 x ~150)
         if any(s < p for s in shp):
             pad = []
             for d in reversed(range(3)):
@@ -104,17 +125,18 @@ class IXIPatches(Dataset):
                 pad += [deficit // 2, deficit - deficit // 2]
             vol = torch.nn.functional.pad(vol[None, None], pad)[0, 0]
             shp = vol.shape
-        # foreground-weighted origin: with prob fg_frac, center on a foreground voxel
-        for _ in range(8):
-            if rng.random() < self.fg_frac:
-                fg = torch.nonzero(vol > 0.05, as_tuple=False)
-                if fg.numel():
-                    c = fg[rng.randint(0, fg.shape[0] - 1)]
-                    o = [int(torch.clamp(c[d] - p // 2, 0, shp[d] - p)) for d in range(3)]
+            bbox = [(0, shp[d]) for d in range(3)]
+        # sample origin so the patch overlaps the cached foreground bbox (with prob
+        # fg_frac); no per-patch nonzero. A few tries to ensure enough signal.
+        for _ in range(6):
+            o = []
+            for d in range(3):
+                if rng.random() < self.fg_frac:
+                    lo = max(0, bbox[d][0] - p // 2)
+                    hi = min(shp[d] - p, bbox[d][1] - p // 2)
+                    o.append(rng.randint(lo, hi) if hi > lo else max(0, min(lo, shp[d] - p)))
                 else:
-                    o = [rng.randint(0, shp[d] - p) for d in range(3)]
-            else:
-                o = [rng.randint(0, shp[d] - p) for d in range(3)]
+                    o.append(rng.randint(0, shp[d] - p) if shp[d] > p else 0)
             patch = vol[o[0]:o[0] + p, o[1]:o[1] + p, o[2]:o[2] + p]
             if (patch > 0.05).float().mean() > 0.05:      # enough signal
                 return patch.clone()
@@ -150,11 +172,22 @@ class IXIPatches(Dataset):
             return torch.sqrt((clean + sigma * n1) ** 2 + (sigma * n2) ** 2)
         return clean + sigma * torch.randn_like(clean)
 
+    def _worker_rng(self):
+        if self._rng is None:
+            info = torch.utils.data.get_worker_info()
+            wid = info.id if info is not None else 0
+            self._rng = np.random.RandomState(self._base_seed + 100003 * (wid + 1))
+        return self._rng
+
     def __getitem__(self, i):
-        rng = np.random.RandomState(self._base_seed + i)
-        vidx = rng.randint(0, len(self.paths))
-        vol = self._get_volume(vidx)
-        clean = self._sample_patch(vol, rng)
+        rng = self._worker_rng()
+        # reuse a cached volume most of the time (cheap); occasionally load a new one
+        if self._cache and rng.random() > self.p_new:
+            vidx = rng.choice(list(self._cache.keys()))
+        else:
+            vidx = rng.randint(0, len(self.paths))
+        vol, bbox = self._get_volume(vidx)
+        clean = self._sample_patch(vol, bbox, rng)
         if self.augment:
             clean = self._augment(clean, rng)
         sigma = rng.uniform(self.sigma_min, self.sigma_max)
