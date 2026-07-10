@@ -69,6 +69,7 @@ class settings:
         # the classic multi-channel TV behaviour exactly (prior='mtv', red_mu=0).
         self.prior: str = 'mtv'  # Image prior: 'mtv' | 'red' | 'mtv+red'
         self.red_mu: float = 0.0  # RED denoiser-prior weight (mu); 0 disables the DL term
+        self.red_auto_scale: bool = True  # mu is dimensionless: scale it to the per-channel data term (tau) so a global mu can't be catastrophically mis-set. False = old absolute mu.
         self.red_sigma: float = 0.05  # RED denoiser strength (noise level, standardised [0,1] units)
         self.red_denoiser: str = 'gaussian'  # Denoiser backend: 'gaussian' (analytic) | 'drunet' (pretrained CNN)
         self.red_weights: str = None  # Path to denoiser weights (None -> backend default/download)

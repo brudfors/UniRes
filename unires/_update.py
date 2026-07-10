@@ -83,6 +83,31 @@ def _red_active(sett):
             and float(getattr(sett, 'red_mu', 0.0)) > 0.0)
 
 
+def _red_mu_channels(x, sett):
+    """Per-channel RED weights mu_c (single source of truth for the RHS, the AtA
+    operator and the reported RED energy, so all three stay consistent).
+
+    ``red_mu`` is DIMENSIONLESS when ``red_auto_scale`` (default): each channel's
+    weight is scaled to that channel's data-term precision, mu_c = red_mu *
+    sum_n tau[c][n]. Because tau = 1/noise_var (see _core.py), a global absolute
+    mu is dimensionally inconsistent with the data term (a footgun -- mu=1e-2 was
+    catastrophic); scaling by the data precision makes red_mu a fraction of the
+    data term, portable across intensity scales / noise levels / #observations.
+    With ``red_auto_scale=False`` the old absolute behaviour is used (mu_c=red_mu),
+    kept for reproducibility/ablation. Returns a list of python floats; all 0.0
+    when RED is inactive (so the classic MTV path is byte-identical)."""
+    if not _red_active(sett):
+        return [0.0] * len(x)
+    base = float(sett.red_mu)
+    if not getattr(sett, 'red_auto_scale', True):
+        return [base] * len(x)
+    mus = []
+    for c in range(len(x)):
+        s_c = sum(float(x[c][n].tau) for n in range(len(x[c])))
+        mus.append(base * s_c)
+    return mus
+
+
 def _precond(x, y, rho, sett):
     """Compute CG preconditioner.
 
@@ -124,7 +149,7 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None):
     # RED denoiser-prior (issue: DL prior). Inactive unless prior includes 'red', mu>0
     # and a denoiser was built -> then the classic MTV path below is byte-identical.
     red = _red_active(sett) and denoiser is not None
-    mu = float(sett.red_mu) if red else 0.0
+    mu_ch = _red_mu_channels(x, sett) if red else [0.0] * len(x)
     d = None
     y_old = None
     nll_old = None
@@ -153,7 +178,8 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None):
         div = im_divergence(div, vx=vx_y, bound=sett.bound, which=sett.diff)
         tmp -= y[c].lam * div
 
-        # RED prior RHS term (+ mu * d_c); mu=0 leaves the classic RHS unchanged
+        # RED prior RHS term (+ mu_c * d_c); mu_c=0 leaves the classic RHS unchanged
+        mu = mu_ch[c]
         if mu:
             tmp += mu * d[c]
 
@@ -486,11 +512,13 @@ def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64, denoiser=None):
     # true optimized objective. Columns 1,2 (data, MTV-prior) are left unchanged.
     total = nll_xy + nll_y
     if denoiser is not None and _red_active(sett):
-        mu = float(sett.red_mu)
+        mu_ch = _red_mu_channels(x, sett)  # same per-channel weights as the y-update
         nll_red = torch.tensor(0, device=sett.device, dtype=torch.float64)
         for c in range(len(x)):
+            if not mu_ch[c]:
+                continue
             dc = denoiser.denoise(y[c].dat, sett.red_sigma)
-            nll_red += 0.5 * mu * torch.sum(y[c].dat * (y[c].dat - dc), dtype=sum_dtype)
+            nll_red += 0.5 * mu_ch[c] * torch.sum(y[c].dat * (y[c].dat - dc), dtype=sum_dtype)
         total = total + nll_red
 
     return total, nll_xy, nll_y
