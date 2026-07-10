@@ -131,16 +131,23 @@ or (b′), not a plain PnP gain.**
   **monotone convergence**, prefer the **proximal-denoiser (b′)** parametrization (Hurault ICML 2022 —
   exact prox of an explicit energy `g_θ` ⇒ provable monotone descent); a plain PnP gain falls back to
   the line-search guard. Verify the reported objective is monotone per reg-scale.
-- **Phase 3 — benchmark.** Extend `benchmarks/bench_dl_prior.py` with a `mtv+gradnet` path; PSNR/SSIM
-  vs `mtv` and vs `mtv+red`; measure **passes/iter (expect 1 vs C)**, wall-clock,
-  `torch.cuda.max_memory_allocated`; confirm C-independence (sweep C=2,3,4).
+- **Phase 3 — benchmark (the key head-to-head).** Extend `benchmarks/bench_dl_prior.py` with a
+  `mtv+gradnet` path and compare it against **(a) classic MTV** (`prior='mtv'`) and **(b) the true-3D
+  image-domain RED prior on the reconstruction** (`prior='mtv+red'` with the native-3D recon denoiser —
+  built in parallel; use its trained model), on the **same** simulated BrainWeb inputs/settings.
+  Report **quality** (PSNR/SSIM vs GT, per channel and averaged, at each prior's best mild strength)
+  **and compute** (prior passes/iter, wall-clock, `torch.cuda.max_memory_allocated`). Central question:
+  does the merged-gradient prior **match/beat the 3D-recon RED's quality at *lower* prior compute**
+  (one 3D pass on a low-channel gradient field, C-independent, vs the image-RED's per-channel passes)?
+  **Sweep C=2,3,4** so the compute gap widens with contrast count. (Interim baseline: the 2.5D image-RED
+  if the 3D one isn't ready.)
 
 ## Verification / success criteria
 - **Equivalence:** `softthr` gain == classic MTV bit-for-bit.
 - **Monotonicity:** explicit energy (a)/(b′) or the line-search guard (b/c) ⇒ reported objective
   non-increasing per reg-scale.
-- **Quality:** BrainWeb PSNR/SSIM ≥ MTV, compared against image-RED; no hallucination (data-anchored,
-  gain ∈ [0,1]).
+- **Quality vs compute:** BrainWeb PSNR/SSIM ≥ MTV, and **≈ or > the true-3D image-domain RED at
+  *lower* prior compute** (the central head-to-head); no hallucination (data-anchored, gain ∈ [0,1]).
 - **Compute:** **1 network pass/iter, C-independent**; single-digit-GB 3D forward on the A100.
 
 ## Critical files
