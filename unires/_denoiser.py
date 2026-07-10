@@ -100,8 +100,54 @@ class DRUNetBackend:
         return self.model(x, float(sigma))
 
 
+class BiasFree3DBackend:
+    """Pretrained bias-free 3D denoiser (Phase 3): a native 3D volume->volume model.
+
+    Unlike the 2D backends this is TRUE 3D -- one forward pass over the whole
+    (standardised) volume gives through-plane coherence that 2.5D only approximates
+    by averaging orthogonal passes, and one pass is cheaper than 2.5D's 3*N_slices.
+    Marked ``is_3d`` so :class:`Denoiser` skips the 2.5D axis loop. Fully
+    convolutional -> handles arbitrary volume sizes; optional overlap-tiling bounds
+    memory for very large volumes."""
+    is_3d = True
+
+    def __init__(self, weights, device=None, base=48, depth=3, tile=0, overlap=16):
+        from ._denoiser_net import BiasFreeUNet3D  # lazy: only for this backend
+        ckpt = torch.load(weights, map_location=device or 'cpu')
+        a = ckpt.get('args', {}) if isinstance(ckpt, dict) else {}
+        net = BiasFreeUNet3D(base=a.get('base', base), depth=a.get('depth', depth))
+        state = ckpt['model'] if isinstance(ckpt, dict) and 'model' in ckpt else ckpt
+        net.load_state_dict(state)
+        self.model = net.to(device).eval() if device is not None else net.eval()
+        self.tile = int(tile)
+        self.overlap = int(overlap)
+
+    @torch.no_grad()
+    def __call__(self, vol, sigma):
+        """vol: standardised 3D tensor (D,H,W) -> denoised (D,H,W)."""
+        x = vol[None, None]
+        if self.tile <= 0 or max(vol.shape) <= self.tile:
+            return self.model(x, float(sigma))[0, 0]
+        # overlap-tiled inference (memory bound for large volumes)
+        out = torch.zeros_like(vol)
+        wsum = torch.zeros_like(vol)
+        t, ov = self.tile, self.overlap
+        step = t - ov
+        rngs = [list(range(0, max(1, s - ov), step)) for s in vol.shape]
+        for oi in rngs[0]:
+            for oj in rngs[1]:
+                for ok in rngs[2]:
+                    i, j, k = (min(oi, vol.shape[0]-t) if vol.shape[0] > t else 0,
+                               min(oj, vol.shape[1]-t) if vol.shape[1] > t else 0,
+                               min(ok, vol.shape[2]-t) if vol.shape[2] > t else 0)
+                    sl = (slice(i, i+t), slice(j, j+t), slice(k, k+t))
+                    den = self.model(vol[sl][None, None], float(sigma))[0, 0]
+                    out[sl] += den; wsum[sl] += 1.0
+        return out / wsum.clamp_min(1.0)
+
+
 # ----------------------------------------------------------------------------
-# 2.5D wrapper
+# 2.5D wrapper (and 3D pass-through for native-3D backends)
 # ----------------------------------------------------------------------------
 class Denoiser:
     """Apply a 2D ``backend`` to a 3D volume, 2.5D, with standardisation.
@@ -141,11 +187,15 @@ class Denoiser:
             return cached
         orig_dtype = vol.dtype
         v, scale = _standardize(vol.float())
-        acc = None
-        for axis in range(3):
-            r = self._apply_axis(v, sigma, axis)
-            acc = r if acc is None else acc + r
-        out = _unstandardize(acc / 3.0, scale).to(orig_dtype)
+        if getattr(self.backend, 'is_3d', False):
+            # native 3D backend: one volume pass (no 2.5D axis averaging)
+            out = _unstandardize(self.backend(v, sigma), scale).to(orig_dtype)
+        else:
+            acc = None
+            for axis in range(3):
+                r = self._apply_axis(v, sigma, axis)
+                acc = r if acc is None else acc + r
+            out = _unstandardize(acc / 3.0, scale).to(orig_dtype)
         self._cache[key] = out
         self._cache_order.append(key)
         if len(self._cache_order) > self._cache_size:
@@ -164,7 +214,14 @@ def make_denoiser(sett):
         backend = GaussianBackend(device=device)
     elif name == 'drunet':
         backend = DRUNetBackend(weights=getattr(sett, 'red_weights', None), device=device)
+    elif name == 'biasfree3d':
+        weights = getattr(sett, 'red_weights', None)
+        if not weights:
+            raise ValueError("red_denoiser='biasfree3d' requires red_weights (checkpoint path).")
+        backend = BiasFree3DBackend(weights, device=device,
+                                    tile=getattr(sett, 'red_tile', 0))
     else:
-        raise ValueError(f"Unknown red_denoiser '{name}' (expected 'gaussian' or 'drunet').")
+        raise ValueError(
+            f"Unknown red_denoiser '{name}' (expected 'gaussian', 'drunet' or 'biasfree3d').")
     return Denoiser(backend, sigma=getattr(sett, 'red_sigma', 0.05),
                     batch=getattr(sett, 'red_batch', 16))
