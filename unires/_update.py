@@ -203,8 +203,20 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None):
         obj[n_iter, 0], obj[n_iter, 1], obj[n_iter, 2] = _compute_nll(x, y, sett, rho, denoiser=denoiser)  # nl_pyx, nl_pxy, nl_py
 
     # ----------
-    # UPDATE: z
+    # UPDATE: z  (JTV proximal / vectorial soft-threshold on the gradient field Dy)
     # ----------
+    # TODO (future direction -- learned gradient-domain prior, a.k.a. "learned TV"):
+    #   This z-update IS the proximal/MAP denoiser of the image-gradient field Dy under a
+    #   Laplacian (L1) prior. It could be replaced by a *purpose-trained* CNN that denoises
+    #   gradient fields, i.e. a learned prior on natural-image gradient statistics richer
+    #   than L1 -- the gradient-domain analogue of the RED image-domain prior.
+    #   IMPORTANT: do NOT drop a standard *image* denoiser (e.g. the DRUNet used by the RED
+    #   path in the y-update) in here. An image denoiser encodes p(image), not p(gradient);
+    #   applied to Dy it is a domain mismatch and produces garbage. A gradient prior needs
+    #   its OWN vector-field denoiser trained on image gradients (caveats: no off-the-shelf
+    #   weights; it is multi-channel/vector-valued; and it re-opens the monotonicity
+    #   question). Cf. the image-domain RED term in the y-update above (+mu*d_c on the RHS,
+    #   +mu*I in _proj 'AtA'), which is why RED lives in the y-update and not here.
     if alpha != 1:  # Use over/under-relaxation
         z_old = z.clone()
     t0 = _print_info('fit-update', sett, 'z', n_iter)  # PRINT
