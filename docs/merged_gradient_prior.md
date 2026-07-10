@@ -131,23 +131,34 @@ or (b′), not a plain PnP gain.**
   **monotone convergence**, prefer the **proximal-denoiser (b′)** parametrization (Hurault ICML 2022 —
   exact prox of an explicit energy `g_θ` ⇒ provable monotone descent); a plain PnP gain falls back to
   the line-search guard. Verify the reported objective is monotone per reg-scale.
-- **Phase 3 — benchmark (the key head-to-head).** Extend `benchmarks/bench_dl_prior.py` with a
-  `mtv+gradnet` path and compare it against **(a) classic MTV** (`prior='mtv'`) and **(b) the true-3D
-  image-domain RED prior on the reconstruction** (`prior='mtv+red'` with the native-3D recon denoiser —
-  built in parallel; use its trained model), on the **same** simulated BrainWeb inputs/settings.
-  Report **quality** (PSNR/SSIM vs GT, per channel and averaged, at each prior's best mild strength)
-  **and compute** (prior passes/iter, wall-clock, `torch.cuda.max_memory_allocated`). Central question:
-  does the merged-gradient prior **match/beat the 3D-recon RED's quality at *lower* prior compute**
-  (one 3D pass on a low-channel gradient field, C-independent, vs the image-RED's per-channel passes)?
-  **Sweep C=2,3,4** so the compute gap widens with contrast count. (Interim baseline: the 2.5D image-RED
-  if the 3D one isn't ready.)
+- **Phase 3 — benchmark (the key head-to-head).** *Precondition: the method works and converges
+  monotonically (Phase 0/1/2 checks pass).* Extend `benchmarks/bench_dl_prior.py` with a `mtv+gradnet`
+  path and compare it against **(a) classic MTV** (`prior='mtv'`) and **(b) the true-3D image-domain
+  RED prior on the reconstruction** (`prior='mtv+red'` with the native-3D recon denoiser — built in
+  parallel; use its trained model), on the **same** inputs/settings, across **three axes**:
+  1. **Quality** — PSNR/SSIM vs GT on BrainWeb (per channel + averaged, at each prior's best mild strength).
+  2. **Runtime** — prior passes/iter, **wall-clock per reconstruction**, and
+     `torch.cuda.max_memory_allocated`; and how each scales with the number of contrasts.
+  3. **Generalisability** — (i) *cross-dataset*: train on IXI, evaluate on BrainWeb **and** the real
+     clinical MRIs (no GT → data-consistency `‖A y − x‖` + no-hallucination / structural checks);
+     (ii) *contrast + count*: **one** model across T1/T2/PD and **C=2,3,4 without retraining**
+     (the merged-gradient prior is C-independent by construction); (iii) *robustness* on
+     out-of-distribution inputs (no invented anatomy). **Hypothesis:** a prior on the (contrast-agnostic)
+     gradient *magnitude* may generalise **better** than an image-domain denoiser trained on specific
+     IXI appearances — measure this, don't assume it.
+  Central question: does the merged-gradient prior **match/beat the 3D-recon RED's quality at *lower*
+  runtime AND with equal-or-better generalisability**? **Sweep C=2,3,4** so the runtime gap widens with
+  contrast count. (Interim baseline: the 2.5D image-RED if the 3D one isn't ready.)
 
 ## Verification / success criteria
 - **Equivalence:** `softthr` gain == classic MTV bit-for-bit.
 - **Monotonicity:** explicit energy (a)/(b′) or the line-search guard (b/c) ⇒ reported objective
   non-increasing per reg-scale.
-- **Quality vs compute:** BrainWeb PSNR/SSIM ≥ MTV, and **≈ or > the true-3D image-domain RED at
-  *lower* prior compute** (the central head-to-head); no hallucination (data-anchored, gain ∈ [0,1]).
+- **Head-to-head (quality · runtime · generalisability), *given* it converges monotonically:**
+  BrainWeb PSNR/SSIM ≥ MTV and **≈ or > the true-3D image-domain RED**, at **lower runtime** (fewer
+  passes/iter, faster wall-clock, C-independent), with **equal-or-better generalisability**
+  (cross-dataset IXI→BrainWeb→real clinical MRIs; one model across contrasts and any C without
+  retraining); no hallucination (data-anchored, gain ∈ [0,1]).
 - **Compute:** **1 network pass/iter, C-independent**; single-digit-GB 3D forward on the A100.
 
 ## Critical files
