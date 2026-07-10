@@ -107,8 +107,15 @@ def main():
         with torch.autocast('cuda', dtype=torch.bfloat16):
             den = net(noisy, sigma=s)
             loss = torch.nn.functional.l1_loss(den, target)
+        # skip non-finite / exploded batches (robustness: a rare pathological
+        # augmented patch once blew the loss from 0.06 to 1e6 and wrecked training)
+        if not torch.isfinite(loss) or loss.item() > 10.0:
+            opt.zero_grad(set_to_none=True)
+            step += 1
+            continue
         opt.zero_grad(set_to_none=True)
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)  # stabilize
         opt.step(); sched.step()
         run_loss += loss.item(); step += 1
         if step % 100 == 0:
