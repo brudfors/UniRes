@@ -304,14 +304,19 @@ def augment_noise_gpu(clean, sigma_min=0.0, sigma_max=0.15, rician_prob=0.5, n2n
         return ric * rician + (1.0 - ric) * gauss
 
     if thick_max > 0:
-        # RESTORE (thick-slice): degrade the input with anisotropic thick-slice
-        # resolution loss (random axis, factor ~U(1,thick_max)) + a little isotropic
-        # blur + noise; target stays SHARP -> learns to FILL IN detail.
-        axis = int(torch.randint(0, 3, (1,)).item())
-        factor = float(torch.empty(1).uniform_(1.0, thick_max).item())
-        deg = _thick_slice_degrade(x, factor, axis)
-        if blur_max > 0:
-            deg = _gauss_blur3d(deg, float(torch.empty(1).uniform_(0.0, blur_max).item()))
+        # RESTORE (thick-slice): degrade each sample with anisotropic thick-slice
+        # resolution loss -- PER-SAMPLE random axis AND factor ~U(1,thick_max) (so a
+        # batch spans the full 1..thick_max mm/vox range for diversity) + a little
+        # isotropic blur + noise; target stays SHARP -> learns to FILL IN detail at
+        # ANY slice thickness / orientation.
+        deg = torch.empty_like(x)
+        for i in range(x.shape[0]):
+            axis = int(torch.randint(0, 3, (1,)).item())
+            factor = float(torch.empty(1).uniform_(1.0, thick_max).item())
+            di = _thick_slice_degrade(x[i:i + 1], factor, axis)
+            if blur_max > 0:
+                di = _gauss_blur3d(di, float(torch.empty(1).uniform_(0.0, blur_max).item()))
+            deg[i:i + 1] = di
         noisy = add_noise(deg)
         target = x
     elif blur_max > 0:
