@@ -99,12 +99,17 @@ def _red_mu_channels(x, sett):
     if not _red_active(sett):
         return [0.0] * len(x)
     base = float(sett.red_mu)
+    # optional per-channel multiplier (e.g. down-weight RED on channels it does not
+    # help); None -> all ones. Length must match #channels.
+    w = getattr(sett, 'red_mu_weights', None)
+    def wt(c):
+        return float(w[c]) if w is not None else 1.0
     if not getattr(sett, 'red_auto_scale', True):
-        return [base] * len(x)
+        return [base * wt(c) for c in range(len(x))]
     mus = []
     for c in range(len(x)):
         s_c = sum(float(x[c][n].tau) for n in range(len(x[c])))
-        mus.append(base * s_c)
+        mus.append(base * s_c * wt(c))
     return mus
 
 
@@ -230,19 +235,43 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None):
     # ----------
     if red and sett.red_linesearch:
         y_new = [y[c].dat.clone() for c in range(len(x))]
-        nll_new = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_k)[0]
-        t = 1.0
-        n_ls = 0
-        while nll_new > nll_old and n_ls < 6:
-            t *= 0.5
-            n_ls += 1
-            for c in range(len(x)):
-                y[c].dat = (1.0 - t) * y_old[c] + t * y_new[c]
-            nll_new = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_k)[0]
-        if nll_new > nll_old:
-            # No acceptable step found -> null step (revert), objective non-increasing.
+        if getattr(sett, 'red_ls_perchannel', False) and len(x) > 1:
+            # PER-CHANNEL (coordinate) backtracking: each channel independently takes
+            # the largest step in {1,1/2,...} that does not increase the FULL objective;
+            # else a null step for that channel. The global (common-t) line-search drags
+            # every channel by the step that is best for the SUM, which can push a
+            # channel the DL prior does not help (e.g. high-contrast T1) the wrong way.
+            # Coordinate backtracking lets such a channel stay put while others improve,
+            # so all channels improve-or-hold. Still monotone (objective only decreases).
             for c in range(len(x)):
                 y[c].dat = y_old[c]
+            base = nll_old
+            for c in range(len(x)):
+                t, accepted = 1.0, False
+                for _ in range(6):
+                    y[c].dat = (1.0 - t) * y_old[c] + t * y_new[c]
+                    nll_c = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_k)[0]
+                    if nll_c <= base + 1e-9:
+                        base, accepted = nll_c, True
+                        break
+                    t *= 0.5
+                if not accepted:
+                    y[c].dat = y_old[c]
+        else:
+            # GLOBAL backtracking: one common step t for all channels.
+            nll_new = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_k)[0]
+            t = 1.0
+            n_ls = 0
+            while nll_new > nll_old and n_ls < 6:
+                t *= 0.5
+                n_ls += 1
+                for c in range(len(x)):
+                    y[c].dat = (1.0 - t) * y_old[c] + t * y_new[c]
+                nll_new = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_k)[0]
+            if nll_new > nll_old:
+                # No acceptable step found -> null step (revert), objective non-increasing.
+                for c in range(len(x)):
+                    y[c].dat = y_old[c]
 
     # ----------
     # Compute model objective function

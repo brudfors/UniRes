@@ -75,7 +75,8 @@ class settings:
         self.red_denoiser: str = 'gaussian'  # Denoiser backend: 'gaussian' (analytic) | 'drunet' (pretrained 2.5D CNN) | 'biasfree3d' (native-3D bias-free CNN, needs red_weights)
         self.red_weights: str = None  # Path to denoiser weights (None -> backend default/download)
         self.red_tile: int = 0  # biasfree3d: overlap-tile inference at this size (0 = whole-volume pass)
-        self.red_linesearch: bool = True  # Backtracking line search to keep the objective monotone
+        self.red_linesearch: bool = True  # Backtracking line search to keep the objective monotone (also improves quality)
+        self.red_ls_perchannel: bool = False  # Per-channel (coordinate) line search: each channel steps only if it helps -> all channels improve-or-hold (protects high-contrast channels the joint step would drag)
         self.red_batch: int = 16  # Slice mini-batch for 2.5D denoiser application (memory control)
         self.clean_fov: bool = False  # Set voxels outside of low-res FOV, projected in high-res space, to zero
         self.coreg_params = {'cost_fun': 'nmi', 'group': 'SE', 'samp': (1), 'fwhm': 7, 'mean_space': False}  # parameters for coregistration
