@@ -47,11 +47,13 @@ def main():
     ap.add_argument('--sigma', type=float, default=0.05)
     ap.add_argument('--channels', type=int, default=3)
     ap.add_argument('--max_iter', type=int, default=30)
+    ap.add_argument('--vx_ts', type=float, default=4.0)
+    ap.add_argument('--linesearch', action='store_true')
     args = ap.parse_args()
 
-    gt, gt_mat, x, mat_x = simulate(args.channels)
+    gt, gt_mat, x, mat_x = simulate(args.channels, vx_ts=args.vx_ts)
     y_mtv, ymat = recon(x, mat_x, 'mtv', args.max_iter)
-    kw = dict(red_mu=args.mu, red_sigma=args.sigma, red_denoiser=args.denoiser)
+    kw = dict(red_mu=args.mu, red_sigma=args.sigma, red_denoiser=args.denoiser, red_linesearch=args.linesearch)
     if args.weights:
         kw['red_weights'] = args.weights
     y_red, ymat2 = recon(x, mat_x, 'mtv+red', args.max_iter, **kw)
