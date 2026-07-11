@@ -18,8 +18,10 @@ def main():
     ap.add_argument('--weights', default=None, help='checkpoint for biasfree3d')
     ap.add_argument('--sigma_end', type=float, default=None,
                     help='anneal red_sigma -> this over max_iter (strong early, gentle late)')
+    ap.add_argument('--linesearch', action='store_true',
+                    help='RED monotonicity line-search ON (the method default; materially improves quality)')
     args = ap.parse_args()
-    extra = {'tolerance': 0.0}
+    extra = {'tolerance': 0.0, 'red_linesearch': bool(args.linesearch)}
     if args.weights:
         extra['red_weights'] = args.weights
     if args.sigma_end is not None:
