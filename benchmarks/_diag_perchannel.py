@@ -13,12 +13,17 @@ def main():
     ap.add_argument('--sigma', type=float, default=0.03)
     ap.add_argument('--max_iter', type=int, default=30)
     ap.add_argument('--channels', type=int, default=3)
+    ap.add_argument('--denoiser', default='drunet',
+                    help="RED backend: 'drunet' | 'biasfree3d' | 'gaussian'")
+    ap.add_argument('--weights', default=None, help='checkpoint for biasfree3d')
     args = ap.parse_args()
     extra = {'tolerance': 0.0}
+    if args.weights:
+        extra['red_weights'] = args.weights
     gt, gt_mat, x, mat_x = simulate(args.channels)
     names = CH_NAMES[:args.channels]
     print(f"PER-CHANNEL  channels={args.channels} sigma={args.sigma} "
-          f"max_iter={args.max_iter}\n")
+          f"max_iter={args.max_iter} denoiser={args.denoiser}\n")
     base = None
     for mu in args.mu:
         if mu == 0:
@@ -26,7 +31,7 @@ def main():
             tag = 'mtv'
         else:
             r = run(gt, gt_mat, x, mat_x, 'mtv+red', args.max_iter,
-                    red_mu=mu, red_sigma=args.sigma, red_denoiser='drunet', **extra)
+                    red_mu=mu, red_sigma=args.sigma, red_denoiser=args.denoiser, **extra)
             tag = f'red mu={mu:g}'
         if base is None:
             base = r['psnr_ch'][:]

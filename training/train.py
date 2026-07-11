@@ -13,6 +13,12 @@ import argparse
 import os
 import time
 
+# Limit intra-op threads BEFORE importing torch: the dataset runs torch ops
+# (quantile/interpolate) inside every dataloader worker; with many workers, torch's
+# default thread pool oversubscribes CPUs and futex-livelocks the whole loader.
+os.environ.setdefault('OMP_NUM_THREADS', '1')
+os.environ.setdefault('MKL_NUM_THREADS', '1')
+
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -20,6 +26,12 @@ from torch.utils.tensorboard import SummaryWriter
 
 from data import IXIPatches
 from model import BiasFreeUNet3D
+
+torch.set_num_threads(4)  # main process (workers pinned to 1 in _worker_init)
+
+
+def _worker_init(_):
+    torch.set_num_threads(1)  # each worker single-threaded -> no CPU oversubscription
 
 BRAINWEB = [
     "data/t1_icbm_normal_1mm_pn0_rf0.nii.gz",
@@ -86,7 +98,8 @@ def main():
     ds = IXIPatches(args.data, patch=args.patch, patches_per_epoch=args.batch * args.iters,
                     contrasts=contrasts, sigma_max=args.sigma_max, n2n=bool(args.n2n))
     dl = DataLoader(ds, batch_size=args.batch, num_workers=args.workers, shuffle=False,
-                    pin_memory=True, drop_last=True, persistent_workers=args.workers > 0)
+                    pin_memory=True, drop_last=True, persistent_workers=args.workers > 0,
+                    worker_init_fn=_worker_init, prefetch_factor=4 if args.workers else None)
     net = BiasFreeUNet3D(base=args.base, depth=args.depth).to(dev)
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-5)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.iters)
