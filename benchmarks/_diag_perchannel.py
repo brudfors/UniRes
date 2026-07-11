@@ -16,10 +16,14 @@ def main():
     ap.add_argument('--denoiser', default='drunet',
                     help="RED backend: 'drunet' | 'biasfree3d' | 'gaussian'")
     ap.add_argument('--weights', default=None, help='checkpoint for biasfree3d')
+    ap.add_argument('--sigma_end', type=float, default=None,
+                    help='anneal red_sigma -> this over max_iter (strong early, gentle late)')
     args = ap.parse_args()
     extra = {'tolerance': 0.0}
     if args.weights:
         extra['red_weights'] = args.weights
+    if args.sigma_end is not None:
+        extra['red_sigma_end'] = args.sigma_end
     gt, gt_mat, x, mat_x = simulate(args.channels)
     names = CH_NAMES[:args.channels]
     print(f"PER-CHANNEL  channels={args.channels} sigma={args.sigma} "

@@ -108,6 +108,27 @@ def _red_mu_channels(x, sett):
     return mus
 
 
+def _red_sigma_at(sett, n_iter):
+    """RED denoiser sigma for ADMM iteration ``n_iter``, with optional annealing
+    from ``red_sigma`` -> ``red_sigma_end`` (geometric over max_iter).
+
+    Annealing = denoise STRONGLY early (removes reconstruction noise) and GENTLY
+    late (preserves converged detail) -- the standard Plug-and-Play / RED
+    continuation. It avoids the denoiser over-smoothing as the recon converges,
+    which otherwise costs PSNR on low-contrast channels (e.g. PD). Dataset-agnostic.
+    ``red_sigma_end`` unset -> constant ``red_sigma`` (behaviour unchanged)."""
+    s0 = float(sett.red_sigma)
+    s1 = getattr(sett, 'red_sigma_end', None)
+    if s1 is None:
+        return s0
+    s1 = float(s1)
+    m = max(1, int(getattr(sett, 'max_iter', 1)) - 1)
+    t = min(max(int(n_iter), 0), m) / m
+    if s0 > 0 and s1 > 0:
+        return float(s0 * (s1 / s0) ** t)     # geometric
+    return float(s0 * (1.0 - t) + s1 * t)      # linear fallback
+
+
 def _precond(x, y, rho, sett):
     """Compute CG preconditioner.
 
@@ -153,13 +174,14 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None):
     d = None
     y_old = None
     nll_old = None
+    sig_k = _red_sigma_at(sett, n_iter) if red else sett.red_sigma
     if red:
         # Denoised targets d_c = D_sigma(y_c^{(k)}) from the current iterate (held fixed
         # within the solve; this is the RED half-quadratic / fixed-point step).
-        d = [denoiser.denoise(y[c].dat, sett.red_sigma) for c in range(len(x))]
+        d = [denoiser.denoise(y[c].dat, sig_k) for c in range(len(x))]
         if sett.red_linesearch:
             y_old = [y[c].dat.clone() for c in range(len(x))]
-            nll_old = _compute_nll(x, y, sett, rho, denoiser=denoiser)[0]
+            nll_old = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_k)[0]
 
     # ----------
     # UPDATE: y
@@ -208,7 +230,7 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None):
     # ----------
     if red and sett.red_linesearch:
         y_new = [y[c].dat.clone() for c in range(len(x))]
-        nll_new = _compute_nll(x, y, sett, rho, denoiser=denoiser)[0]
+        nll_new = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_k)[0]
         t = 1.0
         n_ls = 0
         while nll_new > nll_old and n_ls < 6:
@@ -216,7 +238,7 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None):
             n_ls += 1
             for c in range(len(x)):
                 y[c].dat = (1.0 - t) * y_old[c] + t * y_new[c]
-            nll_new = _compute_nll(x, y, sett, rho, denoiser=denoiser)[0]
+            nll_new = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_k)[0]
         if nll_new > nll_old:
             # No acceptable step found -> null step (revert), objective non-increasing.
             for c in range(len(x)):
@@ -226,7 +248,7 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None):
     # Compute model objective function
     # ----------
     if sett.tolerance > 0:
-        obj[n_iter, 0], obj[n_iter, 1], obj[n_iter, 2] = _compute_nll(x, y, sett, rho, denoiser=denoiser)  # nl_pyx, nl_pxy, nl_py
+        obj[n_iter, 0], obj[n_iter, 1], obj[n_iter, 2] = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_k)  # nl_pyx, nl_pxy, nl_py
 
     # ----------
     # UPDATE: z  (JTV proximal / vectorial soft-threshold on the gradient field Dy)
@@ -476,7 +498,7 @@ def _update_scaling(x, y, sett, max_niter_gn=1, num_linesearch=4, verbose=0):
     return x, sll
 
 
-def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64, denoiser=None):
+def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64, denoiser=None, red_sigma=None):
     """ Compute negative model log-likelihood.
 
     Args:
@@ -513,11 +535,12 @@ def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64, denoiser=None):
     total = nll_xy + nll_y
     if denoiser is not None and _red_active(sett):
         mu_ch = _red_mu_channels(x, sett)  # same per-channel weights as the y-update
+        sig = sett.red_sigma if red_sigma is None else red_sigma
         nll_red = torch.tensor(0, device=sett.device, dtype=torch.float64)
         for c in range(len(x)):
             if not mu_ch[c]:
                 continue
-            dc = denoiser.denoise(y[c].dat, sett.red_sigma)
+            dc = denoiser.denoise(y[c].dat, sig)
             nll_red += 0.5 * mu_ch[c] * torch.sum(y[c].dat * (y[c].dat - dc), dtype=sum_dtype)
         total = total + nll_red
 

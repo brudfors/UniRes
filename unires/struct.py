@@ -71,6 +71,7 @@ class settings:
         self.red_mu: float = 0.0  # RED denoiser-prior weight (mu); 0 disables the DL term
         self.red_auto_scale: bool = True  # mu is dimensionless: scale it to the per-channel data term (tau) so a global mu can't be catastrophically mis-set. False = old absolute mu.
         self.red_sigma: float = 0.05  # RED denoiser strength (noise level, standardised [0,1] units)
+        self.red_sigma_end: float = None  # if set, anneal red_sigma -> this over max_iter (strong denoise early, gentle late); None = constant
         self.red_denoiser: str = 'gaussian'  # Denoiser backend: 'gaussian' (analytic) | 'drunet' (pretrained 2.5D CNN) | 'biasfree3d' (native-3D bias-free CNN, needs red_weights)
         self.red_weights: str = None  # Path to denoiser weights (None -> backend default/download)
         self.red_tile: int = 0  # biasfree3d: overlap-tile inference at this size (0 = whole-volume pass)
