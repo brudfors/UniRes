@@ -89,6 +89,8 @@ def main():
     ap.add_argument('--workers', type=int, default=8)
     ap.add_argument('--n2n', type=int, default=1)
     ap.add_argument('--val_every', type=int, default=2000)
+    ap.add_argument('--save_every', type=int, default=1000, help='checkpoint last.pt every N steps')
+    ap.add_argument('--resume', default=None, help='checkpoint to resume from (default: <out>/last.pt if present)')
     ap.add_argument('--holdout', default=None, help="contrast to EXCLUDE from training (e.g. PD) to test cross-contrast generalization")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
@@ -107,15 +109,33 @@ def main():
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-5)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.iters)
     writer = SummaryWriter(args.out)
+
+    # Resume: auto-continue from last.pt in --out (or an explicit --resume path). This
+    # pod livelocks after ~4k steps, so training is done in RESUMING BURSTS -- relaunch
+    # the same command and it picks up where it left off, accumulating past the hangs.
+    start_step, best = 0, -1e9
+    resume_path = args.resume or os.path.join(args.out, 'last.pt')
+    if os.path.exists(resume_path):
+        ck = torch.load(resume_path, map_location=dev)
+        net.load_state_dict(ck['model'])
+        if 'opt' in ck:
+            opt.load_state_dict(ck['opt']); sched.load_state_dict(ck['sched'])
+        start_step = int(ck.get('step', 0)); best = float(ck.get('best', -1e9))
+        print(f"RESUMED from {resume_path} at step {start_step} (best={best:.2f})", flush=True)
+
     print(f"train contrasts={contrasts} holdout={args.holdout} params="
           f"{sum(p.numel() for p in net.parameters())/1e6:.1f}M batch={args.batch} "
-          f"iters={args.iters}", flush=True)
+          f"iters={args.iters} start={start_step}", flush=True)
+
+    def save(name):
+        torch.save({'model': net.state_dict(), 'opt': opt.state_dict(),
+                    'sched': sched.state_dict(), 'args': vars(args),
+                    'step': step, 'best': best}, os.path.join(args.out, name))
 
     net.train()
     t0 = time.time()
     run_loss = 0.0
-    best = -1e9
-    step = 0
+    step = start_step
     for clean in dl:
         clean = clean.to(dev, non_blocking=True)
         # heavy augmentation + noise on the GPU (dataset returns only a cheap clean patch)
@@ -138,10 +158,12 @@ def main():
         run_loss += loss.item(); step += 1
         if step % 100 == 0:
             avg = run_loss / 100; run_loss = 0.0
-            ips = step / (time.time() - t0)
+            ips = (step - start_step) / (time.time() - t0)
             writer.add_scalar('train/l1', avg, step)
             print(f"step {step}/{args.iters}  l1={avg:.4f}  {ips:.1f} it/s  "
                   f"lr={sched.get_last_lr()[0]:.2e}", flush=True)
+        if step % args.save_every == 0:
+            save('last.pt')   # frequent save so a livelock loses <= save_every steps
         if step % args.val_every == 0 or step == args.iters:
             v = validate(net, dev)
             msg = "  ".join(f"{k}={val:.2f}" for k, val in v.items())
@@ -150,12 +172,10 @@ def main():
                 writer.add_scalar(f'val_psnr/{k}', val, step)
             writer.add_scalar('val_psnr/mean', mean, step)
             print(f"[val step {step}] BrainWeb denoise PSNR  {msg}  mean={mean:.2f}", flush=True)
-            torch.save({'model': net.state_dict(), 'args': vars(args), 'step': step},
-                       os.path.join(args.out, 'last.pt'))
+            save('last.pt')
             if mean > best:
                 best = mean
-                torch.save({'model': net.state_dict(), 'args': vars(args), 'step': step},
-                           os.path.join(args.out, 'best.pt'))
+                save('best.pt')
         if step >= args.iters:
             break
     print(f"done in {(time.time()-t0)/60:.1f} min  best val mean PSNR={best:.2f}", flush=True)
