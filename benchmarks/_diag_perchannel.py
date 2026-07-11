@@ -13,6 +13,7 @@ def main():
     ap.add_argument('--sigma', type=float, default=0.03)
     ap.add_argument('--max_iter', type=int, default=30)
     ap.add_argument('--channels', type=int, default=3)
+    ap.add_argument('--vx_ts', type=float, default=4.0, help='thick-slice factor (6 = 6mm-ish, harder)')
     ap.add_argument('--denoiser', default='drunet',
                     help="RED backend: 'drunet' | 'biasfree3d' | 'gaussian'")
     ap.add_argument('--weights', default=None, help='checkpoint for biasfree3d')
@@ -26,7 +27,7 @@ def main():
         extra['red_weights'] = args.weights
     if args.sigma_end is not None:
         extra['red_sigma_end'] = args.sigma_end
-    gt, gt_mat, x, mat_x = simulate(args.channels)
+    gt, gt_mat, x, mat_x = simulate(args.channels, vx_ts=args.vx_ts)
     names = CH_NAMES[:args.channels]
     print(f"PER-CHANNEL  channels={args.channels} sigma={args.sigma} "
           f"max_iter={args.max_iter} denoiser={args.denoiser}\n")
