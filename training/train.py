@@ -170,7 +170,7 @@ def main():
         torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)  # stabilize
         opt.step(); sched.step()
         run_loss += loss.item(); step += 1
-        if step % 100 == 0:
+        if step % 25 == 0:
             avg = run_loss / 100; run_loss = 0.0
             ips = (step - start_step) / (time.time() - t0)
             writer.add_scalar('train/l1', avg, step)
