@@ -215,12 +215,34 @@ class IXIPatches(Dataset):
         return (noisy[None].float(), target[None].float(), smap[None].float())
 
 
-def augment_noise_gpu(clean, sigma_min=0.0, sigma_max=0.15, rician_prob=0.5, n2n=True):
-    """Batched GPU augmentation + noise for gpu_aug mode. Input/return on the SAME
-    device as `clean` ([B,1,D,H,W]). Applies per-sample gamma, contrast inversion,
-    smooth bias field, global scale (all intensity ops), then Gaussian/Rician noise;
-    returns (noisy, target, sigma_vec). Mirrors IXIPatches CPU augmentation but runs
-    on the GPU so the dataloader stays trivial (num_workers=0, no hang)."""
+def _gauss_blur3d(x, fwhm):
+    """Separable 3D Gaussian blur (single scalar fwhm in voxels) with reflect pad."""
+    if fwhm <= 0:
+        return x
+    std = float(fwhm) / 2.355
+    r = max(1, int(round(3 * std)))
+    c = torch.arange(-r, r + 1, device=x.device, dtype=x.dtype)
+    k = torch.exp(-(c ** 2) / (2 * std * std)); k = k / k.sum()
+    for d in range(3):
+        shp = [1, 1, 1, 1, 1]; shp[2 + d] = k.numel()
+        ker = k.view(shp)
+        pad = [0, 0, 0, 0, 0, 0]; pad[2 * (2 - d)] = r; pad[2 * (2 - d) + 1] = r
+        x = F.conv3d(F.pad(x, pad, mode='reflect'), ker)
+    return x
+
+
+def augment_noise_gpu(clean, sigma_min=0.0, sigma_max=0.15, rician_prob=0.5, n2n=True,
+                      blur_max=0.0):
+    """Batched GPU augmentation + degradation for gpu_aug mode. Input/return on the
+    SAME device as `clean` ([B,1,D,H,W]). Applies per-sample gamma, contrast inversion,
+    smooth bias field, global scale, then degradation -> returns (input, target, sigma).
+
+    * blur_max == 0 (DENOISE task): input = clean + Gaussian/Rician noise; target =
+      clean (or a 2nd noise draw if n2n). The prior learns to remove noise.
+    * blur_max > 0 (RESTORE / super-resolution task): input = blur(clean, fwhm) + noise
+      with fwhm ~ U(0, blur_max) voxels; target = the SHARP clean patch. The prior
+      learns to remove blur AND noise -> in RED it can ADD high-frequency detail
+      (improves sharp channels like T1, not just denoise). Supervised (target sharp)."""
     B = clean.shape[0]
     dev = clean.device
     x = clean.clamp_min(0.0)
@@ -255,6 +277,12 @@ def augment_noise_gpu(clean, sigma_min=0.0, sigma_max=0.15, rician_prob=0.5, n2n
         rician = torch.sqrt((c + sigma * n1) ** 2 + (sigma * n2) ** 2)
         return ric * rician + (1.0 - ric) * gauss
 
-    noisy = add_noise(x)
-    target = add_noise(x) if n2n else x
+    if blur_max > 0:
+        # RESTORE: blur the input (one fwhm per batch), keep the target sharp.
+        fwhm = float(torch.empty(1).uniform_(0.0, blur_max).item())
+        noisy = add_noise(_gauss_blur3d(x, fwhm))
+        target = x
+    else:
+        noisy = add_noise(x)
+        target = add_noise(x) if n2n else x
     return noisy, target, sigma.reshape(-1)

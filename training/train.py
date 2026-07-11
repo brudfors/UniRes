@@ -50,8 +50,11 @@ def _load_bw(path, dev):
 
 
 @torch.no_grad()
-def validate(net, dev, sigmas=(0.03, 0.06, 0.1), crop=128):
-    """Denoise-only PSNR on BrainWeb (train->test cross-dataset). Returns dict."""
+def validate(net, dev, sigmas=(0.03, 0.06, 0.1), crop=128, blur_max=0.0):
+    """Restoration PSNR on BrainWeb (train->test cross-dataset). Returns dict.
+    blur_max>0 -> input is blurred (fwhm=blur_max/2) + noise, target sharp (RESTORE
+    task); else denoise-only. Measures how well the net recovers the sharp GT."""
+    from data import _gauss_blur3d
     net.eval()
     names = ['T1', 'T2', 'PD']
     out = {}
@@ -65,8 +68,11 @@ def validate(net, dev, sigmas=(0.03, 0.06, 0.1), crop=128):
         g = torch.Generator(device=dev).manual_seed(1234)
         ps = []
         for s in sigmas:
-            noisy = clean + s * torch.randn(clean.shape, generator=g, device=dev)
-            den = net(noisy[None, None], sigma=s)[0, 0].clamp_min(0.0)
+            deg = clean[None, None]
+            if blur_max > 0:
+                deg = _gauss_blur3d(deg, blur_max * 0.5)
+            deg = deg + s * torch.randn(deg.shape, generator=g, device=dev)
+            den = net(deg, sigma=s)[0, 0].clamp_min(0.0)
             mse = ((den - clean) ** 2).mean()
             rng = clean.max() - clean.min()
             ps.append(float(10 * torch.log10(rng ** 2 / mse.clamp_min(1e-12))))
@@ -88,6 +94,8 @@ def main():
     ap.add_argument('--depth', type=int, default=3)
     ap.add_argument('--workers', type=int, default=8)
     ap.add_argument('--n2n', type=int, default=1)
+    ap.add_argument('--blur_max', type=float, default=0.0,
+                    help='>0 => RESTORE task: input blurred by fwhm~U(0,blur_max) vox, target sharp (learns to add detail); 0 => denoise')
     ap.add_argument('--val_every', type=int, default=2000)
     ap.add_argument('--save_every', type=int, default=1000, help='checkpoint last.pt every N steps')
     ap.add_argument('--resume', default=None, help='checkpoint to resume from (default: <out>/last.pt if present)')
@@ -141,7 +149,8 @@ def main():
         # heavy augmentation + noise on the GPU (dataset returns only a cheap clean patch)
         noisy, target, s = augment_noise_gpu(
             clean, sigma_min=0.0, sigma_max=args.sigma_max,
-            rician_prob=0.5, n2n=bool(args.n2n))
+            rician_prob=0.5, n2n=bool(args.n2n) and args.blur_max == 0,
+            blur_max=args.blur_max)
         with torch.autocast('cuda', dtype=torch.bfloat16):
             den = net(noisy, sigma=s)
             loss = torch.nn.functional.l1_loss(den, target)
@@ -165,7 +174,7 @@ def main():
         if step % args.save_every == 0:
             save('last.pt')   # frequent save so a livelock loses <= save_every steps
         if step % args.val_every == 0 or step == args.iters:
-            v = validate(net, dev)
+            v = validate(net, dev, blur_max=args.blur_max)
             msg = "  ".join(f"{k}={val:.2f}" for k, val in v.items())
             mean = sum(v.values()) / max(len(v), 1)
             for k, val in v.items():
