@@ -22,6 +22,7 @@ from collections import OrderedDict
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 CONTRASTS = ('T1', 'T2', 'PD')
@@ -67,7 +68,14 @@ def _smooth_bias_field(shape, device, strength=0.3, ctrl=4):
 class IXIPatches(Dataset):
     def __init__(self, root, patch=96, patches_per_epoch=20000, contrasts=CONTRASTS,
                  sigma_min=0.0, sigma_max=0.15, rician_prob=0.5, n2n=True,
-                 augment=True, cache_volumes=64, fg_frac=0.9, p_new=0.12, seed=0):
+                 augment=True, cache_volumes=64, fg_frac=0.9, p_new=0.12, seed=0,
+                 gpu_aug=False):
+        # gpu_aug: if True, __getitem__ returns ONLY a cheap clean patch (crop + flips/
+        # rot90) and the heavy augmentation + noise is done batched on the GPU in the
+        # training loop (see augment_noise_gpu). This keeps per-sample CPU cost ~0 so
+        # num_workers=0 is fast -> no multiprocessing DataLoader (which livelocked on
+        # this shared, heavily-loaded pod).
+        self.gpu_aug = bool(gpu_aug)
         self.paths = list_ixi(root, contrasts)
         self.patch = int(patch)
         self.length = int(patches_per_epoch)
@@ -188,6 +196,16 @@ class IXIPatches(Dataset):
             vidx = rng.randint(0, len(self.paths))
         vol, bbox = self._get_volume(vidx)
         clean = self._sample_patch(vol, bbox, rng)
+        if self.gpu_aug:
+            # cheap CPU part only: flips + 90deg rotations (views/copies); heavy aug +
+            # noise happen on the GPU in the training loop.
+            if self.augment:
+                for d in range(3):
+                    if rng.random() < 0.5:
+                        clean = torch.flip(clean, dims=[d])
+                if rng.random() < 0.5:
+                    clean = torch.rot90(clean, rng.randint(1, 3), dims=[0, 1])
+            return clean[None].float().contiguous()
         if self.augment:
             clean = self._augment(clean, rng)
         sigma = rng.uniform(self.sigma_min, self.sigma_max)
@@ -195,3 +213,48 @@ class IXIPatches(Dataset):
         target = self._add_noise(clean, sigma, rng) if self.n2n else clean
         smap = torch.full_like(noisy, sigma)
         return (noisy[None].float(), target[None].float(), smap[None].float())
+
+
+def augment_noise_gpu(clean, sigma_min=0.0, sigma_max=0.15, rician_prob=0.5, n2n=True):
+    """Batched GPU augmentation + noise for gpu_aug mode. Input/return on the SAME
+    device as `clean` ([B,1,D,H,W]). Applies per-sample gamma, contrast inversion,
+    smooth bias field, global scale (all intensity ops), then Gaussian/Rician noise;
+    returns (noisy, target, sigma_vec). Mirrors IXIPatches CPU augmentation but runs
+    on the GPU so the dataloader stays trivial (num_workers=0, no hang)."""
+    B = clean.shape[0]
+    dev = clean.device
+    x = clean.clamp_min(0.0)
+    # contrast inversion (per-sample, prob 0.5)
+    inv = (torch.rand(B, 1, 1, 1, 1, device=dev) < 0.5).float()
+    x = inv * (1.0 - x).clamp_min(0.0) + (1.0 - inv) * x
+    # gamma (prob 0.7): x**gamma, gamma ~ logU(0.6,1.7)
+    do_g = (torch.rand(B, 1, 1, 1, 1, device=dev) < 0.7).float()
+    gamma = torch.exp(torch.empty(B, 1, 1, 1, 1, device=dev).uniform_(
+        float(torch.log(torch.tensor(0.6))), float(torch.log(torch.tensor(1.7)))))
+    gamma = do_g * gamma + (1.0 - do_g) * 1.0
+    x = x.clamp_min(0.0) ** gamma
+    # smooth multiplicative bias field (prob 0.5): upsample a 4^3 low-freq field
+    do_b = (torch.rand(B, 1, 1, 1, 1, device=dev) < 0.5).float()
+    low = torch.randn(B, 1, 4, 4, 4, device=dev)
+    field = F.interpolate(low, size=x.shape[2:], mode='trilinear', align_corners=False)
+    field = field / field.abs().amax(dim=(2, 3, 4), keepdim=True).clamp_min(1e-6)
+    x = x * (1.0 + do_b * 0.3 * field)
+    # mild global scale (prob 0.5)
+    do_s = (torch.rand(B, 1, 1, 1, 1, device=dev) < 0.5).float()
+    scl = torch.exp(torch.empty(B, 1, 1, 1, 1, device=dev).uniform_(
+        float(torch.log(torch.tensor(0.7))), float(torch.log(torch.tensor(1.4)))))
+    x = x * (do_s * scl + (1.0 - do_s))
+    x = x.clamp_min(0.0)
+    # noise: per-sample sigma; Rician for a fraction, else Gaussian
+    sigma = torch.empty(B, 1, 1, 1, 1, device=dev).uniform_(sigma_min, sigma_max)
+
+    def add_noise(c):
+        ric = (torch.rand(B, 1, 1, 1, 1, device=dev) < rician_prob).float()
+        n1 = torch.randn_like(c); n2 = torch.randn_like(c)
+        gauss = c + sigma * n1
+        rician = torch.sqrt((c + sigma * n1) ** 2 + (sigma * n2) ** 2)
+        return ric * rician + (1.0 - ric) * gauss
+
+    noisy = add_noise(x)
+    target = add_noise(x) if n2n else x
+    return noisy, target, sigma.reshape(-1)

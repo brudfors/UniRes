@@ -24,7 +24,7 @@ import torch
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from data import IXIPatches
+from data import IXIPatches, augment_noise_gpu
 from model import BiasFreeUNet3D
 
 torch.set_num_threads(4)  # main process (workers pinned to 1 in _worker_init)
@@ -96,10 +96,13 @@ def main():
 
     contrasts = tuple(c for c in ('T1', 'T2', 'PD') if c != args.holdout)
     ds = IXIPatches(args.data, patch=args.patch, patches_per_epoch=args.batch * args.iters,
-                    contrasts=contrasts, sigma_max=args.sigma_max, n2n=bool(args.n2n))
+                    contrasts=contrasts, sigma_max=args.sigma_max, n2n=bool(args.n2n),
+                    gpu_aug=True)
     dl = DataLoader(ds, batch_size=args.batch, num_workers=args.workers, shuffle=False,
-                    pin_memory=True, drop_last=True, persistent_workers=args.workers > 0,
-                    worker_init_fn=_worker_init, prefetch_factor=4 if args.workers else None)
+                    pin_memory=args.workers > 0, drop_last=True,
+                    persistent_workers=args.workers > 0,
+                    worker_init_fn=_worker_init if args.workers else None,
+                    prefetch_factor=4 if args.workers else None)
     net = BiasFreeUNet3D(base=args.base, depth=args.depth).to(dev)
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-5)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.iters)
@@ -113,10 +116,12 @@ def main():
     run_loss = 0.0
     best = -1e9
     step = 0
-    for noisy, target, smap in dl:
-        noisy = noisy.to(dev, non_blocking=True)
-        target = target.to(dev, non_blocking=True)
-        s = smap.to(dev, non_blocking=True)[:, :, :1, :1, :1].reshape(-1)
+    for clean in dl:
+        clean = clean.to(dev, non_blocking=True)
+        # heavy augmentation + noise on the GPU (dataset returns only a cheap clean patch)
+        noisy, target, s = augment_noise_gpu(
+            clean, sigma_min=0.0, sigma_max=args.sigma_max,
+            rician_prob=0.5, n2n=bool(args.n2n))
         with torch.autocast('cuda', dtype=torch.bfloat16):
             den = net(noisy, sigma=s)
             loss = torch.nn.functional.l1_loss(den, target)
