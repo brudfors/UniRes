@@ -231,8 +231,34 @@ def _gauss_blur3d(x, fwhm):
     return x
 
 
+def _thick_slice_degrade(x, factor, axis):
+    """Simulate a THICK-SLICE acquisition along `axis`: blur by the slice thickness
+    (fwhm ~ factor voxels) then downsample-by-factor and upsample back -> the detail
+    along `axis` is destroyed, exactly the degradation UniRes must super-resolve. This
+    trains the restoration prior to FILL IN detail in badly under-resolved (e.g. 6 mm)
+    directions, not merely denoise. Anisotropic + random axis -> orientation-general."""
+    if factor <= 1.0:
+        return x
+    # directional blur (separable, only along `axis`)
+    std = float(factor) / 2.355
+    r = max(1, int(round(3 * std)))
+    c = torch.arange(-r, r + 1, device=x.device, dtype=x.dtype)
+    k = torch.exp(-(c ** 2) / (2 * std * std)); k = k / k.sum()
+    shp = [1, 1, 1, 1, 1]; shp[2 + axis] = k.numel()
+    pad = [0, 0, 0, 0, 0, 0]; pad[2 * (2 - axis)] = r; pad[2 * (2 - axis) + 1] = r
+    x = F.conv3d(F.pad(x, pad, mode='reflect'), k.view(shp))
+    # downsample then upsample along `axis` (resolution loss)
+    n = x.shape[2 + axis]
+    lo = max(1, int(round(n / factor)))
+    size_dn = list(x.shape[2:]); size_dn[axis] = lo
+    x = F.interpolate(x, size=tuple(size_dn), mode='trilinear', align_corners=False)
+    size_up = list(x.shape[2:]); size_up[axis] = n
+    x = F.interpolate(x, size=tuple(size_up), mode='trilinear', align_corners=False)
+    return x
+
+
 def augment_noise_gpu(clean, sigma_min=0.0, sigma_max=0.15, rician_prob=0.5, n2n=True,
-                      blur_max=0.0):
+                      blur_max=0.0, thick_max=0.0):
     """Batched GPU augmentation + degradation for gpu_aug mode. Input/return on the
     SAME device as `clean` ([B,1,D,H,W]). Applies per-sample gamma, contrast inversion,
     smooth bias field, global scale, then degradation -> returns (input, target, sigma).
@@ -277,8 +303,19 @@ def augment_noise_gpu(clean, sigma_min=0.0, sigma_max=0.15, rician_prob=0.5, n2n
         rician = torch.sqrt((c + sigma * n1) ** 2 + (sigma * n2) ** 2)
         return ric * rician + (1.0 - ric) * gauss
 
-    if blur_max > 0:
-        # RESTORE: blur the input (one fwhm per batch), keep the target sharp.
+    if thick_max > 0:
+        # RESTORE (thick-slice): degrade the input with anisotropic thick-slice
+        # resolution loss (random axis, factor ~U(1,thick_max)) + a little isotropic
+        # blur + noise; target stays SHARP -> learns to FILL IN detail.
+        axis = int(torch.randint(0, 3, (1,)).item())
+        factor = float(torch.empty(1).uniform_(1.0, thick_max).item())
+        deg = _thick_slice_degrade(x, factor, axis)
+        if blur_max > 0:
+            deg = _gauss_blur3d(deg, float(torch.empty(1).uniform_(0.0, blur_max).item()))
+        noisy = add_noise(deg)
+        target = x
+    elif blur_max > 0:
+        # RESTORE (isotropic blur): input blurred, target sharp.
         fwhm = float(torch.empty(1).uniform_(0.0, blur_max).item())
         noisy = add_noise(_gauss_blur3d(x, fwhm))
         target = x
