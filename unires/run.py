@@ -60,8 +60,9 @@ def fit(x, y, sett):
         for c in range(len(x)):
             y[c].lam = sett.reg_scl[cnt_scl] * y[c].lam0
             
-        # Build the RED denoiser once (only if the DL prior is active)
+        # Build the DL priors once (only if the corresponding prior is active)
         denoiser = None
+        grad_prior = None
         if sett.max_iter > 0:
             # Get ADMM step-size
             rho = _step_size(x, y, sett, verbose=True)
@@ -76,6 +77,11 @@ def fit(x, y, sett):
                 if float(sett.red_mu) > 0:
                     from ._denoiser import make_denoiser
                     denoiser = make_denoiser(sett)
+            # Merged-gradient DL prior (issue: DL prior); acts in the JTV z-update,
+            # one network call/iter, C-independent. grad_net='softthr' == classic MTV.
+            if 'gradnet' in getattr(sett, 'prior', 'mtv'):
+                from ._grad_prior import make_grad_prior
+                grad_prior = make_grad_prior(sett)
 
         # ----------
         # ITERATE:
@@ -95,7 +101,7 @@ def fit(x, y, sett):
             # UPDATE: image
             # ----------
             y, z, w, tmp, obj = _update_admm(x, y, z, w, rho, tmp, obj, n_iter,
-                                             sett, denoiser)
+                                             sett, denoiser, grad_prior)
 
             # Show JTV
             if sett.show_jtv:

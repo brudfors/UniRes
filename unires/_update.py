@@ -83,6 +83,18 @@ def _red_active(sett):
             and float(getattr(sett, 'red_mu', 0.0)) > 0.0)
 
 
+def _grad_active(sett):
+    """True if the merged-gradient DL prior is active (prior includes 'gradnet').
+
+    When active, the JTV z-update's analytic soft-threshold gain on the pooled
+    gradient magnitude is replaced by ``grad_prior.gain(m, rho)`` (one network
+    call per iteration, C-independent); the broadcast is left verbatim. With the
+    default ``grad_net='softthr'`` the learned gain == the analytic gain, so the
+    reconstruction is bit-for-bit identical to ``prior='mtv'`` (Phase 0 check).
+    """
+    return 'gradnet' in getattr(sett, 'prior', 'mtv')
+
+
 def _red_mu_channels(x, sett):
     """Per-channel RED weights mu_c (single source of truth for the RHS, the AtA
     operator and the reported RED energy, so all three stay consistent).
@@ -182,7 +194,7 @@ def _precond(x, y, rho, sett):
     return precond
 
 
-def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None):
+def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None, grad_prior=None):
     """
 
 
@@ -331,8 +343,15 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None):
         if alpha != 1:  # Use over/under-relaxation
             Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
         tmp += torch.sum((w[c, ...] / rho + Dy) ** 2, dim=0)
-    tmp.sqrt_()  # in-place
-    tmp = ((tmp - one / rho).clamp_min(0)) / (tmp + tiny)
+    tmp.sqrt_()  # in-place  -> tmp is now the merged (channel-pooled) magnitude m
+    # Merged-gradient DL prior (issue: DL prior): replace the analytic soft-threshold
+    # gain on m with a learned/generalized gain -- ONE network call per iteration,
+    # C-independent. grad_net='softthr' returns the exact analytic gain, so this is
+    # bit-for-bit identical to the classic path below (Phase 0 equivalence check).
+    if _grad_active(sett) and grad_prior is not None:
+        tmp = grad_prior.gain(tmp, rho, tiny)
+    else:
+        tmp = ((tmp - one / rho).clamp_min(0)) / (tmp + tiny)
 
     for c in range(len(x)):
         Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
