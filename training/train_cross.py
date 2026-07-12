@@ -64,6 +64,7 @@ def main():
     ap.add_argument('--lr', type=float, default=2e-4)
     ap.add_argument('--base', type=int, default=48)
     ap.add_argument('--thick_max', type=float, default=8.0)
+    ap.add_argument('--ctx_drop', type=float, default=0.4, help='context-dropout prob (classifier-free style)')
     ap.add_argument('--val_every', type=int, default=1000)
     ap.add_argument('--save_every', type=int, default=250)
     args = ap.parse_args()
@@ -93,6 +94,13 @@ def main():
     for clean in dl:
         clean = clean.to(dev, non_blocking=True)
         inp, tgt, sig, ctx = augment_noise_cross(clean, thick_max=args.thick_max)
+        # CONTEXT DROPOUT (classifier-free style): zero the cross-channel context on a
+        # fraction of samples so the net learns a strong SELF-channel prior (aggressive
+        # filling) AND to exploit context when present -> best of both (gains + no
+        # hallucination), instead of over-relying on context (too conservative).
+        if args.ctx_drop > 0:
+            m = (torch.rand(inp.shape[0], 1, 1, 1, 1, device=dev) < args.ctx_drop).float()
+            ctx = ctx * (1.0 - m)
         with torch.autocast('cuda', dtype=torch.bfloat16):
             den = net(inp, sigma=sig, context=ctx)
             loss = torch.nn.functional.l1_loss(den, tgt)
