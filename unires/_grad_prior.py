@@ -49,7 +49,10 @@ def _robust_pos_scale(m, q=0.99, max_samples=1_000_000):
     if ref.numel() == 0:
         return m.new_tensor(1.0)
     if ref.numel() > max_samples:
-        idx = torch.linspace(0, ref.numel() - 1, max_samples, device=ref.device).long()
+        # float64 + clamp: for >~16.7M elems a float32 linspace endpoint rounds past
+        # numel-1 -> out-of-bounds gather (hits the K=3 per-direction field, ~3x larger).
+        idx = torch.linspace(0, ref.numel() - 1, max_samples, device=ref.device,
+                             dtype=torch.float64).long().clamp_(max=ref.numel() - 1)
         ref = ref.flatten()[idx]
     return torch.quantile(ref.float(), q).clamp_min(1e-8)
 
@@ -156,9 +159,11 @@ class GradUNet3D:
         ckpt = torch.load(weights, map_location=device or 'cpu')
         a = ckpt.get('args', {}) if isinstance(ckpt, dict) else {}
         state = ckpt['model'] if isinstance(ckpt, dict) and 'model' in ckpt else ckpt
-        in_ch = state['head.weight'].shape[1]           # 1 (blind) or 2 (sigma-mapped)
+        # K = out channels (tail); in_ch = K + sigma_map -> recover sigma_map
+        self.k = int(state['tail.weight'].shape[0])     # 1 (pooled magnitude) or 3 (per-direction)
+        in_ch = int(state['head.weight'].shape[1])
         net = BiasFreeUNet3D(base=a.get('base', base), depth=a.get('depth', depth),
-                             sigma_map=(in_ch >= 2), residual=True, context=False)
+                             sigma_map=(in_ch > self.k), residual=True, context=False, k=self.k)
         net.load_state_dict(state)
         self.model = net.to(device).eval() if device is not None else net.eval()
         self.sigma = float(a.get('grad_sigma', sigma))  # standardised-units hint (0 = blind)
@@ -167,12 +172,18 @@ class GradUNet3D:
 
     @torch.no_grad()
     def _restore(self, m):
-        """Predict the restored (sharp) pooled magnitude m_hat from m (>= 0)."""
+        """Predict the restored (sharp) magnitude field m_hat from m (>= 0).
+
+        m is [D,H,W] (K=1 pooled magnitude, grad_apply='magnitude') or [K,D,H,W]
+        (K=3 per-direction merged field, grad_apply='perdir'). One net pass either way."""
         scale = _robust_pos_scale(m)
-        x = (m / scale)[None, None]
-        if self.patch <= 0 or max(m.shape) <= self.patch:
-            out = self.model(x, self.sigma)[0, 0]
-        else:                                            # overlap-tiled (memory bound)
+        # -> [1, K, D, H, W]; a scalar field gets an explicit channel axis.
+        x = (m / scale)[None, None] if m.dim() == 3 else (m / scale)[None]
+        spatial = m.shape if m.dim() == 3 else m.shape[1:]
+        if self.patch <= 0 or max(spatial) <= self.patch:
+            out = self.model(x, self.sigma)[0]           # [K,D,H,W]
+            out = out[0] if m.dim() == 3 else out        # scalar -> [D,H,W]
+        else:                                            # overlap-tiled (scalar K=1 only)
             out = torch.zeros_like(m); wsum = torch.zeros_like(m)
             t, ov = self.patch, self.overlap
             step = t - ov

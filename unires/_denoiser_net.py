@@ -50,12 +50,13 @@ class BiasFreeUNet3D(nn.Module):
         residual (bool): predict noise (denoised = x - net(x)) if True.
     """
     def __init__(self, base=48, depth=3, n_res=2, sigma_map=True, residual=True,
-                 context=False):
+                 context=False, k=1):
         super().__init__()
         self.sigma_map = sigma_map
         self.residual = residual
         self.context = context  # extra input channel: aggregate of OTHER channels' edges
-        in_ch = 1 + int(sigma_map) + int(context)
+        self.k = int(k)          # signal channels in/out (1 = image/scalar-magnitude; K>1 = per-direction merged field)
+        in_ch = self.k + int(sigma_map) + int(context)
         self.head = _conv(in_ch, base)
         chs = [base * (2 ** i) for i in range(depth + 1)]
         self.down = nn.ModuleList()
@@ -71,7 +72,7 @@ class BiasFreeUNet3D(nn.Module):
             self.up.append(_conv(chs[i + 1], chs[i]))            # 1-conv after trilinear up
             self.reduce.append(_conv(2 * chs[i], chs[i]))        # fuse skip
             self.dec.append(nn.Sequential(*[_ResBlock(chs[i]) for _ in range(n_res)]))
-        self.tail = _conv(base, 1)
+        self.tail = _conv(base, self.k)
 
     def forward(self, x, sigma=None, context=None):
         inp = x
@@ -81,7 +82,9 @@ class BiasFreeUNet3D(nn.Module):
                 sigma = x.new_zeros(())
             if not torch.is_tensor(sigma):
                 sigma = x.new_tensor(float(sigma))
-            smap = sigma.expand_as(x) if sigma.dim() == 0 else sigma.view(-1, 1, 1, 1, 1).expand_as(x)
+            # one sigma-map channel (broadcast to the k signal channels if k>1)
+            ref = x[:, :1] if self.k > 1 else x
+            smap = sigma.expand_as(ref) if sigma.dim() == 0 else sigma.view(-1, 1, 1, 1, 1).expand_as(ref)
             feats.append(smap)
         if self.context:
             # cross-channel guidance: aggregate edge map of OTHER channels (bias-free-

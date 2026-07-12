@@ -47,17 +47,32 @@ BRAINWEB = [
 ]
 
 
-def grad_mag(v, eps=1e-8):
-    """Per-voxel pooled gradient magnitude of v [B,1,D,H,W] (forward differences,
-    zero-padded to keep shape). Pools the 3 directions -> [B,1,D,H,W] (>= 0)."""
-    g = 0.0
+def _dirs(v):
+    """Forward-difference gradients of v [B,1,D,H,W] along the 3 axes, zero-padded to
+    keep shape -> list of 3 tensors [B,1,D,H,W]."""
+    out = []
     for d in range(3):
         gd = torch.diff(v, dim=2 + d)
         pad = [0, 0, 0, 0, 0, 0]
         pad[2 * (2 - d) + 1] = 1                 # pad the far end of this spatial dim
-        gd = F.pad(gd, pad)
-        g = g + gd ** 2
-    return torch.sqrt(g + eps)
+        out.append(F.pad(gd, pad))
+    return out
+
+
+def grad_mag(v, eps=1e-8):
+    """K=1 pooled gradient magnitude (over the 3 directions) -> [B,1,D,H,W] (>= 0)."""
+    return torch.sqrt(sum(gd ** 2 for gd in _dirs(v)) + eps)
+
+
+def grad_field(v, perdir, eps=1e-8):
+    """Merged-gradient field the z-update sees. perdir=False -> K=1 pooled magnitude
+    [B,1,D,H,W]; perdir=True -> K=3 per-direction magnitudes [B,3,D,H,W] (|d/dx|,|d/dy|,
+    |d/dz|). For a single-contrast patch (channel pooling trivial) the per-direction
+    channel-pooled magnitude is just |forward-diff| along that axis -- the same
+    statistical family as the multi-contrast pooled field, so it stays C-agnostic."""
+    if not perdir:
+        return grad_mag(v, eps)
+    return torch.cat([gd.abs() for gd in _dirs(v)], dim=1)   # [B,3,D,H,W] (>= 0)
 
 
 def _load_bw(path, dev):
@@ -70,7 +85,7 @@ def _load_bw(path, dev):
 
 
 @torch.no_grad()
-def validate(net, dev, thick_max, blur_max, sigma_max, crop=128):
+def validate(net, dev, thick_max, blur_max, sigma_max, perdir=False, crop=128):
     """Cross-dataset (BrainWeb) magnitude-restoration PSNR: recover m_sharp from the
     thick-slice-degraded magnitude. Higher = the net restores the sharp gradient field."""
     net.eval()
@@ -87,7 +102,7 @@ def validate(net, dev, thick_max, blur_max, sigma_max, crop=128):
         if blur_max > 0:
             deg = _gauss_blur3d(deg, blur_max * 0.5)
         deg = deg + (sigma_max * 0.5) * torch.randn(deg.shape, generator=g, device=dev)
-        m_deg, m_sharp = grad_mag(deg), grad_mag(clean)
+        m_deg, m_sharp = grad_field(deg, perdir), grad_field(clean, perdir)
         scale = torch.quantile(m_deg[m_deg > 0].float(), 0.99).clamp_min(1e-8)
         m_hat = (net(m_deg / scale, sigma=0.0).clamp_min(0.0) * scale)
         mse = ((m_hat - m_sharp) ** 2).mean()
@@ -111,10 +126,14 @@ def main():
     ap.add_argument('--sigma_max', type=float, default=0.05)
     ap.add_argument('--thick_max', type=float, default=8.0)
     ap.add_argument('--blur_max', type=float, default=1.0)
+    ap.add_argument('--grad_apply', default='magnitude', choices=['magnitude', 'perdir'],
+                    help="'magnitude' (K=1 pooled) or 'perdir' (K=3 per-direction merged field)")
     ap.add_argument('--val_every', type=int, default=1000)
     ap.add_argument('--save_every', type=int, default=250)
     ap.add_argument('--resume', default=None)
     args = ap.parse_args()
+    perdir = args.grad_apply == 'perdir'
+    K = 3 if perdir else 1
     os.makedirs(args.out, exist_ok=True)
     dev = 'cuda'
 
@@ -127,7 +146,7 @@ def main():
     # sigma; a bias-free blind restorer over the degradation range is cleaner and needs
     # no sigma at inference.
     net = BiasFreeUNet3D(base=args.base, depth=args.depth, sigma_map=False,
-                         residual=True, context=False).to(dev)
+                         residual=True, context=False, k=K).to(dev)
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-5)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.iters)
 
@@ -158,8 +177,9 @@ def main():
         deg, sharp, _ = augment_noise_gpu(
             clean, sigma_min=0.0, sigma_max=args.sigma_max, rician_prob=0.5, n2n=False,
             blur_max=args.blur_max, thick_max=args.thick_max)
-        m_deg, m_sharp = grad_mag(deg), grad_mag(sharp)
-        # per-sample standardisation by the degraded-magnitude robust scale (>=0)
+        m_deg, m_sharp = grad_field(deg, perdir), grad_field(sharp, perdir)
+        # per-sample standardisation by the degraded-field robust scale (shared across the
+        # K channels so relative per-direction magnitudes -- the direction info -- are kept)
         scale = torch.quantile(
             m_deg.flatten(1).clamp_min(0).float(), 0.99, dim=1
         ).clamp_min(1e-8).view(-1, 1, 1, 1, 1)
@@ -184,7 +204,7 @@ def main():
         if step % args.save_every == 0:
             save('last.pt')
         if step % args.val_every == 0 or step == args.iters:
-            v = validate(net, dev, args.thick_max, args.blur_max, args.sigma_max)
+            v = validate(net, dev, args.thick_max, args.blur_max, args.sigma_max, perdir=perdir)
             msg = "  ".join(f"{k}={val:.2f}" for k, val in v.items())
             mean = sum(v.values()) / max(len(v), 1)
             print(f"[val step {step}] BrainWeb grad-mag restore PSNR  {msg}  mean={mean:.2f}",

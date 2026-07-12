@@ -352,29 +352,53 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None, grad_pr
     if alpha != 1:  # Use over/under-relaxation
         z_old = z.clone()
     t0 = _print_info('fit-update', sett, 'z', n_iter)  # PRINT
-    tmp[:] = 0
-    for c in range(len(x)):
-        Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
-        if alpha != 1:  # Use over/under-relaxation
-            Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
-        tmp += torch.sum((w[c, ...] / rho + Dy) ** 2, dim=0)
-    tmp.sqrt_()  # in-place  -> tmp is now the merged (channel-pooled) magnitude m
-    # Merged-gradient DL prior (issue: DL prior): replace the analytic soft-threshold
-    # gain on m with a learned/generalized gain -- ONE network call per iteration,
-    # C-independent. grad_net='softthr' returns the exact analytic gain, so this is
-    # bit-for-bit identical to the classic path below (Phase 0 equivalence check).
-    if _grad_active(sett) and grad_prior is not None:
-        tmp = grad_prior.gain(tmp, rho, tiny)
+    # grad_apply='perdir' (K=3): keep the 3 gradient DIRECTIONS separate (pool only over
+    # CHANNELS) so the learned gain sees gradient direction/structure the scalar pooled
+    # magnitude discards -- still ONE net call/iter and C-independent (pooling is over
+    # channels). Only for a LEARNED gain; softthr/charbonnier/mtv keep the scalar path
+    # below byte-identical.
+    perdir = (grad and getattr(sett, 'grad_apply', 'magnitude') == 'perdir'
+              and getattr(grad_prior.backend, 'is_learned', False))
+    if perdir:
+        md2 = None
+        for c in range(len(x)):
+            Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
+            if alpha != 1:
+                Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
+            v = w[c, ...] / rho + Dy                      # [3, D, H, W]
+            md2 = v ** 2 if md2 is None else md2 + v ** 2
+        m_dir = md2.sqrt()                                # [3, D, H, W] per-direction merged magnitude
+        gain_dir = grad_prior.gain(m_dir, rho, tiny)      # [3, D, H, W] per-direction gain (clamped)
+        for c in range(len(x)):
+            Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
+            if alpha != 1:
+                Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
+            z[c, ...] = gain_dir * (w[c, ...] / rho + Dy)  # per-direction gain, broadcast over channels
+        _ = _print_info('fit-done', sett, t0)  # PRINT
     else:
-        tmp = ((tmp - one / rho).clamp_min(0)) / (tmp + tiny)
+        tmp[:] = 0
+        for c in range(len(x)):
+            Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
+            if alpha != 1:  # Use over/under-relaxation
+                Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
+            tmp += torch.sum((w[c, ...] / rho + Dy) ** 2, dim=0)
+        tmp.sqrt_()  # in-place  -> tmp is now the merged (channel-pooled) magnitude m
+        # Merged-gradient DL prior (issue: DL prior): replace the analytic soft-threshold
+        # gain on m with a learned/generalized gain -- ONE network call per iteration,
+        # C-independent. grad_net='softthr' returns the exact analytic gain, so this is
+        # bit-for-bit identical to the classic path below (Phase 0 equivalence check).
+        if grad:
+            tmp = grad_prior.gain(tmp, rho, tiny)
+        else:
+            tmp = ((tmp - one / rho).clamp_min(0)) / (tmp + tiny)
 
-    for c in range(len(x)):
-        Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
-        if alpha != 1:  # Use over/under-relaxation
-            Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
-        for d in range(Dy.shape[0]):
-            z[c, d, ...] = tmp * (w[c, d, ...] / rho + Dy[d, ...])
-    _ = _print_info('fit-done', sett, t0)  # PRINT
+        for c in range(len(x)):
+            Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
+            if alpha != 1:  # Use over/under-relaxation
+                Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
+            for d in range(Dy.shape[0]):
+                z[c, d, ...] = tmp * (w[c, d, ...] / rho + Dy[d, ...])
+        _ = _print_info('fit-done', sett, t0)  # PRINT
 
     # ----------
     # UPDATE: w
