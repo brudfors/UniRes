@@ -115,19 +115,25 @@ class BiasFree3DBackend:
         from ._denoiser_net import BiasFreeUNet3D  # lazy: only for this backend
         ckpt = torch.load(weights, map_location=device or 'cpu')
         a = ckpt.get('args', {}) if isinstance(ckpt, dict) else {}
-        net = BiasFreeUNet3D(base=a.get('base', base), depth=a.get('depth', depth))
         state = ckpt['model'] if isinstance(ckpt, dict) and 'model' in ckpt else ckpt
+        # infer input config from the head conv: in_ch = 1 + sigma_map + context
+        in_ch = state['head.c1.weight' if 'head.c1.weight' in state else 'head.weight'].shape[1]
+        net = BiasFreeUNet3D(base=a.get('base', base), depth=a.get('depth', depth),
+                             sigma_map=(in_ch >= 2), context=(in_ch >= 3))
         net.load_state_dict(state)
         self.model = net.to(device).eval() if device is not None else net.eval()
         self.tile = int(tile)
         self.overlap = int(overlap)
+        self.is_cross = bool(getattr(net, 'context', False))  # cross-channel model?
 
     @torch.no_grad()
-    def __call__(self, vol, sigma):
-        """vol: standardised 3D tensor (D,H,W) -> denoised (D,H,W)."""
+    def __call__(self, vol, sigma, context=None):
+        """vol: standardised 3D tensor (D,H,W) -> denoised (D,H,W). context: optional
+        cross-channel edge map (D,H,W) for a cross-channel model."""
         x = vol[None, None]
+        ctx = context[None, None] if context is not None else None
         if self.tile <= 0 or max(vol.shape) <= self.tile:
-            return self.model(x, float(sigma))[0, 0]
+            return self.model(x, float(sigma), context=ctx)[0, 0]
         # overlap-tiled inference (memory bound for large volumes)
         out = torch.zeros_like(vol)
         wsum = torch.zeros_like(vol)
@@ -201,6 +207,28 @@ class Denoiser:
         if len(self._cache_order) > self._cache_size:
             self._cache.pop(self._cache_order.pop(0), None)
         return out
+
+    @torch.no_grad()
+    def denoise_multi(self, vols, sigmas):
+        """Cross-channel denoise: each channel is denoised using a CONTEXT edge map
+        aggregated (max) over the OTHER channels' standardised edges -- so the prior
+        fills in detail guided by where other contrasts have edges. Falls back to
+        independent per-channel denoise if the backend is not cross-channel.
+        ``vols``/``sigmas``: lists over channels; returns a list of denoised volumes."""
+        if not getattr(self.backend, 'is_cross', False):
+            return [self.denoise(vols[c], sigmas[c]) for c in range(len(vols))]
+        std = [_standardize(v.float()) for v in vols]              # (v_std, scale) per ch
+
+        def _edge(vs):
+            g = torch.gradient(vs, dim=(0, 1, 2))
+            return torch.sqrt(sum(gi ** 2 for gi in g) + 1e-8)
+        edges = [_edge(vs) for vs, _ in std]
+        outs = []
+        for c in range(len(vols)):
+            ctx = torch.stack([edges[d] for d in range(len(vols)) if d != c]).amax(0)
+            den = self.backend(std[c][0], sigmas[c], context=ctx)
+            outs.append(_unstandardize(den, std[c][1]).to(vols[c].dtype))
+        return outs
 
 
 # ----------------------------------------------------------------------------

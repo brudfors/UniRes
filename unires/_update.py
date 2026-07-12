@@ -206,8 +206,12 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None):
     if red:
         # Denoised targets d_c = D_sigma_c(y_c^{(k)}) from the current iterate (held fixed
         # within the solve; this is the RED half-quadratic / fixed-point step). sigma_c is
-        # per-channel and noise-adaptive when red_sigma_auto.
-        d = [denoiser.denoise(y[c].dat, sig_ch[c]) for c in range(len(x))]
+        # per-channel and noise-adaptive when red_sigma_auto. A cross-channel backend uses
+        # the OTHER channels' edges as context (denoise_multi).
+        if getattr(denoiser.backend, 'is_cross', False):
+            d = denoiser.denoise_multi([y[c].dat for c in range(len(x))], sig_ch)
+        else:
+            d = [denoiser.denoise(y[c].dat, sig_ch[c]) for c in range(len(x))]
         if sett.red_linesearch:
             y_old = [y[c].dat.clone() for c in range(len(x))]
             nll_old = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch)[0]
@@ -589,13 +593,16 @@ def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64, denoiser=None, red_si
     if denoiser is not None and _red_active(sett):
         mu_ch = _red_mu_channels(x, sett)  # same per-channel weights as the y-update
         sig = sett.red_sigma if red_sigma is None else red_sigma  # scalar or per-channel list
+        sig_list = [sig[c] if isinstance(sig, (list, tuple)) else sig for c in range(len(x))]
+        if getattr(denoiser.backend, 'is_cross', False):
+            d_all = denoiser.denoise_multi([y[c].dat for c in range(len(x))], sig_list)
+        else:
+            d_all = [denoiser.denoise(y[c].dat, sig_list[c]) for c in range(len(x))]
         nll_red = torch.tensor(0, device=sett.device, dtype=torch.float64)
         for c in range(len(x)):
             if not mu_ch[c]:
                 continue
-            sc = sig[c] if isinstance(sig, (list, tuple)) else sig
-            dc = denoiser.denoise(y[c].dat, sc)
-            nll_red += 0.5 * mu_ch[c] * torch.sum(y[c].dat * (y[c].dat - dc), dtype=sum_dtype)
+            nll_red += 0.5 * mu_ch[c] * torch.sum(y[c].dat * (y[c].dat - d_all[c]), dtype=sum_dtype)
         total = total + nll_red
 
     return total, nll_xy, nll_y
