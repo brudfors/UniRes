@@ -49,11 +49,13 @@ class BiasFreeUNet3D(nn.Module):
             the RED solver can control strength via sigma. Kept bias-free.
         residual (bool): predict noise (denoised = x - net(x)) if True.
     """
-    def __init__(self, base=48, depth=3, n_res=2, sigma_map=True, residual=True):
+    def __init__(self, base=48, depth=3, n_res=2, sigma_map=True, residual=True,
+                 context=False):
         super().__init__()
         self.sigma_map = sigma_map
         self.residual = residual
-        in_ch = 2 if sigma_map else 1
+        self.context = context  # extra input channel: aggregate of OTHER channels' edges
+        in_ch = 1 + int(sigma_map) + int(context)
         self.head = _conv(in_ch, base)
         chs = [base * (2 ** i) for i in range(depth + 1)]
         self.down = nn.ModuleList()
@@ -71,17 +73,21 @@ class BiasFreeUNet3D(nn.Module):
             self.dec.append(nn.Sequential(*[_ResBlock(chs[i]) for _ in range(n_res)]))
         self.tail = _conv(base, 1)
 
-    def forward(self, x, sigma=None):
+    def forward(self, x, sigma=None, context=None):
         inp = x
+        feats = [x]
         if self.sigma_map:
             if sigma is None:
                 sigma = x.new_zeros(())
             if not torch.is_tensor(sigma):
                 sigma = x.new_tensor(float(sigma))
             smap = sigma.expand_as(x) if sigma.dim() == 0 else sigma.view(-1, 1, 1, 1, 1).expand_as(x)
-            h = torch.cat([x, smap], dim=1)
-        else:
-            h = x
+            feats.append(smap)
+        if self.context:
+            # cross-channel guidance: aggregate edge map of OTHER channels (bias-free-
+            # safe: it's a linear function of the inputs). Zeros if not provided.
+            feats.append(context if context is not None else torch.zeros_like(x))
+        h = torch.cat(feats, dim=1) if len(feats) > 1 else x
         h = self.head(h)
         skips = []
         for enc, down in zip(self.enc, self.down):
