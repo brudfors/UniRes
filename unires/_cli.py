@@ -11,7 +11,7 @@ def _preproc(pth, atlas_rigid, common_output, denoising, device, dir_out, fov, l
              prior='mtv', red_mu=0.0, red_sigma=0.05, red_denoiser='gaussian',
              red_linesearch=True,
              grad_net='softthr', grad_form='pointwise', grad_weights=None,
-             grad_sigma=0.05, grad_linesearch=True):
+             grad_sigma=0.05, grad_scale=1.0, grad_linesearch=True):
     """Fit UniRes model from the command line.
 
     Returns
@@ -58,6 +58,7 @@ def _preproc(pth, atlas_rigid, common_output, denoising, device, dir_out, fov, l
     s.grad_form = grad_form
     s.grad_weights = grad_weights
     s.grad_sigma = grad_sigma
+    s.grad_scale = grad_scale
     s.grad_linesearch = grad_linesearch
     if linear:
         s.max_iter = 0    
@@ -319,6 +320,13 @@ def run():
                         help="Learned grad-gain noise level (standardised units); "
                              "analytic gains ignore it [default=" +
                              str(s.grad_sigma) + "].")
+    #
+    parser.add_argument("--grad_scale",
+                        type=float,
+                        default=s.grad_scale,
+                        help="Charbonnier edge-preserving knee (grad_net='charbonnier'); "
+                             "0 -> classic JTV, larger -> gentler on weak gradients "
+                             "[default=" + str(s.grad_scale) + "].")
     #
     parser.add_argument("--grad_linesearch",
                         action='store_true',

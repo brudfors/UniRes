@@ -226,7 +226,7 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None, grad_pr
             d = [denoiser.denoise(y[c].dat, sig_ch[c]) for c in range(len(x))]
         if sett.red_linesearch:
             y_old = [y[c].dat.clone() for c in range(len(x))]
-            nll_old = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch)[0]
+            nll_old = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch, grad_prior=grad_prior)[0]
 
     # ----------
     # UPDATE: y
@@ -290,7 +290,7 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None, grad_pr
                 t, accepted = 1.0, False
                 for _ in range(6):
                     y[c].dat = (1.0 - t) * y_old[c] + t * y_new[c]
-                    nll_c = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch)[0]
+                    nll_c = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch, grad_prior=grad_prior)[0]
                     if nll_c <= base + 1e-9:
                         base, accepted = nll_c, True
                         break
@@ -299,7 +299,7 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None, grad_pr
                     y[c].dat = y_old[c]
         else:
             # GLOBAL backtracking: one common step t for all channels.
-            nll_new = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch)[0]
+            nll_new = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch, grad_prior=grad_prior)[0]
             t = 1.0
             n_ls = 0
             while nll_new > nll_old and n_ls < 6:
@@ -307,7 +307,7 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None, grad_pr
                 n_ls += 1
                 for c in range(len(x)):
                     y[c].dat = (1.0 - t) * y_old[c] + t * y_new[c]
-                nll_new = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch)[0]
+                nll_new = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch, grad_prior=grad_prior)[0]
             if nll_new > nll_old:
                 # No acceptable step found -> null step (revert), objective non-increasing.
                 for c in range(len(x)):
@@ -317,7 +317,7 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None, grad_pr
     # Compute model objective function
     # ----------
     if sett.tolerance > 0:
-        obj[n_iter, 0], obj[n_iter, 1], obj[n_iter, 2] = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch)  # nl_pyx, nl_pxy, nl_py
+        obj[n_iter, 0], obj[n_iter, 1], obj[n_iter, 2] = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch, grad_prior=grad_prior)  # nl_pyx, nl_pxy, nl_py
 
     # ----------
     # UPDATE: z  (JTV proximal / vectorial soft-threshold on the gradient field Dy)
@@ -574,7 +574,8 @@ def _update_scaling(x, y, sett, max_niter_gn=1, num_linesearch=4, verbose=0):
     return x, sll
 
 
-def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64, denoiser=None, red_sigma=None):
+def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64, denoiser=None, red_sigma=None,
+                 grad_prior=None):
     """ Compute negative model log-likelihood.
 
     Args:
@@ -602,8 +603,15 @@ def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64, denoiser=None, red_si
             nll_y += torch.sum(Dy ** 2, dim=0)
         else:
             nll_y = torch.sum(Dy ** 2, dim=0)
-    # Neg. log-prior term
-    nll_y = torch.sum(torch.sqrt(nll_y), dtype=sum_dtype)
+    # Neg. log-prior term. Classic JTV/L1 energy = sum_v m_v (m = per-voxel merged
+    # magnitude). An explicit-energy merged-gradient prior (e.g. grad_net='charbonnier')
+    # replaces sum_v m_v with sum_v Phi(m_v) so the reported objective is the true
+    # optimized (monotone-descending) energy; softthr/mtv/red keep the L1 energy exactly.
+    m_pool = torch.sqrt(nll_y)  # per-voxel merged gradient magnitude (includes lam)
+    if grad_prior is not None and _grad_active(sett) and getattr(grad_prior, 'has_energy', False):
+        nll_y = torch.sum(grad_prior.energy(m_pool, rho), dtype=sum_dtype)
+    else:
+        nll_y = torch.sum(m_pool, dtype=sum_dtype)
 
     # RED denoiser-prior energy: (mu/2) * sum_c <y_c, y_c - D(y_c)>. Folded into the
     # reported total (column 0) so the convergence/monotonicity oracle reflects the

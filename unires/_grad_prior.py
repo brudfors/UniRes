@@ -26,9 +26,11 @@ Design (mirrors ``_denoiser.py``'s settings / factory / cache pattern, but NOT i
     non-hallucinating case);
   * :func:`make_grad_prior` factory from UniRes ``settings``.
 
-Phase 0 implements only the ``softthr`` analytic gain, which reproduces classic
-MTV bit-for-bit. Nothing here runs unless a caller constructs a grad-prior (i.e.
-``prior`` includes ``gradnet``).
+Phase 0 provides the ``softthr`` analytic gain (reproduces classic MTV bit-for-bit).
+Phase 1 adds ``charbonnier``: a generalized analytic edge-preserving gain with an
+EXPLICIT energy (an exact radial prox ⇒ monotone objective; grad_scale->0 == JTV).
+Nothing here runs unless a caller constructs a grad-prior (``prior`` includes
+``gradnet``).
 """
 import torch
 
@@ -57,6 +59,54 @@ class SoftThreshGain:
         return ((m - one / rho).clamp_min(0)) / (m + eps)
 
 
+class CharbonnierGain:
+    """Generalized analytic edge-preserving gain with an EXPLICIT energy (Phase 1).
+
+    A Huber / pseudo-Charbonnier total-variation potential on the pooled gradient
+    magnitude ``m`` (variant (a) of the spec -- a genuine *radial prox*, so ADMM
+    keeps a monotone augmented-Lagrangian descent to a stationary point):
+
+        Phi_a(m) = m - a/2        (m >= a)   -- TV-like (edge-preserving) above the knee
+                 = m^2 / (2a)     (m <  a)   -- quadratic (gentle smoothing) below the knee
+
+    The knee ``a = grad_scale / rho`` is tied to the ADMM knee 1/rho (dimensionless,
+    so one setting works across the coarse-to-fine reg schedule and rho updates).
+    ``Phi_a`` is convex and C^1, so the z-update is the EXACT prox
+    ``prox_{Phi_a/rho}(m)/m`` -- a scalar gain (beta = 1/rho):
+
+        s(m) = (m - beta) / m     (m >= a + beta)   -- == the classic JTV gain
+             = a / (a + beta)      (m <  a + beta)   -- a flat sub-knee gain (no hard cut)
+
+    As ``grad_scale -> 0`` the knee a -> 0 and this reduces to the classic JTV
+    soft-threshold gain (and Phi -> m, the L1/TV energy): the param->default is JTV.
+    Larger ``grad_scale`` keeps strong edges while smoothing weak gradients more
+    gently than the hard L1 threshold (edge-preserving), with an explicit energy so
+    the reported objective is a genuine, monotone-descending Lyapunov function.
+    """
+    is_learned = False
+    has_energy = True
+    name = 'charbonnier'
+
+    def __init__(self, scale=1.0):
+        self.scale = float(scale)  # grad_scale: knee a = scale / rho
+
+    def gain(self, m, rho, eps):
+        beta = m.new_tensor(1.0) / rho                 # 1/rho in m's dtype
+        alpha = self.scale * beta                      # knee a
+        thr = alpha + beta                             # magnitude where the two branches meet
+        s_large = ((m - beta).clamp_min(0)) / (m + eps)    # == exact JTV gain above the knee
+        s_small = alpha / (alpha + beta + eps)             # flat sub-knee gain (0 when scale=0)
+        return torch.where(m >= thr, s_large, s_small * torch.ones_like(m))
+
+    def energy(self, m, rho):
+        """Per-voxel potential Phi_a(m): the explicit prior energy for the objective."""
+        alpha = self.scale * (m.new_tensor(1.0) / rho)
+        alpha_safe = alpha + (self.scale == 0.0)       # avoid 0-division in the unused branch
+        lin = m - 0.5 * alpha
+        quad = (m * m) / (2.0 * alpha_safe)
+        return torch.where(m >= alpha, lin, quad)
+
+
 # ----------------------------------------------------------------------------
 # Wrapper (cache + optional gain clamp)
 # ----------------------------------------------------------------------------
@@ -76,6 +126,9 @@ class GradPrior:
         self.backend = backend
         self.sigma = float(sigma)
         self.gain_clamp = tuple(gain_clamp) if gain_clamp is not None else None
+        # True if the backend carries an explicit prior energy Phi (variant (a)/(b'));
+        # then the reported objective uses Phi (monotone Lyapunov), else classic JTV.
+        self.has_energy = bool(getattr(backend, 'has_energy', False))
         # Small cache keyed on (data_ptr, version, rho) -- mirrors the RED denoiser
         # cache. The z-update magnitude ``m`` (``tmp``) is mutated in place across
         # updates, so the tensor ``_version`` disambiguates stale entries.
@@ -101,6 +154,13 @@ class GradPrior:
             self._cache.pop(self._cache_order.pop(0), None)
         return g
 
+    def energy(self, m, rho):
+        """Per-voxel prior potential Phi(m) for the reported objective.
+
+        Only defined for explicit-energy backends (``has_energy``); the caller
+        checks ``has_energy`` before summing this into the objective."""
+        return self.backend.energy(m, rho)
+
 
 # ----------------------------------------------------------------------------
 # Factory
@@ -110,10 +170,9 @@ def make_grad_prior(sett):
     name = getattr(sett, 'grad_net', 'softthr')
     if name == 'softthr':
         backend = SoftThreshGain()
-    elif name in ('charbonnier',):
-        # Phase 1: generalized analytic (explicit-energy) gain.
-        raise NotImplementedError(
-            f"grad_net='{name}' is a Phase 1 backend (not yet implemented).")
+    elif name == 'charbonnier':
+        # Phase 1: generalized analytic (explicit-energy) edge-preserving gain.
+        backend = CharbonnierGain(scale=getattr(sett, 'grad_scale', 1.0))
     elif name in ('unet', 'dncnn'):
         # Phase 2: learned native-3D magnitude denoiser (deepinv backend).
         raise NotImplementedError(
