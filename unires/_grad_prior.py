@@ -35,6 +35,25 @@ Nothing here runs unless a caller constructs a grad-prior (``prior`` includes
 import torch
 
 
+def _robust_pos_scale(m, q=0.99, max_samples=1_000_000):
+    """Robust positive scale (~99th pct) of the NON-NEGATIVE magnitude field m.
+
+    The pooled gradient *magnitude* m >= 0, so a positive-quantile scale is valid
+    here (unlike the signed gradient field -- that is why the spec forbids reusing
+    ``_denoiser._standardize`` on the field, not on this magnitude). Standardising m
+    to ~[0,1] matches the learned net's training distribution; the derived gain
+    ``m_hat/m`` is scale-invariant so this does not change the analytic limit."""
+    finite = m[torch.isfinite(m)]
+    pos = finite[finite > 0]
+    ref = pos if pos.numel() > 0 else finite.abs()
+    if ref.numel() == 0:
+        return m.new_tensor(1.0)
+    if ref.numel() > max_samples:
+        idx = torch.linspace(0, ref.numel() - 1, max_samples, device=ref.device).long()
+        ref = ref.flatten()[idx]
+    return torch.quantile(ref.float(), q).clamp_min(1e-8)
+
+
 # ----------------------------------------------------------------------------
 # Backends: expose gain(m, rho, eps) -> per-voxel scalar gain (same shape as m).
 # Analytic backends have is_learned = False and ignore standardisation/clamp.
@@ -107,6 +126,74 @@ class CharbonnierGain:
         return torch.where(m >= alpha, lin, quad)
 
 
+class GradUNet3D:
+    """Learned native-3D gain on the pooled gradient MAGNITUDE (variant (b), K=1).
+
+    A bias-free 3D residual U-Net (``BiasFreeUNet3D``, the same architecture as the
+    image-RED denoiser, but here fed the *single* pooled-magnitude channel) predicts
+    the RESTORED magnitude ``m_hat`` from the merged, channel-pooled magnitude ``m``;
+    the :class:`GradPrior` wrapper turns it into a per-voxel gain
+    ``clamp(m_hat / (m + eps), *gain_clamp)`` and broadcasts it to every channel/
+    direction. ONE 3D pass per ADMM iteration, C-INDEPENDENT (the net never sees the
+    channel count -- only the pooled magnitude), no 2.5D.
+
+    Trained on thick-slice-degraded -> SHARP IXI gradient magnitudes (the Track-1
+    detail-filling paradigm moved to the gradient domain): the net learns to KEEP/
+    restore coherent edge magnitudes and shrink noise-induced ones. Bias-free ⇒
+    scale-equivariant, so with the ``m``-standardisation the derived gain is
+    scale-invariant. This is a PnP gain (not a prox); clamp to [0,1] keeps it a
+    non-expansive shrinkage, and the z-update line-search guard keeps the reported
+    objective monotone (as the image-RED path does).
+    """
+    is_learned = True
+    name = 'unet'
+
+    def __init__(self, weights, device=None, base=48, depth=3, sigma=0.0,
+                 patch=0, overlap=16):
+        from ._denoiser_net import BiasFreeUNet3D  # lazy: only for this backend
+        if not weights:
+            raise ValueError("grad_net='unet' requires grad_weights (checkpoint path).")
+        ckpt = torch.load(weights, map_location=device or 'cpu')
+        a = ckpt.get('args', {}) if isinstance(ckpt, dict) else {}
+        state = ckpt['model'] if isinstance(ckpt, dict) and 'model' in ckpt else ckpt
+        in_ch = state['head.weight'].shape[1]           # 1 (blind) or 2 (sigma-mapped)
+        net = BiasFreeUNet3D(base=a.get('base', base), depth=a.get('depth', depth),
+                             sigma_map=(in_ch >= 2), residual=True, context=False)
+        net.load_state_dict(state)
+        self.model = net.to(device).eval() if device is not None else net.eval()
+        self.sigma = float(a.get('grad_sigma', sigma))  # standardised-units hint (0 = blind)
+        self.patch = int(patch)
+        self.overlap = int(overlap)
+
+    @torch.no_grad()
+    def _restore(self, m):
+        """Predict the restored (sharp) pooled magnitude m_hat from m (>= 0)."""
+        scale = _robust_pos_scale(m)
+        x = (m / scale)[None, None]
+        if self.patch <= 0 or max(m.shape) <= self.patch:
+            out = self.model(x, self.sigma)[0, 0]
+        else:                                            # overlap-tiled (memory bound)
+            out = torch.zeros_like(m); wsum = torch.zeros_like(m)
+            t, ov = self.patch, self.overlap
+            step = t - ov
+            rngs = [list(range(0, max(1, s - ov), step)) for s in m.shape]
+            for oi in rngs[0]:
+                for oj in rngs[1]:
+                    for ok in rngs[2]:
+                        i = min(oi, m.shape[0] - t) if m.shape[0] > t else 0
+                        j = min(oj, m.shape[1] - t) if m.shape[1] > t else 0
+                        k = min(ok, m.shape[2] - t) if m.shape[2] > t else 0
+                        sl = (slice(i, i + t), slice(j, j + t), slice(k, k + t))
+                        out[sl] += self.model((m[sl] / scale)[None, None], self.sigma)[0, 0]
+                        wsum[sl] += 1.0
+            out = out / wsum.clamp_min(1.0)
+        return (out * scale).clamp_min(0.0)
+
+    def gain(self, m, rho, eps):
+        m_hat = self._restore(m)
+        return m_hat / (m + eps)                          # wrapper clamps to gain_clamp
+
+
 # ----------------------------------------------------------------------------
 # Wrapper (cache + optional gain clamp)
 # ----------------------------------------------------------------------------
@@ -173,8 +260,13 @@ def make_grad_prior(sett):
     elif name == 'charbonnier':
         # Phase 1: generalized analytic (explicit-energy) edge-preserving gain.
         backend = CharbonnierGain(scale=getattr(sett, 'grad_scale', 1.0))
-    elif name in ('unet', 'dncnn'):
-        # Phase 2: learned native-3D magnitude denoiser (deepinv backend).
+    elif name == 'unet':
+        # Phase 2: learned native-3D magnitude restorer (bias-free 3D U-Net).
+        backend = GradUNet3D(getattr(sett, 'grad_weights', None),
+                             device=getattr(sett, 'device', None),
+                             sigma=getattr(sett, 'grad_sigma', 0.0),
+                             patch=getattr(sett, 'grad_patch', 0))
+    elif name == 'dncnn':
         raise NotImplementedError(
             f"grad_net='{name}' is a Phase 2 learned backend (not yet implemented).")
     else:

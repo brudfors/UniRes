@@ -228,6 +228,20 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None, grad_pr
             y_old = [y[c].dat.clone() for c in range(len(x))]
             nll_old = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch, grad_prior=grad_prior)[0]
 
+    # Merged-gradient DL prior monotonicity guard. A LEARNED (spatial-CNN) gain is a
+    # plug-and-play operator, not a prox, so -- unlike the analytic softthr/charbonnier
+    # gains -- it can make the reported objective increase. When grad_linesearch is on
+    # (and the gain is learned) we save the pre-update iterate + objective and, after the
+    # y-update, backtrack so the reported objective is non-increasing (same guard as the
+    # RED path). Analytic gains keep an explicit energy and need no guard.
+    grad = _grad_active(sett) and grad_prior is not None
+    grad_guard = (grad and getattr(sett, 'grad_linesearch', False)
+                  and getattr(grad_prior, 'backend', None) is not None
+                  and getattr(grad_prior.backend, 'is_learned', False))
+    if grad_guard and y_old is None:
+        y_old = [y[c].dat.clone() for c in range(len(x))]
+        nll_old = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch, grad_prior=grad_prior)[0]
+
     # ----------
     # UPDATE: y
     # ----------
@@ -270,10 +284,11 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None, grad_pr
     _ = _print_info('fit-done', sett, t0)  # PRINT
 
     # ----------
-    # RED monotonicity guard: backtracking line search on the reported objective, so the
-    # DL prior can never make the displayed objective increase within an iteration.
+    # DL-prior monotonicity guard: backtracking line search on the reported objective, so
+    # a DL prior (RED denoiser OR a learned merged-gradient gain) can never make the
+    # displayed objective increase within an iteration.
     # ----------
-    if red and sett.red_linesearch:
+    if (red and sett.red_linesearch) or grad_guard:
         y_new = [y[c].dat.clone() for c in range(len(x))]
         if getattr(sett, 'red_ls_perchannel', False) and len(x) > 1:
             # PER-CHANNEL (coordinate) backtracking: each channel independently takes
