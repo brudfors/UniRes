@@ -9,9 +9,10 @@ SHM=/dev/shm/synthseg/runs/synth_thick
 NFS=/workspace/data/synthseg_restore/runs/synth_thick
 LOG=$SHM/train.log
 TARGET=${TARGET:-40000}
-STALL=${STALL:-200}   # seconds of no log progress -> assume livelock, kill & resume
-#  (200s avoids false-positive kills of merely-descheduled steps on this contended box,
-#   while dense save_every=25 keeps progress-loss per real hang small)
+STALL=${STALL:-600}   # seconds of no log progress -> assume livelock, kill & resume.
+#  600s (NOT lower): a slow-but-ALIVE process under heavy box load must not be SIGKILL'd
+#  mid-step -- killing at 150-200s just storms (re-imports torch + rebuilds the 34M net
+#  every ~1min) and makes ZERO net progress. Better to let a slow process crawl forward.
 mkdir -p $SHM $NFS /dev/shm/synthseg/label_maps
 cp -n /workspace/data/synthseg_restore/label_maps/*.nii.gz /dev/shm/synthseg/label_maps/ 2>/dev/null
 # resume from whichever checkpoint is newer (tmpfs may have been wiped -> fall back to NFS)
@@ -36,5 +37,5 @@ while true; do
     [ $(( $(date +%s) - m )) -gt $STALL ] && { echo "[wd] STALL kill $PID $(date)" >> $LOG; kill -9 $PID 2>/dev/null; sleep 8; break; }
   done
   mirror
-  sleep 5
+  sleep 30   # back off between relaunches so a repeatedly-failing launch can't storm the box
 done

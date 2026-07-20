@@ -27,9 +27,9 @@ _TRAIN = os.path.join(_HERE, "..")
 sys.path.insert(0, _HERE)                          # synth_data
 sys.path.insert(0, _TRAIN)                         # training/data.py
 sys.path.insert(0, os.path.join(_TRAIN, ".."))     # repo root -> unires
-from data import augment_noise_gpu, _thick_slice_degrade  # noqa: E402
+from data import augment_noise_gpu, _thick_slice_degrade, _gauss_blur3d  # noqa: E402,F401
 from unires._denoiser_net import BiasFreeUNet3D  # noqa: E402
-from synth_data import SynthLabelBank  # noqa: E402
+from synth_data import SynthLabelBank, batched_degrade  # noqa: E402
 
 
 def grad_l1(a, b):
@@ -142,9 +142,11 @@ def main():
     step = start_step
     while step < args.iters:
         clean = bank.sample(args.batch)  # [B,1,P,P,P] sharp random-contrast (target source)
-        noisy, target, s, res = augment_noise_gpu(
-            clean, sigma_min=0.0, sigma_max=args.sigma_max, rician_prob=0.5,
-            n2n=False, blur_max=args.blur_max, thick_max=args.thick_max)
+        # fully-batched degradation (no per-sample Python loop -> low CUDA-launch count)
+        noisy, target, s, res = batched_degrade(
+            clean, _thick_slice_degrade, _gauss_blur3d,
+            sigma_min=0.0, sigma_max=args.sigma_max, rician_prob=0.5,
+            blur_max=args.blur_max, thick_max=args.thick_max)
         with torch.autocast("cuda", dtype=torch.bfloat16):
             den = net(noisy, sigma=s, res=res if args.res_cond else None)
             loss = F.l1_loss(den, target) + args.grad_w * grad_l1(den, target)
