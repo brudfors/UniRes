@@ -116,24 +116,30 @@ class BiasFree3DBackend:
         ckpt = torch.load(weights, map_location=device or 'cpu')
         a = ckpt.get('args', {}) if isinstance(ckpt, dict) else {}
         state = ckpt['model'] if isinstance(ckpt, dict) and 'model' in ckpt else ckpt
-        # infer input config from the head conv: in_ch = 1 + sigma_map + context
+        # infer input config from the head conv: in_ch = 1 + sigma_map + context + res_map
         in_ch = state['head.c1.weight' if 'head.c1.weight' in state else 'head.weight'].shape[1]
-        net = BiasFreeUNet3D(base=a.get('base', base), depth=a.get('depth', depth),
-                             sigma_map=(in_ch >= 2), context=(in_ch >= 3))
+        res_map = bool(a.get('res_cond', 0))   # thickness-conditioned restoration model?
+        if res_map:                             # img + sigma + res (no context)
+            net = BiasFreeUNet3D(base=a.get('base', base), depth=a.get('depth', depth),
+                                 sigma_map=True, context=False, res_map=True)
+        else:                                   # legacy: sigma / cross-channel-context inference
+            net = BiasFreeUNet3D(base=a.get('base', base), depth=a.get('depth', depth),
+                                 sigma_map=(in_ch >= 2), context=(in_ch >= 3))
         net.load_state_dict(state)
         self.model = net.to(device).eval() if device is not None else net.eval()
         self.tile = int(tile)
         self.overlap = int(overlap)
         self.is_cross = bool(getattr(net, 'context', False))  # cross-channel model?
+        self.is_res = res_map                                 # thickness-conditioned model?
 
     @torch.no_grad()
-    def __call__(self, vol, sigma, context=None):
+    def __call__(self, vol, sigma, context=None, res=None):
         """vol: standardised 3D tensor (D,H,W) -> denoised (D,H,W). context: optional
-        cross-channel edge map (D,H,W) for a cross-channel model."""
+        cross-channel edge map; res: optional scalar normalised slice-thickness."""
         x = vol[None, None]
         ctx = context[None, None] if context is not None else None
         if self.tile <= 0 or max(vol.shape) <= self.tile:
-            return self.model(x, float(sigma), context=ctx)[0, 0]
+            return self.model(x, float(sigma), context=ctx, res=res)[0, 0]
         # overlap-tiled inference (memory bound for large volumes)
         out = torch.zeros_like(vol)
         wsum = torch.zeros_like(vol)
@@ -184,18 +190,21 @@ class Denoiser:
         return out.movedim(0, axis)
 
     @torch.no_grad()
-    def denoise(self, vol, sigma=None):
+    def denoise(self, vol, sigma=None, res=None):
         if sigma is None:
             sigma = self.sigma
-        key = (vol.data_ptr(), int(vol._version), float(sigma))
+        key = (vol.data_ptr(), int(vol._version), float(sigma),
+               None if res is None else round(float(res), 4))
         cached = self._cache.get(key)
         if cached is not None:
             return cached
         orig_dtype = vol.dtype
         v, scale = _standardize(vol.float())
         if getattr(self.backend, 'is_3d', False):
-            # native 3D backend: one volume pass (no 2.5D axis averaging)
-            out = _unstandardize(self.backend(v, sigma), scale).to(orig_dtype)
+            # native 3D backend: one volume pass (no 2.5D axis averaging). Pass the
+            # slice-thickness conditioning to a thickness-conditioned (res) backend.
+            out = _unstandardize(self.backend(v, sigma, res=res) if getattr(self.backend, 'is_res', False)
+                                 else self.backend(v, sigma), scale).to(orig_dtype)
         else:
             acc = None
             for axis in range(3):

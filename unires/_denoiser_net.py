@@ -50,13 +50,16 @@ class BiasFreeUNet3D(nn.Module):
         residual (bool): predict noise (denoised = x - net(x)) if True.
     """
     def __init__(self, base=48, depth=3, n_res=2, sigma_map=True, residual=True,
-                 context=False, k=1):
+                 context=False, k=1, res_map=False):
         super().__init__()
         self.sigma_map = sigma_map
         self.residual = residual
         self.context = context  # extra input channel: aggregate of OTHER channels' edges
+        self.res_map = res_map   # extra input channel: normalised SLICE-THICKNESS (per-direction
+        #                          resolution) so the net restores less aggressively where the input
+        #                          is severely under-resolved (degradation-conditioned / no hallucination).
         self.k = int(k)          # signal channels in/out (1 = image/scalar-magnitude; K>1 = per-direction merged field)
-        in_ch = self.k + int(sigma_map) + int(context)
+        in_ch = self.k + int(sigma_map) + int(context) + int(res_map)
         self.head = _conv(in_ch, base)
         chs = [base * (2 ** i) for i in range(depth + 1)]
         self.down = nn.ModuleList()
@@ -74,22 +77,32 @@ class BiasFreeUNet3D(nn.Module):
             self.dec.append(nn.Sequential(*[_ResBlock(chs[i]) for _ in range(n_res)]))
         self.tail = _conv(base, self.k)
 
-    def forward(self, x, sigma=None, context=None):
+    def forward(self, x, sigma=None, context=None, res=None):
         inp = x
         feats = [x]
+        ref = x[:, :1] if self.k > 1 else x
         if self.sigma_map:
             if sigma is None:
                 sigma = x.new_zeros(())
             if not torch.is_tensor(sigma):
                 sigma = x.new_tensor(float(sigma))
             # one sigma-map channel (broadcast to the k signal channels if k>1)
-            ref = x[:, :1] if self.k > 1 else x
             smap = sigma.expand_as(ref) if sigma.dim() == 0 else sigma.view(-1, 1, 1, 1, 1).expand_as(ref)
             feats.append(smap)
         if self.context:
             # cross-channel guidance: aggregate edge map of OTHER channels (bias-free-
             # safe: it's a linear function of the inputs). Zeros if not provided.
             feats.append(context if context is not None else torch.zeros_like(x))
+        if self.res_map:
+            # slice-thickness / resolution conditioning (normalised in [0,1]): 0 = isotropic,
+            # higher = thicker. Lets the net dial back its restoration where detail is
+            # unrecoverable. Zeros (isotropic) if not provided -> backward compatible.
+            if res is None:
+                res = x.new_zeros(())
+            if not torch.is_tensor(res):
+                res = x.new_tensor(float(res))
+            rmap = res.expand_as(ref) if res.dim() == 0 else res.view(-1, 1, 1, 1, 1).expand_as(ref)
+            feats.append(rmap)
         h = torch.cat(feats, dim=1) if len(feats) > 1 else x
         h = self.head(h)
         skips = []

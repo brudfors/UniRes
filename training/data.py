@@ -303,16 +303,19 @@ def augment_noise_gpu(clean, sigma_min=0.0, sigma_max=0.15, rician_prob=0.5, n2n
         rician = torch.sqrt((c + sigma * n1) ** 2 + (sigma * n2) ** 2)
         return ric * rician + (1.0 - ric) * gauss
 
+    res = torch.zeros(B, device=dev)  # per-sample normalised slice-thickness conditioning (0 = isotropic)
     if thick_max > 0:
         # RESTORE (thick-slice): degrade each sample with anisotropic thick-slice
         # resolution loss -- PER-SAMPLE random axis AND factor ~U(1,thick_max) (so a
         # batch spans the full 1..thick_max mm/vox range for diversity) + a little
         # isotropic blur + noise; target stays SHARP -> learns to FILL IN detail at
-        # ANY slice thickness / orientation.
+        # ANY slice thickness / orientation. res[i] carries the (normalised) thickness so
+        # a res_map net can condition on how degraded each sample is.
         deg = torch.empty_like(x)
         for i in range(x.shape[0]):
             axis = int(torch.randint(0, 3, (1,)).item())
             factor = float(torch.empty(1).uniform_(1.0, thick_max).item())
+            res[i] = (factor - 1.0) / 7.0    # normalise: 0 = iso (f=1), 1.0 ~ f=8
             di = _thick_slice_degrade(x[i:i + 1], factor, axis)
             if blur_max > 0:
                 di = _gauss_blur3d(di, float(torch.empty(1).uniform_(0.0, blur_max).item()))
@@ -327,4 +330,4 @@ def augment_noise_gpu(clean, sigma_min=0.0, sigma_max=0.15, rician_prob=0.5, n2n
     else:
         noisy = add_noise(x)
         target = add_noise(x) if n2n else x
-    return noisy, target, sigma.reshape(-1)
+    return noisy, target, sigma.reshape(-1), res

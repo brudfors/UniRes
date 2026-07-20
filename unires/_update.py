@@ -137,6 +137,15 @@ def _thick_factor(x, c):
     return max(facs) if facs else 1.0
 
 
+def _red_res_channels(x, denoiser):
+    """Per-channel normalised slice-thickness for a thickness-conditioned (res_map) denoiser
+    -- res_c = (thick_factor_c - 1)/7 clamped to [0,1] (matches training normalisation).
+    None per channel if the backend is not thickness-conditioned (backward compatible)."""
+    if not getattr(getattr(denoiser, 'backend', None), 'is_res', False):
+        return [None] * len(x)
+    return [min(max((_thick_factor(x, c) - 1.0) / 7.0, 0.0), 1.0) for c in range(len(x))]
+
+
 def _thick_taper(x, c, sett):
     """Resolution-adaptive strength: taper the DL prior toward 0 as the slice thickness
     exceeds the regime where it is validated to HELP (~<=4 vox). Beyond ~red_thick_zero
@@ -254,7 +263,8 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None, grad_pr
         if getattr(denoiser.backend, 'is_cross', False):
             d = denoiser.denoise_multi([y[c].dat for c in range(len(x))], sig_ch)
         else:
-            d = [denoiser.denoise(y[c].dat, sig_ch[c]) for c in range(len(x))]
+            res_ch = _red_res_channels(x, denoiser)
+            d = [denoiser.denoise(y[c].dat, sig_ch[c], res=res_ch[c]) for c in range(len(x))]
         if sett.red_linesearch:
             y_old = [y[c].dat.clone() for c in range(len(x))]
             nll_old = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch, grad_prior=grad_prior)[0]
@@ -694,7 +704,8 @@ def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64, denoiser=None, red_si
         if getattr(denoiser.backend, 'is_cross', False):
             d_all = denoiser.denoise_multi([y[c].dat for c in range(len(x))], sig_list)
         else:
-            d_all = [denoiser.denoise(y[c].dat, sig_list[c]) for c in range(len(x))]
+            res_list = _red_res_channels(x, denoiser)
+            d_all = [denoiser.denoise(y[c].dat, sig_list[c], res=res_list[c]) for c in range(len(x))]
         nll_red = torch.tensor(0, device=sett.device, dtype=torch.float64)
         for c in range(len(x)):
             if not mu_ch[c]:

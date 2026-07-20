@@ -50,7 +50,7 @@ def _load_bw(path, dev):
 
 
 @torch.no_grad()
-def validate(net, dev, sigmas=(0.03, 0.06, 0.1), crop=128, blur_max=0.0, thick_max=0.0):
+def validate(net, dev, sigmas=(0.03, 0.06, 0.1), crop=128, blur_max=0.0, thick_max=0.0, res_cond=False):
     """Restoration PSNR on BrainWeb (train->test cross-dataset). Returns dict.
     thick_max>0 -> input is thick-slice-degraded (factor=thick_max/2 along axis 2) +
     noise; blur_max>0 -> isotropic blur; else denoise. Measures recovery of sharp GT."""
@@ -69,12 +69,15 @@ def validate(net, dev, sigmas=(0.03, 0.06, 0.1), crop=128, blur_max=0.0, thick_m
         ps = []
         for s in sigmas:
             deg = clean[None, None]
+            rv = 0.0
             if thick_max > 0:
-                deg = _thick_slice_degrade(deg, thick_max * 0.5, 2)
+                fac = thick_max * 0.5
+                deg = _thick_slice_degrade(deg, fac, 2)
+                rv = (fac - 1.0) / 7.0
             elif blur_max > 0:
                 deg = _gauss_blur3d(deg, blur_max * 0.5)
             deg = deg + s * torch.randn(deg.shape, generator=g, device=dev)
-            den = net(deg, sigma=s)[0, 0].clamp_min(0.0)
+            den = net(deg, sigma=s, res=(rv if res_cond else None))[0, 0].clamp_min(0.0)
             mse = ((den - clean) ** 2).mean()
             rng = clean.max() - clean.min()
             ps.append(float(10 * torch.log10(rng ** 2 / mse.clamp_min(1e-12))))
@@ -100,6 +103,8 @@ def main():
                     help='>0 => RESTORE task: input blurred by fwhm~U(0,blur_max) vox, target sharp (learns to add detail); 0 => denoise')
     ap.add_argument('--thick_max', type=float, default=0.0,
                     help='>0 => THICK-SLICE RESTORE: input degraded by anisotropic thick-slice loss (random axis, factor~U(1,thick_max)) + noise, target sharp (learns to FILL IN detail in 6mm-thick regions)')
+    ap.add_argument('--res_cond', type=int, default=0,
+                    help='1 => condition the net on the (normalised) slice thickness so it restores LESS aggressively where input is severely under-resolved (no hallucination on very thick slices)')
     ap.add_argument('--val_every', type=int, default=2000)
     ap.add_argument('--save_every', type=int, default=1000, help='checkpoint last.pt every N steps')
     ap.add_argument('--resume', default=None, help='checkpoint to resume from (default: <out>/last.pt if present)')
@@ -117,7 +122,7 @@ def main():
                     persistent_workers=args.workers > 0,
                     worker_init_fn=_worker_init if args.workers else None,
                     prefetch_factor=4 if args.workers else None)
-    net = BiasFreeUNet3D(base=args.base, depth=args.depth).to(dev)
+    net = BiasFreeUNet3D(base=args.base, depth=args.depth, res_map=bool(args.res_cond)).to(dev)
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-5)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.iters)
     writer = SummaryWriter(args.out)
@@ -151,13 +156,13 @@ def main():
     for clean in dl:
         clean = clean.to(dev, non_blocking=True)
         # heavy augmentation + noise on the GPU (dataset returns only a cheap clean patch)
-        noisy, target, s = augment_noise_gpu(
+        noisy, target, s, res = augment_noise_gpu(
             clean, sigma_min=0.0, sigma_max=args.sigma_max,
             rician_prob=0.5,
             n2n=bool(args.n2n) and args.blur_max == 0 and args.thick_max == 0,
             blur_max=args.blur_max, thick_max=args.thick_max)
         with torch.autocast('cuda', dtype=torch.bfloat16):
-            den = net(noisy, sigma=s)
+            den = net(noisy, sigma=s, res=res if args.res_cond else None)
             loss = torch.nn.functional.l1_loss(den, target)
         # skip non-finite / exploded batches (robustness: a rare pathological
         # augmented patch once blew the loss from 0.06 to 1e6 and wrecked training)
@@ -179,7 +184,7 @@ def main():
         if step % args.save_every == 0:
             save('last.pt')   # frequent save so a livelock loses <= save_every steps
         if step % args.val_every == 0 or step == args.iters:
-            v = validate(net, dev, blur_max=args.blur_max, thick_max=args.thick_max)
+            v = validate(net, dev, blur_max=args.blur_max, thick_max=args.thick_max, res_cond=bool(args.res_cond))
             msg = "  ".join(f"{k}={val:.2f}" for k, val in v.items())
             mean = sum(v.values()) / max(len(v), 1)
             for k, val in v.items():
