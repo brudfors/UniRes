@@ -89,16 +89,24 @@ class SynthLabelBank:
         self.gmm_fwhm = gmm_fwhm
         self.affine = affine
         self.deform_prob = deform_prob
-        self.maps = _load_label_maps(dir_labels, device)
-
-    # --- geometry: crop a foreground-centred raw patch (cheap indexing, no kernels) ---
-    def _raw_crop(self):
-        t, K, lo, hi = self.maps[int(torch.randint(len(self.maps), (1,)).item())]
-        P = self.patch
-        c = [int(torch.randint(int(lo[i]), int(hi[i]) + 1, (1,), device=self.device)[0])
-             for i in range(3)]
-        s = [min(max(0, c[i] - P // 2), t.shape[i] - P) for i in range(3)]
-        return t[s[0]:s[0] + P, s[1]:s[1] + P, s[2]:s[2] + P].long()
+        maps = _load_label_maps(dir_labels, device)
+        # Pre-stack all maps into ONE tensor on a common grid so a whole BATCH of crops can
+        # be pulled with a single index_select + grid_sample (no per-sample Python/crop loop
+        # -> per-step CUDA-launch count drops to ~Part-B level, survives the loaded box).
+        S = int(max(max(t.shape) for t, _, _, _ in maps))
+        vols, lo_n, hi_n = [], [], []
+        for t, _K, lo, hi in maps:
+            if tuple(t.shape) != (S, S, S):
+                t = F.interpolate(t[None, None].float(), size=(S, S, S),
+                                  mode="nearest")[0, 0].to(torch.uint8)
+                fg = (t > 0).nonzero(as_tuple=False)
+                lo, hi = fg.min(0).values, fg.max(0).values
+            vols.append(t)
+            lo_n.append(lo.float()); hi_n.append(hi.float())
+        self.S = S
+        self.vol = torch.stack(vols)[:, None]           # [N,1,S,S,S] uint8
+        self.lo = torch.stack(lo_n)                     # [N,3] fg bbox (voxels)
+        self.hi = torch.stack(hi_n)
 
     @staticmethod
     def _gauss3d(x, sigma):
@@ -122,16 +130,26 @@ class SynthLabelBank:
         no heavy kernels); geometry (affine+flip), GMM, smoothing and normalisation are
         each a SINGLE batched op -> a large cut in per-step CUDA-launch count vs a
         per-sample loop, so the process keeps progressing under CPU starvation."""
-        P = self.patch
-        # cheap per-sample raw crops -> one stacked tensor
-        raw = torch.stack([self._raw_crop() for _ in range(batch)])[:, None].float()  # [B,1,P,P,P]
-        # ONE batched affine warp (rotation+zoom+shear+flips), nearest -> integer labels
-        if self.affine:
-            theta = _rand_affine_theta(batch, self.device, do_prob=self.deform_prob)
-            grid = F.affine_grid(theta, (batch, 1, P, P, P), align_corners=False)
-            raw = F.grid_sample(raw, grid, mode="nearest", padding_mode="zeros",
-                                align_corners=False)
-        labs = raw.long()                                  # [B,1,P,P,P]
+        P, S, dev = self.patch, self.S, self.device
+        # --- crop + affine for the WHOLE batch in ONE grid_sample (no per-sample loop) ---
+        idx = torch.randint(len(self.vol), (batch,), device=dev)
+        vol_b = self.vol[idx].float()                       # [B,1,S,S,S]
+        lo, hi = self.lo[idx], self.hi[idx]                 # [B,3] (D,H,W voxel bbox)
+        # per-sample crop centre inside the foreground bbox, patch kept in-bounds
+        half = P / 2.0
+        cmin = torch.clamp(lo, min=half)
+        cmax = torch.maximum(torch.clamp(hi, max=S - half), cmin)
+        c = cmin + (cmax - cmin) * torch.rand(batch, 3, device=dev)     # voxel coords (D,H,W)
+        center_norm = (2.0 * c / (S - 1) - 1.0).flip(1)                 # -> (x,y,z)=(W,H,D)
+        # linear part: random rotation/zoom/shear/flips, SCALED by P/S so the P^3 output
+        # samples a patch-sized region (identity-kept samples become a pure axis-aligned crop)
+        theta = _rand_affine_theta(batch, dev,
+                                   do_prob=self.deform_prob if self.affine else 0.0)  # [B,3,4]
+        theta[:, :, :3] = theta[:, :, :3] * (P / S)
+        theta[:, :, 3] = center_norm
+        grid = F.affine_grid(theta, (batch, 1, P, P, P), align_corners=False)
+        labs = F.grid_sample(vol_b, grid, mode="nearest", padding_mode="zeros",
+                             align_corners=False).long()               # [B,1,P,P,P]
         Kmax = int(labs.max().item()) + 1
         # per-label random Gaussian intensities (fresh random CONTRAST per sample) -- one gather
         mean = torch.rand(batch, Kmax, device=self.device)          # U(0,1)
