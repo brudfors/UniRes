@@ -73,6 +73,9 @@ class settings:
         self.red_sigma: float = 0.05  # RED denoiser strength (noise level, standardised [0,1] units)
         self.red_sigma_end: float = None  # if set, anneal red_sigma -> this over max_iter (strong denoise early, gentle late); None = constant
         self.red_sigma_auto: bool = False  # NOT recommended: derive red_sigma from the noise estimate. Tested (IXI PD, 3-20% noise) and it HURTS -- noise adaptation is ALREADY handled by the dimensionless mu (mu_c=red_mu*tau_c ~ 1/noise^2), so this double-adapts, and it over-smooths (observation noise > residual noise in y). Keep red_sigma fixed.
+        self.red_thick_taper: bool = True  # resolution-adaptive strength: taper the DL prior toward 0 as slice thickness (po.ratio) exceeds red_thick_full, reaching 0 by red_thick_zero -> guarantees the prior never REDUCES quality on very thick slices (falls back to MTV) while keeping 2-4mm gains. Recommended when inputs may be very thick.
+        self.red_thick_full: float = 4.0  # thickness factor (low/high-res voxel ratio) up to which the DL prior is applied at FULL strength
+        self.red_thick_zero: float = 8.0  # thickness factor at/above which the DL prior is fully OFF (linear taper between full and zero)
         self.red_sigma_scale: float = 1.0  # multiplier on the auto-estimated noise sigma (red_sigma_auto only)
         self.red_denoiser: str = 'gaussian'  # Denoiser backend: 'gaussian' (analytic) | 'drunet' (pretrained 2.5D CNN) | 'biasfree3d' (native-3D bias-free CNN, needs red_weights)
         self.red_weights: str = None  # Path to denoiser weights (None -> backend default/download)

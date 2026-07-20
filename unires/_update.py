@@ -117,12 +117,43 @@ def _red_mu_channels(x, sett):
     def wt(c):
         return float(w[c]) if w is not None else 1.0
     if not getattr(sett, 'red_auto_scale', True):
-        return [base * wt(c) for c in range(len(x))]
+        return [base * wt(c) * _thick_taper(x, c, sett) for c in range(len(x))]
     mus = []
     for c in range(len(x)):
         s_c = sum(float(x[c][n].tau) for n in range(len(x[c])))
-        mus.append(base * s_c * wt(c))
+        mus.append(base * s_c * wt(c) * _thick_taper(x, c, sett))
     return mus
+
+
+def _thick_factor(x, c):
+    """Per-channel slice-thickness factor = max over observations of the (low-res /
+    high-res) voxel-size ratio along the thick axis (po.ratio). 1.0 = isotropic."""
+    facs = []
+    for n in range(len(x[c])):
+        po = getattr(x[c][n], 'po', None)
+        r = getattr(po, 'ratio', None) if po is not None else None
+        if r is not None:
+            facs.append(float(max(float(v) for v in r)))
+    return max(facs) if facs else 1.0
+
+
+def _thick_taper(x, c, sett):
+    """Resolution-adaptive strength: taper the DL prior toward 0 as the slice thickness
+    exceeds the regime where it is validated to HELP (~<=4 vox). Beyond ~red_thick_zero
+    the learned prior hallucinates in the forward operator's null space and would REDUCE
+    quality; fading it out there guarantees the prior never hurts on very thick slices
+    (falls back to pure MTV) while keeping the gains at 2-4mm. Uses the acquisition
+    geometry UniRes already knows (po.ratio). Off by default (red_thick_taper)."""
+    if not getattr(sett, 'red_thick_taper', False):
+        return 1.0
+    t = _thick_factor(x, c)
+    full = float(getattr(sett, 'red_thick_full', 4.0))
+    zero = float(getattr(sett, 'red_thick_zero', 7.0))
+    if t <= full:
+        return 1.0
+    if t >= zero:
+        return 0.0
+    return (zero - t) / (zero - full)
 
 
 def _red_sigma_at(sett, n_iter):
