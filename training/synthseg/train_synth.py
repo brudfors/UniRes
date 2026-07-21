@@ -130,6 +130,8 @@ def main():
                     help="cube side for full-image mode (whole brain, lightly downsampled to fit)")
     ap.add_argument("--grad_ckpt", type=int, default=0,
                     help="gradient checkpointing on enc/mid/dec blocks (memory<->compute; for full-image)")
+    ap.add_argument("--zero_bg", type=int, default=0,
+                    help="synth background label -> 0 intensity (realistic MRI air); recommended for full-image")
     ap.add_argument("--save_every", type=int, default=250)
     ap.add_argument("--val_every", type=int, default=1000)
     ap.add_argument("--log_every", type=int, default=25)
@@ -154,8 +156,10 @@ def main():
     full = bool(args.full_image)
     if full:
         args.batch = 1                      # whole-volume input -> batch 1 (memory)
+        if args.lr == 2e-4:                 # batch=1 diverges at the patch LR (0.05->7.22 seen)
+            args.lr = 1e-4                  # -> halve the default LR for full-image stability
     torch.manual_seed(1234 + rank)
-    bank = SynthLabelBank(args.labels, dev, patch=args.patch)
+    bank = SynthLabelBank(args.labels, dev, patch=args.patch, zero_bg=bool(args.zero_bg))
     net = BiasFreeUNet3D(base=args.base, depth=args.depth, res_map=bool(args.res_cond)).to(dev)
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr * (world ** 0.5), weight_decay=1e-5)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.iters)

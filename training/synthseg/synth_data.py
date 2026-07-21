@@ -83,12 +83,13 @@ class SynthLabelBank:
     """Draws batches of SHARP random-contrast image patches on the GPU."""
 
     def __init__(self, dir_labels, device, patch=96, gmm_fwhm=(0.3, 1.6),
-                 affine=True, deform_prob=0.8):
+                 affine=True, deform_prob=0.8, zero_bg=False):
         self.device = device
         self.patch = int(patch)
         self.gmm_fwhm = gmm_fwhm
         self.affine = affine
         self.deform_prob = deform_prob
+        self.zero_bg = bool(zero_bg)   # background label (0) -> 0 intensity (realistic MRI air)
         maps = _load_label_maps(dir_labels, device)
         # Pre-stack all maps into ONE tensor on a common grid so a whole BATCH of crops can
         # be pulled with a single index_select + grid_sample (no per-sample Python/crop loop
@@ -148,6 +149,8 @@ class SynthLabelBank:
         theta[:, :, :3] = theta[:, :, :3] * (P / S)
         theta[:, :, 3] = center_norm
         grid = F.affine_grid(theta, (batch, 1, P, P, P), align_corners=False)
+        # GUARD grid coords: NaN -> OOB (sampled as background via zeros pad); clamp finite range
+        grid = torch.nan_to_num(grid, nan=2.0, posinf=2.0, neginf=-2.0).clamp_(-2.0, 2.0)
         labs = F.grid_sample(vol_b, grid, mode="nearest", padding_mode="zeros",
                              align_corners=False).long()               # [B,1,P,P,P]
         return self._synthesize(labs)
@@ -168,8 +171,13 @@ class SynthLabelBank:
         img = (m + s * torch.randn_like(m)).float()
         lo, hi = self.gmm_fwhm
         img = self._gauss3d(img, float(torch.empty(1).uniform_(lo, hi))).clamp_min(0.0)
-        hi = torch.quantile(img.reshape(B, -1), 0.99, dim=1).clamp_min(1e-5)
-        return (img / hi.view(B, 1, 1, 1, 1)).clamp(0.0, 2.0)
+        if self.zero_bg:
+            img = img * (labs != 0).float()                # background -> 0 (realistic air)
+        # robust [0,1] scale; use a quantile of the FOREGROUND so an all-bg patch can't blow up
+        hi = torch.quantile(img.reshape(B, -1), 0.99, dim=1).clamp_min(1e-3)
+        img = (img / hi.view(B, 1, 1, 1, 1))
+        # HARD finite-guard: no NaN/Inf may ever leave the synth (would hang a downstream kernel)
+        return torch.nan_to_num(img, nan=0.0, posinf=2.0, neginf=0.0).clamp_(0.0, 2.0)
 
     def sample_full(self, size=None):
         """WHOLE-VOLUME synth: one label map (optionally resized to `size`), a single
@@ -185,6 +193,7 @@ class SynthLabelBank:
             theta = _rand_affine_theta(1, dev, do_prob=1.0)          # whole-volume warp (scale=1)
             theta[:, :, 3] = 0.0                                     # centred (no crop shift)
             grid = F.affine_grid(theta, (1, 1, D, D, D), align_corners=False)
+            grid = torch.nan_to_num(grid, nan=2.0, posinf=2.0, neginf=-2.0).clamp_(-2.0, 2.0)
             vol = F.grid_sample(vol, grid, mode="nearest", padding_mode="zeros",
                                 align_corners=False)
         return self._synthesize(vol.long())
@@ -244,4 +253,7 @@ def batched_degrade(x, _thick_slice_degrade, _gauss_blur3d, sigma_min=0.0, sigma
     gauss = deg + sigma * n1
     rician = torch.sqrt((deg + sigma * n1) ** 2 + (sigma * n2) ** 2)
     noisy = ric * rician + (1.0 - ric) * gauss
+    # HARD finite-guard on BOTH tensors before they hit the net (belt-and-braces vs kernel hangs)
+    noisy = torch.nan_to_num(noisy, nan=0.0, posinf=4.0, neginf=0.0)
+    target = torch.nan_to_num(target, nan=0.0, posinf=4.0, neginf=0.0)
     return noisy, target, sigma.reshape(-1), res
