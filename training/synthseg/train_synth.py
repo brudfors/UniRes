@@ -42,6 +42,49 @@ def grad_l1(a, b):
     return loss / 3.0
 
 
+def bf3d_forward_ckpt(net, x, sigma=None, res=None):
+    """Gradient-CHECKPOINTED forward that REPLICATES BiasFreeUNet3D.forward using the net's
+    own submodules (does NOT modify the core class). Wraps the enc/mid/dec ResBlock stacks
+    in torch.utils.checkpoint so activations are recomputed in backward -> lets the 34M net
+    train on a WHOLE ~192-256^3 volume that would otherwise OOM. Used only in --full_image
+    --grad_ckpt mode; the checkpoint stays byte-identical in structure to the patch model."""
+    from torch.utils.checkpoint import checkpoint
+    inp = x
+    feats = [x]
+    ref = x[:, :1] if net.k > 1 else x
+    if net.sigma_map:
+        if sigma is None:
+            sigma = x.new_zeros(())
+        if not torch.is_tensor(sigma):
+            sigma = x.new_tensor(float(sigma))
+        feats.append(sigma.expand_as(ref) if sigma.dim() == 0
+                     else sigma.view(-1, 1, 1, 1, 1).expand_as(ref))
+    if net.context:
+        feats.append(torch.zeros_like(x))
+    if net.res_map:
+        if res is None:
+            res = x.new_zeros(())
+        if not torch.is_tensor(res):
+            res = x.new_tensor(float(res))
+        feats.append(res.expand_as(ref) if res.dim() == 0
+                     else res.view(-1, 1, 1, 1, 1).expand_as(ref))
+    h = torch.cat(feats, dim=1) if len(feats) > 1 else x
+    h = net.head(h)
+    skips = []
+    for enc, down in zip(net.enc, net.down):
+        h = checkpoint(enc, h, use_reentrant=False)
+        skips.append(h)
+        h = down(h)
+    h = checkpoint(net.mid, h, use_reentrant=False)
+    for up, reduce, dec, skip in zip(net.up, net.reduce, net.dec, reversed(skips)):
+        h = F.interpolate(h, size=skip.shape[2:], mode="trilinear", align_corners=False)
+        h = up(h)
+        h = reduce(torch.cat([h, skip], dim=1))
+        h = checkpoint(dec, h, use_reentrant=False)
+    out = net.tail(h)
+    return inp - out if net.residual else out
+
+
 @torch.no_grad()
 def validate(net, bank, dev, res_cond, sigmas=(0.02, 0.05), thick=(2.0, 4.0, 6.0)):
     """Quick self-consistency PSNR on held-out synth patches across slice thickness."""
@@ -81,6 +124,12 @@ def main():
     ap.add_argument("--depth", type=int, default=3)
     ap.add_argument("--res_cond", type=int, default=0)
     ap.add_argument("--grad_w", type=float, default=0.5, help="weight of gradient(L1) term")
+    ap.add_argument("--full_image", type=int, default=0,
+                    help="1 => train on WHOLE volumes (batch forced 1) instead of patches")
+    ap.add_argument("--full_size", type=int, default=192,
+                    help="cube side for full-image mode (whole brain, lightly downsampled to fit)")
+    ap.add_argument("--grad_ckpt", type=int, default=0,
+                    help="gradient checkpointing on enc/mid/dec blocks (memory<->compute; for full-image)")
     ap.add_argument("--save_every", type=int, default=250)
     ap.add_argument("--val_every", type=int, default=1000)
     ap.add_argument("--log_every", type=int, default=25)
@@ -102,6 +151,9 @@ def main():
     if is_main:
         os.makedirs(args.out, exist_ok=True)
 
+    full = bool(args.full_image)
+    if full:
+        args.batch = 1                      # whole-volume input -> batch 1 (memory)
     torch.manual_seed(1234 + rank)
     bank = SynthLabelBank(args.labels, dev, patch=args.patch)
     net = BiasFreeUNet3D(base=args.base, depth=args.depth, res_map=bool(args.res_cond)).to(dev)
@@ -141,14 +193,19 @@ def main():
     run = 0.0
     step = start_step
     while step < args.iters:
-        clean = bank.sample(args.batch)  # [B,1,P,P,P] sharp random-contrast (target source)
+        # clean random-contrast source: WHOLE volume (full-image mode) or a batch of patches
+        clean = bank.sample_full(args.full_size) if full else bank.sample(args.batch)
         # fully-batched degradation (no per-sample Python loop -> low CUDA-launch count)
         noisy, target, s, res = batched_degrade(
             clean, _thick_slice_degrade, _gauss_blur3d,
             sigma_min=0.0, sigma_max=args.sigma_max, rician_prob=0.5,
             blur_max=args.blur_max, thick_max=args.thick_max)
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            den = net(noisy, sigma=s, res=res if args.res_cond else None)
+            if full and args.grad_ckpt:
+                den = bf3d_forward_ckpt(net.module if ddp else net, noisy, sigma=s,
+                                        res=res if args.res_cond else None)
+            else:
+                den = net(noisy, sigma=s, res=res if args.res_cond else None)
             loss = F.l1_loss(den, target) + args.grad_w * grad_l1(den, target)
         if not torch.isfinite(loss) or loss.item() > 10.0:
             opt.zero_grad(set_to_none=True); step += 1; continue

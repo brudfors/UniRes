@@ -150,23 +150,44 @@ class SynthLabelBank:
         grid = F.affine_grid(theta, (batch, 1, P, P, P), align_corners=False)
         labs = F.grid_sample(vol_b, grid, mode="nearest", padding_mode="zeros",
                              align_corners=False).long()               # [B,1,P,P,P]
+        return self._synthesize(labs)
+
+    def _synthesize(self, labs):
+        """labs [B,1,...] long -> SHARP random-contrast image [B,1,...] via a per-label
+        random Gaussian intensity model (fresh CONTRAST), one smoothing, robust [0,1] norm.
+        Shared by patch (`sample`) and whole-volume (`sample_full`) generation."""
+        B = labs.shape[0]
+        spat = labs.shape[2:]
         Kmax = int(labs.max().item()) + 1
-        # per-label random Gaussian intensities (fresh random CONTRAST per sample) -- one gather
-        mean = torch.rand(batch, Kmax, device=self.device)          # U(0,1)
-        std = torch.rand(batch, Kmax, device=self.device) * 0.25     # within-tissue variance
+        mean = torch.rand(B, Kmax, device=self.device)              # U(0,1) per-label intensity
+        std = torch.rand(B, Kmax, device=self.device) * 0.25         # within-tissue variance
         mean[:, 0] *= 0.15                                           # background mostly dark
-        flat = labs.reshape(batch, -1)
-        m = torch.gather(mean, 1, flat).reshape(batch, 1, P, P, P)
-        s = torch.gather(std, 1, flat).reshape(batch, 1, P, P, P)
+        flat = labs.reshape(B, -1)
+        m = torch.gather(mean, 1, flat).reshape(B, 1, *spat)
+        s = torch.gather(std, 1, flat).reshape(B, 1, *spat)
         img = (m + s * torch.randn_like(m)).float()
-        # single batched smoothing (partial-volume / PSF of the "acquisition")
         lo, hi = self.gmm_fwhm
-        img = self._gauss3d(img, float(torch.empty(1).uniform_(lo, hi)))
-        img = img.clamp_min(0.0)
-        # normalise each sample to ~[0,1] via a robust max (like IXI patch scaling)
-        hi = torch.quantile(img.reshape(batch, -1), 0.99, dim=1).clamp_min(1e-5)
-        img = (img / hi.view(batch, 1, 1, 1, 1)).clamp(0.0, 2.0)
-        return img
+        img = self._gauss3d(img, float(torch.empty(1).uniform_(lo, hi))).clamp_min(0.0)
+        hi = torch.quantile(img.reshape(B, -1), 0.99, dim=1).clamp_min(1e-5)
+        return (img / hi.view(B, 1, 1, 1, 1)).clamp(0.0, 2.0)
+
+    def sample_full(self, size=None):
+        """WHOLE-VOLUME synth: one label map (optionally resized to `size`), a single
+        random affine (rotation/zoom/shear/flips, NO crop/translation -> whole brain kept),
+        then a fresh random contrast. Returns [1,1,D,D,D] for full-image training."""
+        dev, S = self.device, self.S
+        D = int(size) if size else S
+        idx = int(torch.randint(len(self.vol), (1,), device=dev).item())
+        vol = self.vol[idx:idx + 1].float()                          # [1,1,S,S,S]
+        if D != S:
+            vol = F.interpolate(vol, size=(D, D, D), mode="nearest")
+        if self.affine:
+            theta = _rand_affine_theta(1, dev, do_prob=1.0)          # whole-volume warp (scale=1)
+            theta[:, :, 3] = 0.0                                     # centred (no crop shift)
+            grid = F.affine_grid(theta, (1, 1, D, D, D), align_corners=False)
+            vol = F.grid_sample(vol, grid, mode="nearest", padding_mode="zeros",
+                                align_corners=False)
+        return self._synthesize(vol.long())
 
 
 _LG06, _LG17 = float(np.log(0.6)), float(np.log(1.7))
