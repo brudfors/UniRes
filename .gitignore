@@ -127,3 +127,10 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Real input scans (patient data, uncompressed) - never commit; demo *.nii.gz stay tracked
+data/*.nii
+
+# Benchmark output dirs + logs
+benchmarks/out_*/
+benchmarks/out_run*.log
