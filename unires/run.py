@@ -75,6 +75,7 @@ def fit(x, y, sett):
         tmp = torch.zeros_like(y[0].dat)  # for holding rhs in y-update, and jtv in u-update
         t_iter = timer() if sett.do_print else 0
         cnt_scl_iter = 0  # To ensure we do, at least, a fixed number of iterations for each scale
+        countdown0 = sett.converged_countdown  # tail guard: extra converged iters before final stop
         for n_iter in range(sett.max_iter):
 
             if n_iter == 0:
@@ -83,8 +84,8 @@ def fit(x, y, sett):
             # ----------
             # UPDATE: image
             # ----------
-            y, z, w, tmp, obj = _update_admm(x, y, z, w, rho, tmp, obj, n_iter,
-                                             sett)
+            y, z, w, tmp, obj, rho = _update_admm(x, y, z, w, rho, tmp, obj, n_iter,
+                                                  sett)
 
             # Show JTV
             if sett.show_jtv:
@@ -107,7 +108,7 @@ def fit(x, y, sett):
                     _ = _print_info('fit-finish', sett, t00, n_iter)
                     break  # Finished
             else:
-                countdown0  = 6
+                countdown0 = sett.converged_countdown
 
             # ----------
             # UPDATE: even/odd scaling

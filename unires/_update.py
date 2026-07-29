@@ -6,7 +6,7 @@ from nitorch.spatial import (affine_grid, grid_pull, identity_grid,
                              voxel_size, im_gradient, im_divergence,
                              grid_grad)
 from nitorch.core._linalg_expm import _expm
-from nitorch.core.optim import cg
+from nitorch.core.optim import cg, get_gain
 from nitorch.plot.volumes import show_slices
 from nitorch.core.math import round
 # UniRes
@@ -119,6 +119,18 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
     # UPDATE: y
     # ----------
     t0 = _print_info('fit-update', sett, 'y', n_iter)  # PRINT
+    # Inexact ADMM: an accurate inner y-solve is wasted while z,w are still far from
+    # optimal, so track the inner-CG tolerance to the outer convergence gain -- loose
+    # early, tightening to the cgs_tol floor as the outer gain shrinks. The floor equals
+    # the baseline tol, so the final (converged) solves are as accurate as baseline.
+    tol_y = sett.cgs_tol
+    if sett.cgs_tol_adapt:
+        if n_iter >= 2:
+            g = float(get_gain(obj[:n_iter, 0], monotonicity='decreasing').abs())
+            tol_y = (min(sett.cgs_tol_max, max(sett.cgs_tol, sett.cgs_tol_eta * g))
+                     if (g == g and g != float('inf')) else sett.cgs_tol_max)
+        else:
+            tol_y = sett.cgs_tol_max  # earliest outer iters: loosest inner solve
     for c in range(len(x)):  # Loop over channels
         # RHS
         tmp[:] = 0.0
@@ -145,7 +157,7 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
            stop='max_gain',
            inplace=True,
            precond=precond,
-           tolerance=sett.cgs_tol)  # OBS: y[c].dat is here updated in-place
+           tolerance=tol_y)  # OBS: y[c].dat is here updated in-place
 
         _ = _print_info('int', sett, c)  # PRINT
 
@@ -160,22 +172,28 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
     # ----------
     # UPDATE: z
     # ----------
-    if alpha != 1:  # Use over/under-relaxation
+    if alpha != 1 or sett.rho_adapt:  # relaxation and/or rho residual-balancing need z_old
         z_old = z.clone()
+    # Coupling term Dy = lam*grad(y), relaxation-adjusted. It is constant until the next
+    # y-update, so with cache_grad it is computed once per channel and reused by the z- and
+    # w-updates below instead of recomputing grad(y) three times (behaviour-identical).
+    def _get_Dy(c):
+        Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
+        if alpha != 1:  # over/under-relaxation
+            Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
+        return Dy
+    Dy_cache = [_get_Dy(c) for c in range(len(x))] if sett.cache_grad else None
+    Dy_of = (lambda c: Dy_cache[c]) if sett.cache_grad else _get_Dy
     t0 = _print_info('fit-update', sett, 'z', n_iter)  # PRINT
     tmp[:] = 0
     for c in range(len(x)):
-        Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
-        if alpha != 1:  # Use over/under-relaxation
-            Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
+        Dy = Dy_of(c)
         tmp += torch.sum((w[c, ...] / rho + Dy) ** 2, dim=0)
     tmp.sqrt_()  # in-place
     tmp = ((tmp - one / rho).clamp_min(0)) / (tmp + tiny)
 
     for c in range(len(x)):
-        Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
-        if alpha != 1:  # Use over/under-relaxation
-            Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
+        Dy = Dy_of(c)
         for d in range(Dy.shape[0]):
             z[c, d, ...] = tmp * (w[c, d, ...] / rho + Dy[d, ...])
     _ = _print_info('fit-done', sett, t0)  # PRINT
@@ -184,15 +202,41 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
     # UPDATE: w
     # ----------
     t0 = _print_info('fit-update', sett, 'w', n_iter)  # PRINT
+    pr2 = torch.zeros([], device=sett.device, dtype=torch.float32)  # ||primal residual||^2 = ||Dy - z||^2
     for c in range(len(x)):  # Loop over channels
-        Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
-        if alpha != 1:  # Use over/under-relaxation
-            Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
-        w[c, ...] += rho * (Dy - z[c, ...])
+        Dy = Dy_of(c)
+        r_c = Dy - z[c, ...]
+        w[c, ...] += rho * r_c
+        if sett.rho_adapt:
+            pr2 = pr2 + (r_c ** 2).sum()  # accumulate primal residual only when needed
         _ = _print_info('int', sett, c)  # PRINT
     _ = _print_info('fit-done', sett, t0)  # PRINT
 
-    return y, z, w, tmp, obj
+    # ----------
+    # Adapt ADMM step-size rho by residual balancing (Boyd 2011, 3.4.1). Rescaling the
+    # dual w by the same factor keeps the scaled dual u = w/rho invariant, so the ADMM
+    # fixed point is unchanged -- only the convergence path (and hence speed) differs.
+    # ----------
+    if sett.rho_adapt:
+        dr2 = torch.zeros([], device=sett.device, dtype=torch.float32)  # ||dual residual||^2 / rho^2
+        for c in range(len(x)):  # dual residual s = rho * D^T (z - z_old), D^T = -lam*div
+            s_c = y[c].lam * im_divergence(z[c, ...] - z_old[c, ...], vx=vx_y,
+                                           bound=sett.bound, which=sett.diff)
+            dr2 = dr2 + (s_c ** 2).sum()
+        pr = pr2.sqrt()
+        dr = rho * dr2.sqrt()
+        rho_old = float(rho)
+        if pr > sett.rho_adapt_mu * dr:
+            rho = rho * sett.rho_adapt_tau
+            w.mul_(sett.rho_adapt_tau)
+        elif dr > sett.rho_adapt_mu * pr:
+            rho = rho / sett.rho_adapt_tau
+            w.div_(sett.rho_adapt_tau)
+        if sett.do_print >= 2 and float(rho) != rho_old:
+            print(f"OBS: rho adapted {rho_old:.3g} -> {float(rho):.3g} "
+                  f"(|r|={float(pr):.3g}, |s|={float(dr):.3g})")
+
+    return y, z, w, tmp, obj, rho
 
 
 def _update_rigid(x, y, sett, mean_correct=True, max_niter_gn=1, num_linesearch=4, verbose=0, samp=3):

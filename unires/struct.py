@@ -58,13 +58,17 @@ class settings:
     """ Algorithm settings.
     """
     def __init__(self):
-        self.alpha: float = 1.0  # Relaxation parameter 0 < alpha < 2, alpha < 1: under-relaxation, alpha > 1: over-relaxation
+        self.alpha: float = 1.6  # ADMM over/under-relaxation, 0<alpha<2 (1=off); default 1.6 (over-relaxation) speeds convergence
         self.atlas_rigid: bool = False  # Rigid or rigid+isotropic scaling alignment to atlas
         self.bids: bool = False  # For adding a BIDS compatible space tag ('_space-unires_')
         self.bound: str = 'zero'  # Boundary conditions (see nitorch.spatial)
         self.cgs_max_iter: int = 20  # Max conjugate gradient (CG) iterations for solving for y
-        self.cgs_tol: float = 1e-3  # CG tolerance for solving for y
+        self.cgs_tol: float = 1e-3  # CG tolerance for solving for y (floor for cgs_tol_adapt)
+        self.cgs_tol_adapt: bool = True  # Inexact ADMM: loosen inner-CG tol early, tighten to cgs_tol floor as outer gain shrinks
+        self.cgs_tol_max: float = 0.3  # Loosest inner-CG tol when cgs_tol_adapt (early outer iters)
+        self.cgs_tol_eta: float = 1.0  # Inner-CG tol = clamp(eta*outer_gain, cgs_tol, cgs_tol_max)
         self.cgs_verbose: bool = False  # CG verbosity (0, 1)
+        self.cache_grad: bool = True  # Reuse Dy=lam*grad(y) across z/w updates instead of recomputing 3x (behaviour-identical)
         self.clean_fov: bool = False  # Set voxels outside of low-res FOV, projected in high-res space, to zero
         self.coreg_params = {'cost_fun': 'nmi', 'group': 'SE', 'samp': (1), 'fwhm': 7, 'mean_space': False}  # parameters for coregistration
         self.crop: bool = False  # Crop input images' FOV to brain in the NITorch atlas
@@ -97,14 +101,18 @@ class settings:
         self.reg_scl: float = 4.0  # Scale regularisation estimate (for coarse-to-fine scaling, give as list of floats)
         self.rho: float = None  # ADMM step-size, if None -> estimate is made
         self.rho_scl: float = 1.0  # Scaling of ADMM step-size
+        self.rho_adapt: bool = True  # Adapt rho by ADMM residual balancing (Boyd 2011, 3.4.1); the heuristic rho is often ~2x too high
+        self.rho_adapt_mu: float = 4.0  # Residual-balancing imbalance threshold (higher = fewer rho changes; <=2 can oscillate)
+        self.rho_adapt_tau: float = 2.0  # Residual-balancing rho multiplier
         self.rigid_basis = None  # Rigid transformation basis, defined in init_reg()
         self.rigid_mod: int = 1  # Update rigid every rigid_mod iteration
         self.rigid_samp: int = 1  # Level of sub-sampling for estimating rigid registration parameters
         self.scaling: bool = False  # Optimise even/odd slice scaling
-        self.sched_num: int = 3  # Number of coarse-to-fine scalings
+        self.sched_num: int = 0  # Number of coarse-to-fine scalings (0 = single reg value, no schedule)
         self.show_hyperpar: bool = False  # Use matplotlib to visualise hyper-parameter estimates
         self.show_jtv: bool = False  # Show the joint total variation (JTV)
         self.tolerance: float = 1e-4  # Algorithm tolerance, if zero, run to max_iter
+        self.converged_countdown: int = 2  # Extra outer iters required after gain<tolerance before stopping (tail guard; was 6)
         self.unified_rigid: bool = False  # Do unified rigid registration
         self.vx: float = 1.0  # Reconstruction voxel size (use 0 or None to just denoise)
         self.write_jtv: bool = False  # Write JTV to nifti
