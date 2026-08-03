@@ -8,10 +8,11 @@ per-case deltas support mean +/- sem (not just the pooled sd the pairwise benche
   python bench_final.py --dataset ixi --models "best=/path/a.pt,mo=/path/b.pt" \
       --n 8 --thick 2 4 6 --contrasts T1 T2 PD --mu 0.05 --red_nullspace 0.5 --out res.json
 """
-import argparse, glob, json, math, statistics as st
+import argparse, glob, json, math, os, statistics as st
 from bench_ixi import load_gt, simulate_one, recon_score
 
-IXI_PRIOR = '/workspace/data/unires_dl_prior/checkpoints/biasfree3d_restore_thick.pt'
+#: optional reference prior to compare against (set $UNIRES_REF_PRIOR)
+IXI_PRIOR = os.environ.get('UNIRES_REF_PRIOR')
 
 
 def main():
@@ -33,8 +34,8 @@ def main():
     args = ap.parse_args()
 
     models = []
-    if args.include_ixi_prior:
-        models.append(('red(IXI-real)', IXI_PRIOR))
+    if args.include_ixi_prior and IXI_PRIOR:
+        models.append(('red(reference)', IXI_PRIOR))
     for tok in args.models.split(','):
         tok = tok.strip()
         if tok:
@@ -49,11 +50,11 @@ def main():
         kw['red_nullspace'] = args.red_nullspace
 
     if args.dataset == 'ixi':
-        groups = [(c, sorted(glob.glob(f"/workspace/data/ixi/{c}/*.nii.gz"))[-args.n:])
+        groups = [(c, sorted(glob.glob(os.path.join(os.environ.get("UNIRES_IXI_ROOT", "data/ixi"), c, "*.nii.gz")))[-args.n:])
                   for c in args.contrasts]
     else:
-        paths = sorted(glob.glob("/workspace/data/miccai2012/*.nii")
-                       + glob.glob("/workspace/data/miccai2012/*.nii.gz"))[:args.n]
+        paths = sorted(glob.glob(os.path.join(os.environ.get("UNIRES_MICCAI_ROOT", "data/miccai2012"), "*.nii"))
+                       + glob.glob(os.path.join(os.environ.get("UNIRES_MICCAI_ROOT", "data/miccai2012"), "*.nii.gz")))[:args.n]
         groups = [('T1', paths)]
 
     print(f"FINAL VALIDATION | {args.dataset} n={args.n} axis={args.axis} mu={args.mu} "

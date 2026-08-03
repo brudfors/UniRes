@@ -102,3 +102,22 @@ See `training/synthseg/`. The validated recipe:
 Ablations that did **not** pay off: operator-consistent degradation, within-tissue texture alone,
 multi-orientation training (helps crossed stacks, costs single-stack), and mixing in real data
 (`--real_frac`, neutral at best, harmful at high fractions).
+
+## Note on naming
+
+The shipped model is trained on **synthetic data only** — it never sees real MRI. The internal
+run name `full_real_zbg` refers to `realism=1.0` (the multi-scale intra-tissue *appearance*
+parameter), **not** to real data. Models that did use real MRI (`--real_frac`) were evaluated and
+deliberately not shipped: real data measured neutral at 25% and harmful at 50–100%.
+
+## Running the benchmarks
+
+Dataset locations are read from the environment so the scripts are machine-independent:
+
+```bash
+export UNIRES_IXI_ROOT=/path/to/ixi          # <root>/{T1,T2,PD}/*.nii.gz
+export UNIRES_MICCAI_ROOT=/path/to/miccai    # <root>/*.nii
+export UNIRES_REF_PRIOR=/path/to/other.pt    # optional reference prior to compare against
+python benchmarks/bench_final.py --models "synth=/path/to/unires_red_synth_full.pt" \
+    --dataset ixi --contrasts T1 T2 PD --thick 2 4 6 --n 8
+```

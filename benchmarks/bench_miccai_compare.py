@@ -9,6 +9,7 @@ score dPSNR/dSSIM vs the real GT for MTV | red(IXI) | red(synth-patch) | red(syn
 Flat directory of *.nii (no contrast subdirs). Reuses bench_ixi machinery.
 """
 import argparse
+import os
 import glob
 import statistics as st
 from bench_ixi import load_gt, simulate_one, recon_score
@@ -16,7 +17,7 @@ from bench_ixi import load_gt, simulate_one, recon_score
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--ixi_ckpt', default='/workspace/data/unires_dl_prior/checkpoints/biasfree3d_restore_thick.pt')
+    ap.add_argument('--ixi_ckpt', default=os.environ.get('UNIRES_REF_PRIOR'))
     ap.add_argument('--synth_patch_ckpt', required=True)
     ap.add_argument('--synth_full_ckpt', default=None)
     ap.add_argument('--thick', type=float, nargs='+', default=[2, 4])
@@ -26,7 +27,7 @@ def main():
     ap.add_argument('--max_iter', type=int, default=6)
     ap.add_argument('--noise_frac', type=float, default=0.03)
     ap.add_argument('--axis', type=int, default=2)
-    ap.add_argument('--root', default='/workspace/data/miccai2012')
+    ap.add_argument('--root', default=os.environ.get('UNIRES_MICCAI_ROOT', 'data/miccai2012'))
     ap.add_argument('--no_taper', action='store_true',
                     help='disable red_thick_taper — probes whether the prior helps at extreme thickness')
     ap.add_argument('--red_nullspace', type=float, default=0.0,

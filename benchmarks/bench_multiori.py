@@ -10,6 +10,7 @@ Here we simulate `--n_ori` orthogonal thick stacks of the same subject (axial/co
 feed them to UniRes as multiple observations of ONE channel, and score MTV vs MTV+RED.
 """
 import argparse
+import os
 import contextlib
 import glob
 import io as _io
@@ -48,7 +49,7 @@ def run_multi(gt, gt_mat, obs, prior, max_iter, **kw):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--ixi_ckpt', default='/workspace/data/unires_dl_prior/checkpoints/biasfree3d_restore_thick.pt')
+    ap.add_argument('--ixi_ckpt', default=os.environ.get('UNIRES_REF_PRIOR'))
     ap.add_argument('--synth_ckpt', required=True)
     ap.add_argument('--synth_ckpt2', default=None)
     ap.add_argument('--contrasts', nargs='+', default=['T1', 'T2', 'PD'])
@@ -59,7 +60,7 @@ def main():
     ap.add_argument('--sigma', type=float, default=0.05)
     ap.add_argument('--max_iter', type=int, default=6)
     ap.add_argument('--noise_frac', type=float, default=0.03)
-    ap.add_argument('--root', default='/workspace/data/ixi')
+    ap.add_argument('--root', default=os.environ.get('UNIRES_IXI_ROOT', 'data/ixi'))
     ap.add_argument('--no_taper', action='store_true')
     ap.add_argument('--red_nullspace', type=float, default=0.0,
                     help='restrict the prior correction to the operator null space (0=off, 1=full)')
