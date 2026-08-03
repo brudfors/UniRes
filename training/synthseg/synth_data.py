@@ -83,13 +83,27 @@ class SynthLabelBank:
     """Draws batches of SHARP random-contrast image patches on the GPU."""
 
     def __init__(self, dir_labels, device, patch=96, gmm_fwhm=(0.3, 1.6),
-                 affine=True, deform_prob=0.8, zero_bg=False):
+                 affine=True, deform_prob=0.8, zero_bg=False, texture=0.0, realism=0.0):
         self.device = device
         self.patch = int(patch)
         self.gmm_fwhm = gmm_fwhm
         self.affine = affine
         self.deform_prob = deform_prob
-        self.zero_bg = bool(zero_bg)   # background label (0) -> 0 intensity (realistic MRI air)
+        # 0 = textured background (full-head, e.g. IXI); 1 = zeroed background (skull-stripped,
+        # e.g. OASIS/MICCAI); 2 = RANDOMISED per sample -> one model robust to BOTH input types.
+        self.zero_bg = int(zero_bg)
+        # WITHIN-TISSUE TEXTURE: piecewise-constant GMM synth is TOO recoverable under thick-slice
+        # degradation -> the restorer learns to confidently reconstruct sharp edges and then
+        # HALLUCINATES/over-sharpens on real (textured) T1. Adding coherent multi-scale texture
+        # inside tissues (destroyed by thick-slicing, so not fully recoverable) keeps the model
+        # calibrated. texture = max multiplicative amplitude (0 = classic piecewise-constant).
+        self.texture = float(texture)
+        # REALISM: richer generative appearance to close the recoverable-real-T1 gap (the real-T1
+        # prior reconstructs fine anatomy synth can't). Adds COHERENT MULTI-SCALE structure
+        # (coarse intra-tissue intensity gradients -> fine texture) + soft partial-volume
+        # boundaries, so the restorer learns to reconstruct realistic fine T1 detail rather than
+        # flat piecewise-constant regions. realism = max amplitude (0 = off).
+        self.realism = float(realism)
         maps = _load_label_maps(dir_labels, device)
         # Pre-stack all maps into ONE tensor on a common grid so a whole BATCH of crops can
         # be pulled with a single index_select + grid_sample (no per-sample Python/crop loop
@@ -169,10 +183,39 @@ class SynthLabelBank:
         m = torch.gather(mean, 1, flat).reshape(B, 1, *spat)
         s = torch.gather(std, 1, flat).reshape(B, 1, *spat)
         img = (m + s * torch.randn_like(m)).float()
+        if self.realism > 0:
+            # COHERENT MULTI-SCALE intra-tissue structure (coarse gradients -> fine texture),
+            # multiplicative so it scales with tissue intensity like real MRI. Spans sigma 8..0.75
+            # so tissues get both smooth internal gradients AND recoverable fine detail. Per-sample
+            # amplitude U(0, realism). Applied to the piecewise-constant mean BEFORE the PV smooth.
+            fld = torch.zeros_like(img)
+            for sig, w in ((8.0, 1.0), (4.0, 0.8), (2.0, 0.6), (1.0, 0.45), (0.75, 0.35)):
+                fld = fld + w * self._gauss3d(torch.randn_like(img), sig)
+            fld = fld / fld.reshape(B, -1).std(dim=1).clamp_min(1e-6).view(B, 1, 1, 1, 1)
+            amp = torch.rand(B, 1, 1, 1, 1, device=self.device) * self.realism
+            img = (img * (1.0 + amp * fld)).clamp_min(0.0)
         lo, hi = self.gmm_fwhm
         img = self._gauss3d(img, float(torch.empty(1).uniform_(lo, hi))).clamp_min(0.0)
-        if self.zero_bg:
+        if self.texture > 0:
+            # coherent multi-scale texture field (sum of noise smoothed at a few scales),
+            # applied MULTIPLICATIVELY AFTER the GMM smooth (so the fine scales SURVIVE into the
+            # image and are then destroyed by thick-slicing downstream -> the model learns fine
+            # detail isn't always recoverable). Per-sample amplitude U(0, texture).
+            tex = torch.zeros_like(img)
+            for sig in (0.75, 1.5, 3.0):
+                tex = tex + self._gauss3d(torch.randn_like(img), sig)
+            tex = tex / tex.reshape(B, -1).std(dim=1).clamp_min(1e-6).view(B, 1, 1, 1, 1)
+            amp = torch.rand(B, 1, 1, 1, 1, device=self.device) * self.texture
+            img = (img * (1.0 + amp * tex)).clamp_min(0.0)
+        if self.zero_bg == 1:
             img = img * (labs != 0).float()                # background -> 0 (realistic air)
+        elif self.zero_bg == 2:
+            # RANDOMISED per-sample: half the batch gets a zeroed background (skull-stripped /
+            # brain-extracted inputs like OASIS-MICCAI), half keeps the textured background
+            # (full-head like IXI). A FIXED choice is a bad trade (zero_bg=1 helped MICCAI but
+            # cost the IXI win); randomising makes ONE model robust to both input types.
+            keep = (torch.rand(B, 1, 1, 1, 1, device=self.device) < 0.5).float()
+            img = img * (keep + (1.0 - keep) * (labs != 0).float())
         # robust [0,1] scale; use a quantile of the FOREGROUND so an all-bg patch can't blow up
         hi = torch.quantile(img.reshape(B, -1), 0.99, dim=1).clamp_min(1e-3)
         img = (img / hi.view(B, 1, 1, 1, 1))
@@ -204,7 +247,8 @@ _LG07, _LG14 = float(np.log(0.7)), float(np.log(1.4))
 
 
 def batched_degrade(x, _thick_slice_degrade, _gauss_blur3d, sigma_min=0.0, sigma_max=0.05,
-                    rician_prob=0.5, blur_max=1.0, thick_max=8.0):
+                    rician_prob=0.5, blur_max=1.0, thick_max=8.0, inplane_max=0.0, op_degrade=None,
+                    multi_ori=0.0):
     """FULLY-BATCHED clean->(input,target) degradation for the synth restoration prior.
 
     Behaviourally mirrors training/data.py::augment_noise_gpu (inversion/gamma/bias/scale
@@ -240,13 +284,66 @@ def batched_degrade(x, _thick_slice_degrade, _gauss_blur3d, sigma_min=0.0, sigma
     sigma = torch.empty(B, 1, 1, 1, 1, device=dev).uniform_(sigma_min, sigma_max)
     if thick_max > 0:
         axis = int(torch.randint(0, 3, (1,)).item())
-        factor = float(torch.empty(1).uniform_(1.0, thick_max).item())
-        res = x.new_full((B,), (factor - 1.0) / 7.0)
-        deg = _thick_slice_degrade(x, factor, axis)
-        if blur_max > 0:
-            deg = _gauss_blur3d(deg, float(torch.empty(1).uniform_(0.0, blur_max).item()))
+        # IN-PLANE RESOLUTION VARIATION: real acquisitions have varying in-plane resolution
+        # (0.5x0.5 .. 1x1mm), i.e. the recon grid the prior restores TO is not fixed. Blur the
+        # TARGET isotropically by a random amount so the model learns to restore to a range of
+        # in-plane resolutions; the thick-slice is applied to THIS target, so `res` encodes ONLY
+        # the through/in-plane anisotropy (matching po.ratio at inference). Discrete sigma =
+        # allocator-friendly. inplane_max=0 -> off (original iso-target behaviour).
+        if inplane_max > 0:
+            ipsig = float(torch.randint(0, int(round(inplane_max * 4)) + 1, (1,)).item()) / 4.0
+            if ipsig > 0:
+                target = _gauss_blur3d(x, ipsig)
+        # DISCRETE integer through/in-plane ANISOTROPY factor (1..thick_max): continuous factors
+        # make _thick_slice_degrade produce a differently-sized interpolate EVERY step, so the
+        # CUDA caching allocator accumulates ever-more distinct block sizes and eventually stalls
+        # a kernel (intermittent stream WEDGE). A small fixed set of sizes lets it reuse blocks.
+        # Range 1..thick_max covers realistic extreme anisotropy (e.g. 0.5x0.5x6.5mm -> ~13x).
+        else:
+            factor = float(torch.randint(1, int(thick_max) + 1, (1,)).item())
+        # DIRECTIONAL per-axis res [B,3]: only the degraded (thick) axis is set; the other two
+        # recon axes stay at 0 (ratio 1). Matches _thick_factor_axes at inference, so the model
+        # is told WHICH recon axis is through-plane.
+        res = x.new_zeros(B, 3)
+        res[:, axis] = (factor - 1.0) / max(thick_max - 1.0, 1.0)
+        if multi_ori > 0 and float(torch.rand(1).item()) < multi_ori:
+            # MULTI-ORIENTATION: real protocols acquire 2-3 CROSSED thick stacks; UniRes fuses
+            # them, so the denoiser sees an estimate that is MUCH better than any single stack
+            # (each stack's in-plane detail fills the others' null space). Trained single-stack
+            # only, a thickness-conditioned prior restores too CONSERVATIVELY there (measured:
+            # the blind IXI prior beats it at 2 orientations). Simulate the fused estimate by
+            # degrading along 2-3 distinct axes and averaging, and set `res` by the SAME
+            # elementwise-MIN aggregation _thick_factor_axes uses at inference -> train and
+            # inference agree on what the conditioning means.
+            n_ori = int(torch.randint(2, 4, (1,)).item())
+            axes = torch.randperm(3)[:n_ori].tolist()
+            acc, ratios = None, [None, None, None]
+            for a in axes:
+                f = float(torch.randint(1, int(thick_max) + 1, (1,)).item())
+                d = _thick_slice_degrade(target, f, a)
+                acc = d if acc is None else acc + d
+                for k in range(3):                      # this stack's per-axis ratio vector
+                    rv = f if k == a else 1.0
+                    ratios[k] = rv if ratios[k] is None else min(ratios[k], rv)
+            deg = acc / float(n_ori)
+            for k in range(3):
+                res[:, k] = (float(ratios[k]) - 1.0) / max(thick_max - 1.0, 1.0)
+            if blur_max > 0:
+                bsig = float(torch.randint(0, int(round(blur_max * 4)) + 1, (1,)).item()) / 4.0
+                deg = _gauss_blur3d(deg, bsig)
+        elif op_degrade is not None:
+            # OPERATOR-CONSISTENT: forward-project + reconstruct the whole batch through UniRes's
+            # projector in one call (matches the ADMM iterate the denoiser sees at inference; the
+            # PSF is modelled so no extra iso blur is applied).
+            deg = op_degrade(target, axis, factor)
+        else:
+            deg = _thick_slice_degrade(target, factor, axis)
+            if blur_max > 0:
+                # discretise blur sigma too (fixed kernel sizes -> allocator-friendly)
+                bsig = float(torch.randint(0, int(round(blur_max * 4)) + 1, (1,)).item()) / 4.0
+                deg = _gauss_blur3d(deg, bsig)
     else:
-        deg, res = x, torch.zeros(B, device=dev)
+        deg, res = x, torch.zeros(B, 3, device=dev)
     # Gaussian/Rician noise (per-sample choice), batched
     ric = (torch.rand(B, 1, 1, 1, 1, device=dev) < rician_prob).float()
     n1, n2 = torch.randn_like(deg), torch.randn_like(deg)

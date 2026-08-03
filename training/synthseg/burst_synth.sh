@@ -5,8 +5,9 @@
 # DDP is avoided on purpose: on this CPU-saturated shared box NCCL allreduce starves and
 # collapses throughput to <0.15 it/s, whereas a single process runs at ~1.1 it/s.
 GPU=${GPU:-0}
-SHM=/dev/shm/synthseg/runs/synth_thick
-NFS=/workspace/data/synthseg_restore/runs/synth_thick
+RUN=${RUN:-synth_thick}
+SHM=/dev/shm/synthseg/runs/$RUN
+NFS=/workspace/data/synthseg_restore/runs/$RUN
 LOG=$SHM/train.log
 TARGET=${TARGET:-40000}
 STALL=${STALL:-600}   # seconds of no log progress -> assume livelock, kill & resume.
@@ -44,6 +45,11 @@ wait_gpu_free() {
 while true; do
   st=$(python -c "import torch;print(torch.load('$SHM/last.pt',map_location='cpu').get('step',0))" 2>/dev/null); st=${st:-0}
   [ "$st" -ge "$TARGET" ] && { echo "[wd] TARGET reached at step $st $(date)" >> $LOG; mirror; break; }
+  # ATTACH-GUARD: monitor an already-running proc for THIS run instead of double-launching.
+  EXIST=$(pgrep -f -- "--out $SHM " | head -1)
+  if [ -n "$EXIST" ]; then
+    echo "[wd] attach existing PID $EXIST at step $st $(date)" >> $LOG; PID=$EXIST
+  else
   wait_gpu_free                       # ensure the GPU is actually free before (re)launching
   echo "[wd] launch from step $st $(date)" >> $LOG
   # BATCH/SAVE_EVERY/LOG_EVERY are env-overridable so a heavily-contended box can RATCHET:
@@ -52,10 +58,13 @@ while true; do
   #  load windows instead of losing a whole 10-step interval on each STALL-kill.
   CUDA_VISIBLE_DEVICES=$GPU python -u training/synthseg/train_synth.py \
     --labels /dev/shm/synthseg/label_maps --out $SHM --iters $TARGET \
-    --batch ${BATCH:-8} --patch 64 --sigma_max 0.05 --thick_max 8.0 --blur_max 1.0 \
-    --save_every ${SAVE_EVERY:-2} --val_every 1000 --log_every ${LOG_EVERY:-2} \
-    --grad_w 0.5 --res_cond 0 >> $LOG 2>&1 &
+    --batch ${BATCH:-8} --patch 64 --sigma_max 0.05 --thick_max ${THICK_MAX:-8.0} --inplane_max ${INPLANE_MAX:-0.0} --blur_max 1.0 \
+    --save_every ${SAVE_EVERY:-2} --val_every ${VAL_EVERY:-1000} --log_every ${LOG_EVERY:-2} \
+    --fixed_lr ${FIXED_LR:-0} --lr ${LR:-2e-4} --net ${NET:-biasfree3d} \
+    --grad_w 0.5 --res_cond ${RES_COND:-0} \
+    --op_consistent ${OP_CONSISTENT:-0} --recon_iters ${RECON_ITERS:-3} --texture ${TEXTURE:-0.0} --realism ${REALISM:-0.0} --zero_bg ${ZERO_BG:-0} --multi_ori ${MULTI_ORI:-0.0} --real_frac ${REAL_FRAC:-0.0} >> $LOG 2>&1 &
   PID=$!
+  fi
   c=0
   while kill -0 $PID 2>/dev/null; do
     sleep 45; c=$((c+1))

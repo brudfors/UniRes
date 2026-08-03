@@ -86,18 +86,22 @@ def bf3d_forward_ckpt(net, x, sigma=None, res=None):
 
 
 @torch.no_grad()
-def validate(net, bank, dev, res_cond, sigmas=(0.02, 0.05), thick=(2.0, 4.0, 6.0)):
-    """Quick self-consistency PSNR on held-out synth patches across slice thickness."""
+def validate(net, bank, dev, res_cond, sigmas=(0.02, 0.05), thick=(2.0, 4.0, 6.0),
+             full=False, full_size=None, res_denom=7.0):
+    """Quick self-consistency super-resolution PSNR on FRESH (held-out) synth samples across
+    slice thickness -- confirms the model is learning to fill in thick-slice detail. full=True
+    validates on WHOLE-volume samples (matches the full-image model's training distribution);
+    else on 64^3 patches (patch model)."""
     net_eval = net.module if isinstance(net, DDP) else net
     net_eval.eval()
     out = {}
     for th in thick:
-        clean = bank.sample(4)
+        clean = bank.sample_full(full_size) if full else bank.sample(4)
         deg = torch.empty_like(clean)
-        rv = torch.zeros(clean.shape[0], device=dev)
+        rv = torch.zeros(clean.shape[0], 3, device=dev)   # directional per-axis res; axis 2 thick
         for i in range(clean.shape[0]):
             fac = th
-            rv[i] = (fac - 1.0) / 7.0
+            rv[i, 2] = (fac - 1.0) / res_denom
             deg[i:i + 1] = _thick_slice_degrade(clean[i:i + 1], fac, 2)
         s = clean.new_full((clean.shape[0],), 0.03)
         noisy = deg + s.view(-1, 1, 1, 1, 1) * torch.randn_like(deg)
@@ -117,12 +121,47 @@ def main():
     ap.add_argument("--batch", type=int, default=8, help="per-GPU batch")
     ap.add_argument("--iters", type=int, default=60000)
     ap.add_argument("--lr", type=float, default=2e-4)
+    ap.add_argument("--fixed_lr", type=int, default=0,
+                    help="SynthSeg-faithful: Adam (wd=0) with a FIXED LR (no scheduler). "
+                         "SynthSeg needs a sustained LR over many steps; cosine-annealing to 0 "
+                         "starves it. Reference uses lr=sqrt(batch*gpus)*1e-4, no schedule.")
     ap.add_argument("--sigma_max", type=float, default=0.05)
     ap.add_argument("--thick_max", type=float, default=8.0)
     ap.add_argument("--blur_max", type=float, default=1.0)
     ap.add_argument("--base", type=int, default=48)
     ap.add_argument("--depth", type=int, default=3)
     ap.add_argument("--res_cond", type=int, default=0)
+    ap.add_argument("--inplane_max", type=float, default=0.0,
+                    help="max isotropic blur sigma applied to the TARGET (in-plane resolution "
+                         "variation, e.g. 0.5x0.5..1x1mm). 0 = fixed iso target (original).")
+    ap.add_argument("--op_consistent", type=int, default=0,
+                    help="form the net input with UniRes's OWN projector (A + SIRT recon) instead "
+                         "of trilinear thick-slice, so train/inference distributions match (PnP).")
+    ap.add_argument("--recon_iters", type=int, default=3,
+                    help="SIRT data-term iterations in the operator-consistent degrade (0 = pure "
+                         "adjoint back-projection; a few sharpen toward the least-squares solution).")
+    ap.add_argument("--texture", type=float, default=0.0,
+                    help="within-tissue multi-scale texture amplitude (0 = piecewise-constant GMM). "
+                         "Breaks the over-recoverable synth so the restorer doesn't hallucinate on real T1.")
+
+
+    ap.add_argument("--real_frac", type=float, default=0.0,
+                    help="fraction of batches drawn from REAL IXI instead of synth (HYBRID training). "
+                         "0 = pure synth. Real patches go through the SAME degradation, so the only "
+                         "difference is where the clean image comes from.")
+    ap.add_argument("--real_root", default="/workspace/data/ixi")
+    ap.add_argument("--real_holdout", type=int, default=8,
+                    help="exclude the LAST N subjects per contrast from real training data — these are "
+                         "the benchmark's eval subjects (bench_ixi_compare uses [-n:]). Prevents leakage.")
+    ap.add_argument("--multi_ori", type=float, default=0.0,
+                    help="probability of simulating a FUSED MULTI-ORIENTATION acquisition (2-3 crossed "
+                         "thick stacks averaged), with res set by the same min-aggregation used at "
+                         "inference. Teaches the prior the multi-stack regime UniRes is built for.")
+    ap.add_argument("--realism", type=float, default=0.0,
+                    help="coherent MULTI-SCALE intra-tissue structure amplitude (coarse gradients->fine "
+                         "texture) for MRI-realistic appearance -> reconstruct recoverable real-T1 detail.")
+    ap.add_argument("--net", type=str, default="biasfree3d", choices=["biasfree3d", "basicunet"],
+                    help="basicunet = reference SynthSeg net (MONAI BasicUNet 24..384, InstanceNorm, LeakyReLU)")
     ap.add_argument("--grad_w", type=float, default=0.5, help="weight of gradient(L1) term")
     ap.add_argument("--full_image", type=int, default=0,
                     help="1 => train on WHOLE volumes (batch forced 1) instead of patches")
@@ -131,7 +170,8 @@ def main():
     ap.add_argument("--grad_ckpt", type=int, default=0,
                     help="gradient checkpointing on enc/mid/dec blocks (memory<->compute; for full-image)")
     ap.add_argument("--zero_bg", type=int, default=0,
-                    help="synth background label -> 0 intensity (realistic MRI air); recommended for full-image")
+                    help="synth background: 0=textured (full-head, e.g. IXI), 1=zeroed (skull-stripped, "
+                         "e.g. OASIS/MICCAI), 2=RANDOMISED per sample (robust to BOTH input types)")
     ap.add_argument("--save_every", type=int, default=250)
     ap.add_argument("--val_every", type=int, default=1000)
     ap.add_argument("--log_every", type=int, default=25)
@@ -159,19 +199,78 @@ def main():
         if args.lr == 2e-4:                 # batch=1 diverges at the patch LR (0.05->7.22 seen)
             args.lr = 1e-4                  # -> halve the default LR for full-image stability
     torch.manual_seed(1234 + rank)
-    bank = SynthLabelBank(args.labels, dev, patch=args.patch, zero_bg=bool(args.zero_bg))
-    net = BiasFreeUNet3D(base=args.base, depth=args.depth, res_map=bool(args.res_cond)).to(dev)
-    opt = torch.optim.AdamW(net.parameters(), lr=args.lr * (world ** 0.5), weight_decay=1e-5)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.iters)
+    bank = SynthLabelBank(args.labels, dev, patch=args.patch, zero_bg=int(args.zero_bg),
+                          texture=args.texture, realism=args.realism)
+    # HYBRID: optional REAL-IXI clean patches mixed into the synth stream. The real patches go
+    # through the SAME degradation as synth, so this isolates ONE variable: where the clean image
+    # comes from (synthetic GMM anatomy vs real MRI). Held-out eval subjects are excluded.
+    real_bank = None
+    if args.real_frac > 0:
+        import glob as _glob
+        from data import IXIPatches                      # training/data.py
+        ds = IXIPatches(args.real_root, patch=args.patch, gpu_aug=True, augment=False)
+        heldout = set()
+        for _c in ('T1', 'T2', 'PD'):
+            heldout.update(sorted(_glob.glob(f"{args.real_root}/{_c}/*.nii.gz"))[-args.real_holdout:])
+        before = len(ds.paths)
+        ds.paths = [p for p in ds.paths if p not in heldout]
+        print(f"HYBRID: real IXI patches {len(ds.paths)}/{before} volumes "
+              f"(held out {len(heldout)} eval subjects), real_frac={args.real_frac}", flush=True)
+
+        def real_bank(batch):                            # -> [B,1,P,P,P] clean, GPU, ~[0,1]
+            out = [torch.as_tensor(ds[int(torch.randint(len(ds), (1,)).item())][0]) for _ in range(batch)]
+            v = torch.stack(out).to(dev).float()
+            v = v if v.dim() == 5 else v[:, None]
+            return v.clamp_min(0.0)
+
+        def real_bank_full(size):                        # -> [1,1,D,D,D] WHOLE real volume
+            # full-image hybrid: load a random held-in IXI volume, standardise like the synth
+            # bank (robust [0,1]) and resample to the training cube.
+            from data import _load_standardized
+            p = ds.paths[int(torch.randint(len(ds.paths), (1,)).item())]
+            v = torch.as_tensor(_load_standardized(p)).to(dev).float()[None, None]
+            v = F.interpolate(v, size=(size, size, size), mode='trilinear', align_corners=False)
+            return v.clamp_min(0.0)
+
+    op_degrade = None
+    if args.op_consistent:
+        from op_degrade import op_degrade_batch     # operator-consistent (UniRes projector) input
+        op_degrade = lambda v, ax, fac: op_degrade_batch(v, ax, fac, recon_iters=args.recon_iters)
+    if args.net == "basicunet":
+        from unires._denoiser_net import BasicUNetRestore  # reference SynthSeg net
+        net = BasicUNetRestore(in_ch=1, out_ch=1, res_cond=bool(args.res_cond)).to(dev)
+    else:
+        net = BiasFreeUNet3D(base=args.base, depth=args.depth, res_map=bool(args.res_cond)).to(dev)
+    if args.fixed_lr:
+        # SynthSeg-faithful: Adam (weight_decay=0) + FIXED lr, NO scheduler.
+        opt = torch.optim.Adam(net.parameters(), lr=args.lr * (world ** 0.5))
+        sched = None
+    else:
+        opt = torch.optim.AdamW(net.parameters(), lr=args.lr * (world ** 0.5), weight_decay=1e-5)
+        sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.iters)
 
     start_step, best = 0, -1e9
     resume = os.path.join(args.out, "last.pt")
     if os.path.exists(resume):
-        ck = torch.load(resume, map_location=dev)
+        # Load to CPU first (NOT map_location=cuda): loading the model + 272MB optimizer
+        # state as one direct-to-GPU blob under expandable_segments intermittently wedges
+        # the first training kernel on resume. Staging on CPU + syncing avoids it.
+        ck = torch.load(resume, map_location="cpu")
         net.load_state_dict(ck["model"])
-        if "opt" in ck:
-            opt.load_state_dict(ck["opt"]); sched.load_state_dict(ck["sched"])
+        # MODEL-ONLY resume (RESUME_OPT=0): skip loading the 272MB AdamW optimizer state.
+        # On this pod, loading the full opt-state blob wedges the first CUDA kernel on EVERY
+        # resume (<25 steps), which makes watchdog-ratcheting impossible. Skipping it lets a
+        # resume actually step; AdamW re-warms its moments in a few dozen steps (negligible
+        # quality cost). sched still restored so the LR schedule is continuous.
+        if "opt" in ck and os.environ.get("RESUME_OPT", "1") == "1":
+            opt.load_state_dict(ck["opt"])
+        # RESUME_SCHED=0 => keep the FRESH cosine (T_max=--iters) instead of the loaded one.
+        # Used when EXTENDING training (e.g. 40k->100k): a fresh cosine over the new horizon
+        # gives a sensible (non-zero) LR for the extra steps instead of the old LR~0 at 40k.
+        if sched is not None and "sched" in ck and os.environ.get("RESUME_SCHED", "1") == "1":
+            sched.load_state_dict(ck["sched"])
         start_step = int(ck.get("step", 0)); best = float(ck.get("best", -1e9))
+        torch.cuda.synchronize()
         if is_main:
             print(f"RESUMED from {resume} at step {start_step} (best={best:.2f})", flush=True)
 
@@ -188,7 +287,8 @@ def main():
         if not is_main:
             return
         sd = (net.module if ddp else net).state_dict()
-        torch.save({"model": sd, "opt": opt.state_dict(), "sched": sched.state_dict(),
+        torch.save({"model": sd, "opt": opt.state_dict(),
+                    "sched": sched.state_dict() if sched is not None else None,
                     "args": {**vars(args), "res_cond": args.res_cond}, "step": step,
                     "best": best}, os.path.join(args.out, name))
 
@@ -198,12 +298,22 @@ def main():
     step = start_step
     while step < args.iters:
         # clean random-contrast source: WHOLE volume (full-image mode) or a batch of patches
-        clean = bank.sample_full(args.full_size) if full else bank.sample(args.batch)
+        if real_bank is not None and float(torch.rand(1).item()) < args.real_frac:
+            clean = (real_bank_full(args.full_size) if full   # HYBRID: real IXI clean volume/patch
+                     else real_bank(args.batch))
+        else:
+            clean = bank.sample_full(args.full_size) if full else bank.sample(args.batch)
+        torch.cuda.synchronize()   # serialize the random-size synth/degrade ops: leaving
+        # sample+degrade+forward concurrently in-flight intermittently WEDGES a CUDA kernel
+        # (stream never drains -> .item() blocks forever in cuMemcpyDtoHAsync). Per-phase
+        # sync ran 5470 steps clean where the fully-async loop hung at ~700-2000.
         # fully-batched degradation (no per-sample Python loop -> low CUDA-launch count)
         noisy, target, s, res = batched_degrade(
             clean, _thick_slice_degrade, _gauss_blur3d,
             sigma_min=0.0, sigma_max=args.sigma_max, rician_prob=0.5,
-            blur_max=args.blur_max, thick_max=args.thick_max)
+            blur_max=args.blur_max, thick_max=args.thick_max, inplane_max=args.inplane_max,
+            op_degrade=op_degrade, multi_ori=args.multi_ori)
+        torch.cuda.synchronize()
         with torch.autocast("cuda", dtype=torch.bfloat16):
             if full and args.grad_ckpt:
                 den = bf3d_forward_ckpt(net.module if ddp else net, noisy, sigma=s,
@@ -215,20 +325,26 @@ def main():
             opt.zero_grad(set_to_none=True); step += 1; continue
         opt.zero_grad(set_to_none=True)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)
-        opt.step(); sched.step()
+        # NO gradient clipping: SynthSeg's infinite random data can't over-fit, so we don't add
+        # protective measures (the reference uses none). The isfinite/loss>10 skip above is only a
+        # NaN/explosion guard, not regularisation.
+        opt.step()
+        if sched is not None:
+            sched.step()
         run += loss.item(); step += 1
 
         if is_main and step % args.log_every == 0:
             ips = (step - start_step) / (time.time() - t0) * world
             print(f"step {step}/{args.iters}  loss={run/args.log_every:.4f}  "
-                  f"{ips:.1f} it/s  lr={sched.get_last_lr()[0]:.2e}", flush=True)
+                  f"{ips:.1f} it/s  lr={(sched.get_last_lr()[0] if sched is not None else opt.param_groups[0]['lr']):.2e}", flush=True)
             run = 0.0
         if step % args.save_every == 0:
             save("last.pt", step)
         if step % args.val_every == 0 or step == args.iters:
             if is_main:
-                v = validate(net, bank, dev, bool(args.res_cond))
+                v = validate(net, bank, dev, bool(args.res_cond),
+                             full=full, full_size=args.full_size,
+                             res_denom=max(args.thick_max - 1.0, 1.0))
                 msg = "  ".join(f"{k}={val:.2f}" for k, val in v.items())
                 mean = sum(v.values()) / len(v)
                 print(f"[val step {step}] synth PSNR  {msg}  mean={mean:.2f}", flush=True)
