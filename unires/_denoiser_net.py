@@ -100,7 +100,15 @@ class BiasFreeUNet3D(nn.Module):
             if res is None:
                 res = x.new_zeros(())
             if not torch.is_tensor(res):
-                res = x.new_tensor(float(res))
+                res = torch.as_tensor(res, dtype=x.dtype, device=x.device)
+            # res may be a scalar (legacy isotropic) or a per-recon-axis vector -- either [3]
+            # (shared across the batch) or [B,3] (directional conditioning, see
+            # _thick_factor_axes). This net takes ONE conditioning channel, so reduce a
+            # directional vector to its max (the worst-sampled axis); scalars pass through.
+            if res.dim() == 2 and res.shape[-1] == 3:
+                res = res.amax(dim=-1)                     # [B,3] -> [B]
+            elif res.dim() == 1 and res.numel() == 3 and ref.shape[0] != 3:
+                res = res.amax()                           # [3]   -> scalar
             rmap = res.expand_as(ref) if res.dim() == 0 else res.view(-1, 1, 1, 1, 1).expand_as(ref)
             feats.append(rmap)
         h = torch.cat(feats, dim=1) if len(feats) > 1 else x
@@ -118,3 +126,54 @@ class BiasFreeUNet3D(nn.Module):
             h = dec(h)
         out = self.tail(h)
         return inp - out if self.residual else out
+
+
+class BasicUNetRestore(nn.Module):
+    """MONAI BasicUNet as a BLIND restoration net — faithful to the reference SynthSeg config
+    (github.com/brudfors/synthseg-monai utils_synthseg.py): features=(24,48,96,192,384,24)
+    [5 down-levels, 384 bottleneck], LeakyReLU(0.2), InstanceNorm (BasicUNet default), deconv
+    upsampling. NO regularisation (no dropout/weight-decay) — SynthSeg's infinite random-contrast
+    data makes over-fitting impossible by construction, so protecting against it only wastes
+    capacity. Predicts the clean image directly from the degraded input.
+
+    With ``res_ch>0`` the net is THICKNESS-CONDITIONED: `res_ch` extra input channels carry the
+    (constant, per-volume) normalised slice-thickness so the model restores CONSERVATIVELY on very
+    thick slices instead of over-restoring — a blind net can't tell 2mm from 8mm and hallucinates
+    in the forward operator's null space at extreme thickness. `res_ch=3` is DIRECTIONAL: one
+    channel per recon voxel axis (the per-axis low/high resolution ratio), so the model is TOLD
+    which direction is through-plane (e.g. 0.5x0.5x6.5mm -> axes [0,0,0.8]) rather than inferring
+    it from the anisotropic-blur signature; it also handles per-axis / crossed anisotropy. `res_ch=1`
+    is the legacy isotropic scalar (max ratio). This keeps the reference BasicUNet architecture
+    identical (same features/act/norm); only in_channels 1->1+res_ch. `forward` accepts+ignores
+    sigma/context so it drops into the same training loop / denoiser backend as BiasFreeUNet3D."""
+    def __init__(self, in_ch=1, out_ch=1, features=(24, 48, 96, 192, 384, 24), res_cond=False, res_ch=None):
+        super().__init__()
+        from monai.networks.nets import BasicUNet  # lazy: only for this net
+        # res_ch: number of thickness-conditioning channels. Default: 3 (directional) when
+        # res_cond, else 0. An explicit res_ch (e.g. inferred from a checkpoint) overrides.
+        self.res_ch = int(res_ch) if res_ch is not None else (3 if res_cond else 0)
+        eff_in = in_ch + self.res_ch
+        self.net = BasicUNet(
+            spatial_dims=3, in_channels=eff_in, out_channels=out_ch, features=tuple(features),
+            act=("LeakyReLU", {"negative_slope": 0.2, "inplace": True}), upsample="deconv")
+        self.k = out_ch
+
+    def forward(self, x, sigma=None, context=None, res=None):
+        if self.res_ch > 0:
+            B, sp = x.shape[0], x.shape[2:]
+            if res is None:
+                rv = x.new_zeros(B, self.res_ch)
+            else:
+                rv = torch.as_tensor(res, dtype=x.dtype, device=x.device)
+                if rv.dim() == 0:                       # scalar -> all axes/samples
+                    rv = rv.reshape(1, 1).expand(B, self.res_ch)
+                elif rv.dim() == 1:
+                    if rv.numel() == self.res_ch:        # per-axis vector shared across batch
+                        rv = rv.reshape(1, self.res_ch).expand(B, self.res_ch)
+                    else:                                # [B] scalar-per-sample -> broadcast axes
+                        rv = rv.reshape(B, 1).expand(B, self.res_ch)
+                else:                                    # [B, res_ch]
+                    rv = rv.reshape(B, self.res_ch)
+            r = rv.reshape(B, self.res_ch, 1, 1, 1).expand(B, self.res_ch, *sp)
+            x = torch.cat([x, r], dim=1)
+        return self.net(x)

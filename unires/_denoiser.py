@@ -16,6 +16,7 @@ This module contains no algorithm changes on its own; nothing here runs unless a
 caller constructs a denoiser (i.e. ``prior`` includes ``red``).
 """
 import math
+import os
 import torch
 import torch.nn.functional as F
 
@@ -31,7 +32,11 @@ def _robust_scale(vol, q=0.99, max_samples=1_000_000):
     if ref.numel() == 0:
         return vol.new_tensor(1.0)
     if ref.numel() > max_samples:
+        # NB: clamp — for volumes > ~16.7M voxels, ref.numel()-1 is not exactly representable in
+        # float32 and linspace's endpoint can round UP past numel-1, so .long() would index OOB
+        # (device-side assert). Seen on large MICCAI recons at 6mm; clamp makes it safe.
         idx = torch.linspace(0, ref.numel() - 1, max_samples, device=ref.device).long()
+        idx = idx.clamp_(max=ref.numel() - 1)
         ref = ref.flatten()[idx]
     scale = torch.quantile(ref.float(), q)
     return torch.clamp(scale, min=1e-8)
@@ -112,25 +117,43 @@ class BiasFree3DBackend:
     is_3d = True
 
     def __init__(self, weights, device=None, base=48, depth=3, tile=0, overlap=16):
-        from ._denoiser_net import BiasFreeUNet3D  # lazy: only for this backend
         ckpt = torch.load(weights, map_location=device or 'cpu')
         a = ckpt.get('args', {}) if isinstance(ckpt, dict) else {}
         state = ckpt['model'] if isinstance(ckpt, dict) and 'model' in ckpt else ckpt
-        # infer input config from the head conv: in_ch = 1 + sigma_map + context + res_map
-        in_ch = state['head.c1.weight' if 'head.c1.weight' in state else 'head.weight'].shape[1]
-        res_map = bool(a.get('res_cond', 0))   # thickness-conditioned restoration model?
-        if res_map:                             # img + sigma + res (no context)
-            net = BiasFreeUNet3D(base=a.get('base', base), depth=a.get('depth', depth),
-                                 sigma_map=True, context=False, res_map=True)
-        else:                                   # legacy: sigma / cross-channel-context inference
-            net = BiasFreeUNet3D(base=a.get('base', base), depth=a.get('depth', depth),
-                                 sigma_map=(in_ch >= 2), context=(in_ch >= 3))
+        if a.get('net') == 'basicunet':          # reference SynthSeg net (MONAI BasicUNet)
+            from ._denoiser_net import BasicUNetRestore
+            res_map = bool(a.get('res_cond', 0))  # thickness-conditioned restoration model?
+            # infer #conditioning channels from the saved first conv (in_ch = 1 + res_ch):
+            # supports both the legacy isotropic scalar (res_ch=1) and DIRECTIONAL per-axis
+            # (res_ch=3) conditioned models without a separate flag.
+            w = state.get('net.conv_0.conv_0.conv.weight')
+            res_ch = max(int(w.shape[1]) - 1, 0) if (res_map and w is not None) else 0
+            net = BasicUNetRestore(in_ch=1, out_ch=1, res_ch=res_ch)
+            self.is_cross = False
+            self.is_res = res_map
+            self.res_ch = res_ch
+            # res normalisation denominator = trained (thick_max - 1); matches synth_data.py so
+            # the inference thickness factor maps into [0,1] the SAME way it did in training.
+            self.res_denom = max(float(a.get('thick_max', 8)) - 1.0, 1.0)
+        else:
+            from ._denoiser_net import BiasFreeUNet3D  # lazy: only for this backend
+            # infer input config from the head conv: in_ch = 1 + sigma_map + context + res_map
+            in_ch = state['head.c1.weight' if 'head.c1.weight' in state else 'head.weight'].shape[1]
+            res_map = bool(a.get('res_cond', 0))   # thickness-conditioned restoration model?
+            if res_map:                             # img + sigma + res (no context)
+                net = BiasFreeUNet3D(base=a.get('base', base), depth=a.get('depth', depth),
+                                     sigma_map=True, context=False, res_map=True)
+            else:                                   # legacy: sigma / cross-channel-context inference
+                net = BiasFreeUNet3D(base=a.get('base', base), depth=a.get('depth', depth),
+                                     sigma_map=(in_ch >= 2), context=(in_ch >= 3))
+            self.is_cross = bool(getattr(net, 'context', False))  # cross-channel model?
+            self.is_res = res_map                                 # thickness-conditioned model?
+            self.res_ch = 1 if res_map else 0                     # BiasFree res = isotropic scalar
+            self.res_denom = max(float(a.get('thick_max', 8)) - 1.0, 1.0)
         net.load_state_dict(state)
         self.model = net.to(device).eval() if device is not None else net.eval()
         self.tile = int(tile)
         self.overlap = int(overlap)
-        self.is_cross = bool(getattr(net, 'context', False))  # cross-channel model?
-        self.is_res = res_map                                 # thickness-conditioned model?
 
     @torch.no_grad()
     def __call__(self, vol, sigma, context=None, res=None):
@@ -193,11 +216,31 @@ class Denoiser:
     def denoise(self, vol, sigma=None, res=None):
         if sigma is None:
             sigma = self.sigma
-        key = (vol.data_ptr(), int(vol._version), float(sigma),
-               None if res is None else round(float(res), 4))
-        cached = self._cache.get(key)
-        if cached is not None:
-            return cached
+        # res may be None, a scalar (legacy isotropic), or a list/tuple (directional per-axis)
+        if res is None:
+            res_key = None
+        elif isinstance(res, (list, tuple)):
+            res_key = tuple(round(float(r), 4) for r in res)
+        else:
+            res_key = round(float(res), 4)
+        # CORRECTNESS: the key includes data_ptr, and CUDA's caching allocator REUSES freed
+        # addresses -- a freed tensor's address can be handed to a DIFFERENT tensor with
+        # _version==0, colliding on this key and returning a denoised result for the WRONG
+        # content. The RED line search triggers this constantly (each backtrack allocates and
+        # frees a trial (1-t)*y_old + t*y_new). Symptoms: the monotonicity guard compares stale
+        # objectives (non-monotone despite the guard), the post-revert objective differs from
+        # nll_old, and run-to-run output jitters by 0.1-0.3 dB. FIX: keep a REFERENCE to the
+        # input tensor in the cache entry, which pins its address for as long as the entry
+        # lives, so no other tensor can occupy it (in-place edits still bump _version -> miss).
+        key = (vol.data_ptr(), int(vol._version), float(sigma), res_key)
+        hit = self._cache.get(key)
+        if hit is not None:
+            ref, cached = hit
+            if ref is vol:                      # same tensor object -> genuine hit
+                return cached
+            # key matched but a DIFFERENT tensor now occupies that address: this is the
+            # aliasing bug. Count it so the hazard is observable rather than silent.
+            self._alias_hits = getattr(self, '_alias_hits', 0) + 1
         orig_dtype = vol.dtype
         v, scale = _standardize(vol.float())
         if getattr(self.backend, 'is_3d', False):
@@ -211,7 +254,7 @@ class Denoiser:
                 r = self._apply_axis(v, sigma, axis)
                 acc = r if acc is None else acc + r
             out = _unstandardize(acc / 3.0, scale).to(orig_dtype)
-        self._cache[key] = out
+        self._cache[key] = (vol, out)           # keep vol alive -> its address cannot be reused
         self._cache_order.append(key)
         if len(self._cache_order) > self._cache_size:
             self._cache.pop(self._cache_order.pop(0), None)
@@ -243,18 +286,51 @@ class Denoiser:
 # ----------------------------------------------------------------------------
 # Factory
 # ----------------------------------------------------------------------------
+#: filename of the released SynthSeg-trained restoration prior
+RED_WEIGHTS_NAME = 'unires_red_synth_full.pt'
+#: search order when ``red_weights`` is not given explicitly
+RED_WEIGHTS_SEARCH = (
+    os.environ.get('UNIRES_RED_WEIGHTS'),                                  # 1. explicit env var
+    os.path.join(os.path.dirname(__file__), 'weights', RED_WEIGHTS_NAME),  # 2. alongside package
+    os.path.join(os.path.expanduser('~'), '.cache', 'unires', RED_WEIGHTS_NAME),  # 3. user cache
+)
+
+
+def _resolve_red_weights(weights):
+    """Locate the biasfree3d checkpoint.
+
+    An explicit path always wins. Otherwise search ``RED_WEIGHTS_SEARCH`` so a user who has
+    copied the released weights into the package dir or ``~/.cache/unires`` just works. The
+    error names every location tried, so a missing model is self-explanatory rather than a
+    bare "requires red_weights".
+    """
+    if weights:
+        if not os.path.isfile(weights):
+            raise FileNotFoundError(f"red_weights not found: {weights}")
+        return weights
+    tried = []
+    for cand in RED_WEIGHTS_SEARCH:
+        if not cand:
+            continue
+        tried.append(cand)
+        if os.path.isfile(cand):
+            return cand
+    raise FileNotFoundError(
+        "red_denoiser='biasfree3d' needs a checkpoint. Pass settings.red_weights=<path>, set "
+        "$UNIRES_RED_WEIGHTS, or copy the released weights to one of:\n  "
+        + "\n  ".join(tried))
+
+
 def make_denoiser(sett):
     """Build a :class:`Denoiser` from UniRes ``settings``."""
     device = getattr(sett, 'device', None)
     name = getattr(sett, 'red_denoiser', 'gaussian')
     if name == 'gaussian':
         backend = GaussianBackend(device=device)
-    elif name == 'drunet':
+    elif name == 'drunet':  # noqa: E301 (see _resolve_red_weights above for biasfree3d)
         backend = DRUNetBackend(weights=getattr(sett, 'red_weights', None), device=device)
     elif name == 'biasfree3d':
-        weights = getattr(sett, 'red_weights', None)
-        if not weights:
-            raise ValueError("red_denoiser='biasfree3d' requires red_weights (checkpoint path).")
+        weights = _resolve_red_weights(getattr(sett, 'red_weights', None))
         backend = BiasFree3DBackend(weights, device=device,
                                     tile=getattr(sett, 'red_tile', 0))
     else:
