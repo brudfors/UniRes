@@ -130,3 +130,7 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+benchmarks/viz*.png
+
+# large model weights: copied in place / released separately, not versioned
+unires/weights/*.pt

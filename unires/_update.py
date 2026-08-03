@@ -77,6 +77,216 @@ def _has_ct(x):
     return is_ct
 
 
+def _red_active(sett):
+    """True if the RED denoiser-prior term is active (prior includes 'red' and mu>0)."""
+    return ('red' in getattr(sett, 'prior', 'mtv')
+            and float(getattr(sett, 'red_mu', 0.0)) > 0.0)
+
+
+def _grad_active(sett):
+    """True if the merged-gradient DL prior is active (prior includes 'gradnet').
+
+    When active, the JTV z-update's analytic soft-threshold gain on the pooled
+    gradient magnitude is replaced by ``grad_prior.gain(m, rho)`` (one network
+    call per iteration, C-independent); the broadcast is left verbatim. With the
+    default ``grad_net='softthr'`` the learned gain == the analytic gain, so the
+    reconstruction is bit-for-bit identical to ``prior='mtv'`` (Phase 0 check).
+    """
+    return 'gradnet' in getattr(sett, 'prior', 'mtv')
+
+
+def _red_mu_channels(x, sett):
+    """Per-channel RED weights mu_c (single source of truth for the RHS, the AtA
+    operator and the reported RED energy, so all three stay consistent).
+
+    ``red_mu`` is DIMENSIONLESS when ``red_auto_scale`` (default): each channel's
+    weight is scaled to that channel's data-term precision, mu_c = red_mu *
+    sum_n tau[c][n]. Because tau = 1/noise_var (see _core.py), a global absolute
+    mu is dimensionally inconsistent with the data term (a footgun -- mu=1e-2 was
+    catastrophic); scaling by the data precision makes red_mu a fraction of the
+    data term, portable across intensity scales / noise levels / #observations.
+    With ``red_auto_scale=False`` the old absolute behaviour is used (mu_c=red_mu),
+    kept for reproducibility/ablation. Returns a list of python floats; all 0.0
+    when RED is inactive (so the classic MTV path is byte-identical)."""
+    if not _red_active(sett):
+        return [0.0] * len(x)
+    base = float(sett.red_mu)
+    # optional per-channel multiplier (e.g. down-weight RED on channels it does not
+    # help); None -> all ones. Length must match #channels.
+    w = getattr(sett, 'red_mu_weights', None)
+    def wt(c):
+        return float(w[c]) if w is not None else 1.0
+    if not getattr(sett, 'red_auto_scale', True):
+        return [base * wt(c) * _thick_taper(x, c, sett) for c in range(len(x))]
+    mus = []
+    for c in range(len(x)):
+        s_c = sum(float(x[c][n].tau) for n in range(len(x[c])))
+        mus.append(base * s_c * wt(c) * _thick_taper(x, c, sett))
+    return mus
+
+
+def _thick_factor(x, c):
+    """Per-channel slice-thickness factor = max over observations of the (low-res /
+    high-res) voxel-size ratio along the thick axis (po.ratio). 1.0 = isotropic."""
+    facs = []
+    for n in range(len(x[c])):
+        po = getattr(x[c][n], 'po', None)
+        r = getattr(po, 'ratio', None) if po is not None else None
+        if r is not None:
+            facs.append(float(max(float(v) for v in r)))
+    return max(facs) if facs else 1.0
+
+
+def _thick_factor_axes(x, c):
+    """Per-RECON-AXIS slice-thickness factor (3-vector) = elementwise MIN over observations of
+    po.ratio (the per-axis low/high voxel-size ratio, expressed in RECON voxel axes via the
+    mat_y\\mat_x affine, so it captures WHICH direction is through-plane -- e.g. a 0.5x0.5x6.5mm
+    stack reconstructed to iso -> [1,1,~13]). 1.0 along an axis = fully sampled there. Used for
+    DIRECTIONAL thickness conditioning (res_ch=3).
+
+    MIN, not max: the conditioning must describe how well the FUSED reconstruction constrains
+    each axis, and if ANY observation samples an axis finely, that axis IS well constrained.
+    Multi-orientation is the case that matters -- 3 orthogonal 6mm stacks give per-observation
+    ratios [6,1,1], [1,6,1], [1,1,6]; max would say [6,6,6] ("maximally degraded everywhere"),
+    which is exactly wrong and makes a conditioned prior over-restore (measured: T1 -0.48,
+    PD -1.45 dPSNR at 6mm with max). MIN gives [1,1,1] = well-sampled -> restore conservatively.
+    For a single observation min == max, so single-stack behaviour is unchanged."""
+    axes = None
+    for n in range(len(x[c])):
+        po = getattr(x[c][n], 'po', None)
+        r = getattr(po, 'ratio', None) if po is not None else None
+        if r is not None:
+            vals = [float(v) for v in r]
+            axes = vals if axes is None else [min(a, b) for a, b in zip(axes, vals)]
+    return axes if axes is not None else [1.0, 1.0, 1.0]
+
+
+def _red_res_channels(x, denoiser):
+    """Per-channel normalised slice-thickness for a thickness-conditioned denoiser, mapped to
+    [0,1] by the trained denominator (thick_max-1). None per channel if the backend is not
+    thickness-conditioned (backward compatible). If the backend takes 3 res channels (res_ch=3)
+    the value is a per-recon-axis 3-vector (DIRECTIONAL: tells the net which axis is through-
+    plane); otherwise a single scalar = the max ratio (legacy isotropic conditioning)."""
+    backend = getattr(denoiser, 'backend', None)
+    if not getattr(backend, 'is_res', False):
+        return [None] * len(x)
+    # denominator = trained (thick_max - 1); read from the backend so an extended-range model
+    # (e.g. thick_max=16 for 0.5x0.5x6.5mm-style ~13x anisotropy) maps thickness -> [0,1]
+    # consistently with how it was trained. Defaults to 7.0 (legacy thick_max=8 models).
+    denom = float(getattr(backend, 'res_denom', 7.0))
+    # DIAGNOSTIC/TUNING knob: scale the conditioning fed to the net. The model was trained (before
+    # red_nullspace existed) to restore CONSERVATIVELY when res is high, to avoid hallucination.
+    # With the null-space restriction now protecting measured bands, that conservatism may be
+    # obsolete and cost real detail on thick/coarse axes. red_res_scale<1 tells the net the input
+    # is LESS degraded than it is -> restore more aggressively. 1.0 = truthful (default).
+    rscale = float(getattr(denoiser, '_red_res_scale', 1.0))
+    norm = lambda f: min(max(rscale * (f - 1.0) / denom, 0.0), 1.0)
+    if int(getattr(backend, 'res_ch', 1)) >= 3:               # directional per-axis conditioning
+        return [[norm(a) for a in _thick_factor_axes(x, c)] for c in range(len(x))]
+    return [norm(_thick_factor(x, c)) for c in range(len(x))]  # legacy isotropic scalar
+
+
+def _thick_taper(x, c, sett):
+    """Resolution-adaptive strength: taper the DL prior toward 0 as the slice thickness
+    exceeds the regime where it is validated to HELP (~<=4 vox). Beyond ~red_thick_zero
+    the learned prior hallucinates in the forward operator's null space and would REDUCE
+    quality; fading it out there guarantees the prior never hurts on very thick slices
+    (falls back to pure MTV) while keeping the gains at 2-4mm. Uses the acquisition
+    geometry UniRes already knows (po.ratio). Off by default (red_thick_taper)."""
+    if not getattr(sett, 'red_thick_taper', False):
+        return 1.0
+    t = _thick_factor(x, c)
+    full = float(getattr(sett, 'red_thick_full', 4.0))
+    zero = float(getattr(sett, 'red_thick_zero', 7.0))
+    if t <= full:
+        return 1.0
+    if t >= zero:
+        return 0.0
+    return (zero - t) / (zero - full)
+
+
+def _blur1d(dat, sigma, axis):
+    """Separable Gaussian blur along one spatial axis of a 3D tensor."""
+    if sigma <= 0.05:
+        return dat
+    r = max(1, int(3 * sigma + 0.5))     # NB: `round` here is nitorch's tensor round, not builtin
+    c = torch.arange(-r, r + 1, device=dat.device, dtype=dat.dtype)
+    k = torch.exp(-(c ** 2) / (2 * sigma * sigma)); k = k / k.sum()
+    shp = [1, 1, 1, 1, 1]; shp[2 + axis] = k.numel()
+    pad = [0] * 6; pad[2 * (2 - axis)] = r; pad[2 * (2 - axis) + 1] = r
+    v = F.pad(dat[None, None], pad, mode='replicate')
+    return F.conv3d(v, k.view(shp))[0, 0]
+
+
+def _nullspace_restrict(d, y_dat, axes_ratio, beta):
+    """NULL-SPACE-RESTRICTED RED: keep only the part of the denoiser's correction that the DATA
+    does not already constrain.
+
+    The forward operator measures, along each recon axis, frequencies up to Nyquist/ratio. Letting
+    the prior rewrite those MEASURED bands is what blurs real structure -- the mechanism behind the
+    observed dPSNR>0 / dSSIM<0 split (PSNR likes the smoothing, SSIM punishes it). Here the
+    correction (d - y) is split into a measured (low-pass, per-axis cutoff set by that axis's
+    ratio) and an unmeasured (null-space) part, and the measured part is attenuated by `beta`:
+
+        d' = y + (corr - beta * lowpass(corr))
+
+    beta=0 -> unchanged (classic RED). beta=1 -> the prior may ONLY synthesise detail the data
+    cannot see. Note the measured band is not attenuated to zero at beta<1 on purpose: the data
+    are NOISY, so some prior influence in measured bands is legitimately useful (denoising).
+    For a fully-sampled axis (ratio 1) the low-pass is near-identity, so the whole correction is
+    attenuated by beta -- i.e. the prior falls back to gentle denoising, which is correct."""
+    corr = d - y_dat
+    low = corr
+    for ax in range(3):
+        r = float(axes_ratio[ax]) if ax < len(axes_ratio) else 1.0
+        low = _blur1d(low, max(r / 3.14159, 0.3), ax)
+    return y_dat + corr - float(beta) * low
+
+
+def _red_sigma_at(sett, n_iter):
+    """RED denoiser sigma for ADMM iteration ``n_iter``, with optional annealing
+    from ``red_sigma`` -> ``red_sigma_end`` (geometric over max_iter).
+
+    Annealing = denoise STRONGLY early (removes reconstruction noise) and GENTLY
+    late (preserves converged detail) -- the standard Plug-and-Play / RED
+    continuation. It avoids the denoiser over-smoothing as the recon converges,
+    which otherwise costs PSNR on low-contrast channels (e.g. PD). Dataset-agnostic.
+    ``red_sigma_end`` unset -> constant ``red_sigma`` (behaviour unchanged)."""
+    s0 = float(sett.red_sigma)
+    s1 = getattr(sett, 'red_sigma_end', None)
+    if s1 is None:
+        return s0
+    s1 = float(s1)
+    m = max(1, int(getattr(sett, 'max_iter', 1)) - 1)
+    t = min(max(int(n_iter), 0), m) / m
+    if s0 > 0 and s1 > 0:
+        return float(s0 * (s1 / s0) ** t)     # geometric
+    return float(s0 * (1.0 - t) + s1 * t)      # linear fallback
+
+
+def _red_sigma_channels(x, y, sett, n_iter):
+    """Per-channel RED denoiser sigma.
+
+    ``red_sigma_auto`` (recommended): sigma_c is DRIVEN BY UNIRES'S NOISE ESTIMATE --
+    sigma_c = red_sigma_scale * sd_c / robust_scale(y_c) (the input noise std in the
+    denoiser's standardised units), where sd_c is the estimated per-channel noise
+    (x[c][n].sd). This makes the DL prior AUTO-ADAPT to any input noise level, exactly
+    like MTV does via tau: a clean channel -> sigma~0 -> the bias-free denoiser barely
+    touches it (no over-smoothing); a noisy channel -> larger sigma -> denoised more.
+    Otherwise every channel uses the constant/annealed scalar red_sigma (_red_sigma_at)."""
+    if not getattr(sett, 'red_sigma_auto', False):
+        s = _red_sigma_at(sett, n_iter)
+        return [s] * len(x)
+    from ._denoiser import _robust_scale
+    mult = float(getattr(sett, 'red_sigma_scale', 1.0))
+    out = []
+    for c in range(len(x)):
+        sd_c = sum(float(x[c][n].sd) for n in range(len(x[c]))) / max(1, len(x[c]))
+        scl = float(_robust_scale(y[c].dat).clamp_min(1e-8))
+        out.append(min(max(mult * sd_c / scl, 1e-4), 0.5))  # clamp to a sane range
+    return out
+
+
 def _precond(x, y, rho, sett):
     """Compute CG preconditioner.
 
@@ -102,7 +312,7 @@ def _precond(x, y, rho, sett):
     return precond
 
 
-def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
+def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None, grad_prior=None):
     """
 
 
@@ -114,6 +324,46 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
     one = torch.tensor(1, dtype=torch.float32, device=sett.device)
     # Over/under-relaxation parameter
     alpha = torch.tensor(sett.alpha, device=sett.device, dtype=torch.float32)
+
+    # RED denoiser-prior (issue: DL prior). Inactive unless prior includes 'red', mu>0
+    # and a denoiser was built -> then the classic MTV path below is byte-identical.
+    red = _red_active(sett) and denoiser is not None
+    mu_ch = _red_mu_channels(x, sett) if red else [0.0] * len(x)
+    d = None
+    y_old = None
+    nll_old = None
+    sig_ch = _red_sigma_channels(x, y, sett, n_iter) if red else [sett.red_sigma] * len(x)
+    if red:
+        # Denoised targets d_c = D_sigma_c(y_c^{(k)}) from the current iterate (held fixed
+        # within the solve; this is the RED half-quadratic / fixed-point step). sigma_c is
+        # per-channel and noise-adaptive when red_sigma_auto. A cross-channel backend uses
+        # the OTHER channels' edges as context (denoise_multi).
+        if getattr(denoiser.backend, 'is_cross', False):
+            d = denoiser.denoise_multi([y[c].dat for c in range(len(x))], sig_ch)
+        else:
+            res_ch = _red_res_channels(x, denoiser)
+            d = [denoiser.denoise(y[c].dat, sig_ch[c], res=res_ch[c]) for c in range(len(x))]
+        _beta = float(getattr(sett, 'red_nullspace', 0.0))
+        if _beta > 0:                       # restrict the prior to the operator's null space
+            d = [_nullspace_restrict(d[c], y[c].dat, _thick_factor_axes(x, c), _beta)
+                 for c in range(len(x))]
+        if sett.red_linesearch:
+            y_old = [y[c].dat.clone() for c in range(len(x))]
+            nll_old = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch, grad_prior=grad_prior)[0]
+
+    # Merged-gradient DL prior monotonicity guard. A LEARNED (spatial-CNN) gain is a
+    # plug-and-play operator, not a prox, so -- unlike the analytic softthr/charbonnier
+    # gains -- it can make the reported objective increase. When grad_linesearch is on
+    # (and the gain is learned) we save the pre-update iterate + objective and, after the
+    # y-update, backtrack so the reported objective is non-increasing (same guard as the
+    # RED path). Analytic gains keep an explicit energy and need no guard.
+    grad = _grad_active(sett) and grad_prior is not None
+    grad_guard = (grad and getattr(sett, 'grad_linesearch', False)
+                  and getattr(grad_prior, 'backend', None) is not None
+                  and getattr(grad_prior.backend, 'is_learned', False))
+    if grad_guard and y_old is None:
+        y_old = [y[c].dat.clone() for c in range(len(x))]
+        nll_old = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch, grad_prior=grad_prior)[0]
 
     # ----------
     # UPDATE: y
@@ -127,10 +377,15 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
             tmp += x[c][n].tau * _proj('At', x[c][n].dat, x[c], y[c], method=sett.method, do=sett.do_proj,
                                       n=n, bound=sett.bound, interpolation=sett.interpolation)
 
-        # Divergence
+        # Divergence (MTV prior RHS term)
         div = w[c, ...] - rho * z[c, ...]
         div = im_divergence(div, vx=vx_y, bound=sett.bound, which=sett.diff)
         tmp -= y[c].lam * div
+
+        # RED prior RHS term (+ mu_c * d_c); mu_c=0 leaves the classic RHS unchanged
+        mu = mu_ch[c]
+        if mu:
+            tmp += mu * d[c]
 
         # Get CG preconditioner
         # precond = _precond(x[c], y[c], rho, sett)
@@ -138,7 +393,7 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
 
         # Invert y = lhs\tmp by conjugate gradients
         lhs = lambda dat: _proj('AtA', dat, x[c], y[c], method=sett.method, do=sett.do_proj, rho=rho,
-                               vx_y=vx_y, bound=sett.bound, interpolation=sett.interpolation, diff=sett.diff)
+                               mu=mu, vx_y=vx_y, bound=sett.bound, interpolation=sett.interpolation, diff=sett.diff)
         cg(A=lhs, b=tmp, x=y[c].dat,
            verbose=sett.cgs_verbose,
            max_iter=sett.cgs_max_iter,
@@ -152,33 +407,121 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett):
     _ = _print_info('fit-done', sett, t0)  # PRINT
 
     # ----------
+    # DL-prior monotonicity guard: backtracking line search on the reported objective, so
+    # a DL prior (RED denoiser OR a learned merged-gradient gain) can never make the
+    # displayed objective increase within an iteration.
+    # ----------
+    if (red and sett.red_linesearch) or grad_guard:
+        y_new = [y[c].dat.clone() for c in range(len(x))]
+        if getattr(sett, 'red_ls_perchannel', False) and len(x) > 1:
+            # PER-CHANNEL (coordinate) backtracking: each channel independently takes
+            # the largest step in {1,1/2,...} that does not increase the FULL objective;
+            # else a null step for that channel. The global (common-t) line-search drags
+            # every channel by the step that is best for the SUM, which can push a
+            # channel the DL prior does not help (e.g. high-contrast T1) the wrong way.
+            # Coordinate backtracking lets such a channel stay put while others improve,
+            # so all channels improve-or-hold. Still monotone (objective only decreases).
+            for c in range(len(x)):
+                y[c].dat = y_old[c]
+            base = nll_old
+            for c in range(len(x)):
+                t, accepted = 1.0, False
+                for _ in range(6):
+                    y[c].dat = (1.0 - t) * y_old[c] + t * y_new[c]
+                    nll_c = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch, grad_prior=grad_prior)[0]
+                    if nll_c <= base + 1e-9:
+                        base, accepted = nll_c, True
+                        break
+                    t *= 0.5
+                if not accepted:
+                    y[c].dat = y_old[c]
+        else:
+            # GLOBAL backtracking: one common step t for all channels.
+            nll_new = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch, grad_prior=grad_prior)[0]
+            t = 1.0
+            n_ls = 0
+            while nll_new > nll_old and n_ls < 6:
+                t *= 0.5
+                n_ls += 1
+                for c in range(len(x)):
+                    y[c].dat = (1.0 - t) * y_old[c] + t * y_new[c]
+                nll_new = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch, grad_prior=grad_prior)[0]
+            if nll_new > nll_old:
+                # No acceptable step found -> null step (revert), objective non-increasing.
+                for c in range(len(x)):
+                    y[c].dat = y_old[c]
+
+    # ----------
     # Compute model objective function
     # ----------
     if sett.tolerance > 0:
-        obj[n_iter, 0], obj[n_iter, 1], obj[n_iter, 2] = _compute_nll(x, y, sett, rho)  # nl_pyx, nl_pxy, nl_py
+        obj[n_iter, 0], obj[n_iter, 1], obj[n_iter, 2] = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch, grad_prior=grad_prior)  # nl_pyx, nl_pxy, nl_py
 
     # ----------
-    # UPDATE: z
+    # UPDATE: z  (JTV proximal / vectorial soft-threshold on the gradient field Dy)
     # ----------
+    # TODO (future direction -- learned gradient-domain prior, a.k.a. "learned TV"):
+    #   This z-update IS the proximal/MAP denoiser of the image-gradient field Dy under a
+    #   Laplacian (L1) prior. It could be replaced by a *purpose-trained* CNN that denoises
+    #   gradient fields, i.e. a learned prior on natural-image gradient statistics richer
+    #   than L1 -- the gradient-domain analogue of the RED image-domain prior.
+    #   IMPORTANT: do NOT drop a standard *image* denoiser (e.g. the DRUNet used by the RED
+    #   path in the y-update) in here. An image denoiser encodes p(image), not p(gradient);
+    #   applied to Dy it is a domain mismatch and produces garbage. A gradient prior needs
+    #   its OWN vector-field denoiser trained on image gradients (caveats: no off-the-shelf
+    #   weights; it is multi-channel/vector-valued; and it re-opens the monotonicity
+    #   question). Cf. the image-domain RED term in the y-update above (+mu*d_c on the RHS,
+    #   +mu*I in _proj 'AtA'), which is why RED lives in the y-update and not here.
     if alpha != 1:  # Use over/under-relaxation
         z_old = z.clone()
     t0 = _print_info('fit-update', sett, 'z', n_iter)  # PRINT
-    tmp[:] = 0
-    for c in range(len(x)):
-        Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
-        if alpha != 1:  # Use over/under-relaxation
-            Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
-        tmp += torch.sum((w[c, ...] / rho + Dy) ** 2, dim=0)
-    tmp.sqrt_()  # in-place
-    tmp = ((tmp - one / rho).clamp_min(0)) / (tmp + tiny)
+    # grad_apply='perdir' (K=3): keep the 3 gradient DIRECTIONS separate (pool only over
+    # CHANNELS) so the learned gain sees gradient direction/structure the scalar pooled
+    # magnitude discards -- still ONE net call/iter and C-independent (pooling is over
+    # channels). Only for a LEARNED gain; softthr/charbonnier/mtv keep the scalar path
+    # below byte-identical.
+    perdir = (grad and getattr(sett, 'grad_apply', 'magnitude') == 'perdir'
+              and getattr(grad_prior.backend, 'is_learned', False))
+    if perdir:
+        md2 = None
+        for c in range(len(x)):
+            Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
+            if alpha != 1:
+                Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
+            v = w[c, ...] / rho + Dy                      # [3, D, H, W]
+            md2 = v ** 2 if md2 is None else md2 + v ** 2
+        m_dir = md2.sqrt()                                # [3, D, H, W] per-direction merged magnitude
+        gain_dir = grad_prior.gain(m_dir, rho, tiny)      # [3, D, H, W] per-direction gain (clamped)
+        for c in range(len(x)):
+            Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
+            if alpha != 1:
+                Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
+            z[c, ...] = gain_dir * (w[c, ...] / rho + Dy)  # per-direction gain, broadcast over channels
+        _ = _print_info('fit-done', sett, t0)  # PRINT
+    else:
+        tmp[:] = 0
+        for c in range(len(x)):
+            Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
+            if alpha != 1:  # Use over/under-relaxation
+                Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
+            tmp += torch.sum((w[c, ...] / rho + Dy) ** 2, dim=0)
+        tmp.sqrt_()  # in-place  -> tmp is now the merged (channel-pooled) magnitude m
+        # Merged-gradient DL prior (issue: DL prior): replace the analytic soft-threshold
+        # gain on m with a learned/generalized gain -- ONE network call per iteration,
+        # C-independent. grad_net='softthr' returns the exact analytic gain, so this is
+        # bit-for-bit identical to the classic path below (Phase 0 equivalence check).
+        if grad:
+            tmp = grad_prior.gain(tmp, rho, tiny)
+        else:
+            tmp = ((tmp - one / rho).clamp_min(0)) / (tmp + tiny)
 
-    for c in range(len(x)):
-        Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
-        if alpha != 1:  # Use over/under-relaxation
-            Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
-        for d in range(Dy.shape[0]):
-            z[c, d, ...] = tmp * (w[c, d, ...] / rho + Dy[d, ...])
-    _ = _print_info('fit-done', sett, t0)  # PRINT
+        for c in range(len(x)):
+            Dy = y[c].lam * im_gradient(y[c].dat, vx=vx_y, bound=sett.bound, which=sett.diff)
+            if alpha != 1:  # Use over/under-relaxation
+                Dy = alpha * Dy + (one - alpha) * z_old[c, ...]
+            for d in range(Dy.shape[0]):
+                z[c, d, ...] = tmp * (w[c, d, ...] / rho + Dy[d, ...])
+        _ = _print_info('fit-done', sett, t0)  # PRINT
 
     # ----------
     # UPDATE: w
@@ -393,7 +736,8 @@ def _update_scaling(x, y, sett, max_niter_gn=1, num_linesearch=4, verbose=0):
     return x, sll
 
 
-def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64):
+def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64, denoiser=None, red_sigma=None,
+                 grad_prior=None):
     """ Compute negative model log-likelihood.
 
     Args:
@@ -421,10 +765,41 @@ def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64):
             nll_y += torch.sum(Dy ** 2, dim=0)
         else:
             nll_y = torch.sum(Dy ** 2, dim=0)
-    # Neg. log-prior term
-    nll_y = torch.sum(torch.sqrt(nll_y), dtype=sum_dtype)
+    # Neg. log-prior term. Classic JTV/L1 energy = sum_v m_v (m = per-voxel merged
+    # magnitude). An explicit-energy merged-gradient prior (e.g. grad_net='charbonnier')
+    # replaces sum_v m_v with sum_v Phi(m_v) so the reported objective is the true
+    # optimized (monotone-descending) energy; softthr/mtv/red keep the L1 energy exactly.
+    m_pool = torch.sqrt(nll_y)  # per-voxel merged gradient magnitude (includes lam)
+    if grad_prior is not None and _grad_active(sett) and getattr(grad_prior, 'has_energy', False):
+        nll_y = torch.sum(grad_prior.energy(m_pool, rho), dtype=sum_dtype)
+    else:
+        nll_y = torch.sum(m_pool, dtype=sum_dtype)
 
-    return nll_xy + nll_y, nll_xy, nll_y
+    # RED denoiser-prior energy: (mu/2) * sum_c <y_c, y_c - D(y_c)>. Folded into the
+    # reported total (column 0) so the convergence/monotonicity oracle reflects the
+    # true optimized objective. Columns 1,2 (data, MTV-prior) are left unchanged.
+    total = nll_xy + nll_y
+    if denoiser is not None and _red_active(sett):
+        mu_ch = _red_mu_channels(x, sett)  # same per-channel weights as the y-update
+        sig = sett.red_sigma if red_sigma is None else red_sigma  # scalar or per-channel list
+        sig_list = [sig[c] if isinstance(sig, (list, tuple)) else sig for c in range(len(x))]
+        if getattr(denoiser.backend, 'is_cross', False):
+            d_all = denoiser.denoise_multi([y[c].dat for c in range(len(x))], sig_list)
+        else:
+            res_list = _red_res_channels(x, denoiser)
+            d_all = [denoiser.denoise(y[c].dat, sig_list[c], res=res_list[c]) for c in range(len(x))]
+        _beta = float(getattr(sett, 'red_nullspace', 0.0))
+        if _beta > 0:      # MUST match the y-update's target, else the line-search is inconsistent
+            d_all = [_nullspace_restrict(d_all[c], y[c].dat, _thick_factor_axes(x, c), _beta)
+                     for c in range(len(x))]
+        nll_red = torch.tensor(0, device=sett.device, dtype=torch.float64)
+        for c in range(len(x)):
+            if not mu_ch[c]:
+                continue
+            nll_red += 0.5 * mu_ch[c] * torch.sum(y[c].dat * (y[c].dat - d_all[c]), dtype=sum_dtype)
+        total = total + nll_red
+
+    return total, nll_xy, nll_y
 
 
 def _even_odd(dat, which, dim):

@@ -7,7 +7,11 @@ from unires.run import preproc
 def _preproc(pth, atlas_rigid, common_output, denoising, device, dir_out, fov, label_file,
              label_channel_index, label_repeat_index, linear, plot_conv, prefix,
              print_info, reg_scl, res_origin, scale, sched, show_hyperpar, show_jtv,
-             tolerance, unified_rigid, vx, write_out, ct, crop):
+             tolerance, unified_rigid, vx, write_out, ct, crop,
+             prior='mtv', red_mu=0.0, red_sigma=0.05, red_denoiser='gaussian',
+             red_linesearch=True,
+             grad_net='softthr', grad_form='pointwise', grad_weights=None,
+             grad_sigma=0.05, grad_scale=1.0, grad_linesearch=True):
     """Fit UniRes model from the command line.
 
     Returns
@@ -45,6 +49,17 @@ def _preproc(pth, atlas_rigid, common_output, denoising, device, dir_out, fov, l
     s.fov = fov
     s.ct = ct
     s.crop = crop
+    s.prior = prior
+    s.red_mu = red_mu
+    s.red_sigma = red_sigma
+    s.red_denoiser = red_denoiser
+    s.red_linesearch = red_linesearch
+    s.grad_net = grad_net
+    s.grad_form = grad_form
+    s.grad_weights = grad_weights
+    s.grad_sigma = grad_sigma
+    s.grad_scale = grad_scale
+    s.grad_linesearch = grad_linesearch
     if linear:
         s.max_iter = 0    
     if denoising:
@@ -243,6 +258,83 @@ def run():
     parser.add_argument('--no-write_out', dest='write_out',
                         action='store_false')
     parser.set_defaults(write_out=s.write_out)
+    #
+    parser.add_argument("--prior",
+                        type=str,
+                        default=s.prior,
+                        choices=['mtv', 'red', 'mtv+red', 'mtv+gradnet'],
+                        help="Image prior: 'mtv' | 'red' | 'mtv+red' | 'mtv+gradnet' "
+                             "[default=" + str(s.prior) + "].")
+    #
+    parser.add_argument("--red_mu",
+                        type=float,
+                        default=s.red_mu,
+                        help="RED denoiser-prior weight (mu); 0 disables the DL term "
+                             "[default=" + str(s.red_mu) + "].")
+    #
+    parser.add_argument("--red_sigma",
+                        type=float,
+                        default=s.red_sigma,
+                        help="RED denoiser strength (standardised noise level) "
+                             "[default=" + str(s.red_sigma) + "].")
+    #
+    parser.add_argument("--red_denoiser",
+                        type=str,
+                        default=s.red_denoiser,
+                        choices=['gaussian', 'drunet'],
+                        help="Denoiser backend: 'gaussian' | 'drunet' [default=" +
+                             str(s.red_denoiser) + "].")
+    #
+    parser.add_argument("--red_linesearch",
+                        action='store_true',
+                        help="Line search to keep the objective monotone [default=" +
+                             str(s.red_linesearch) + "].")
+    parser.add_argument('--no-red_linesearch', dest='red_linesearch',
+                        action='store_false')
+    parser.set_defaults(red_linesearch=s.red_linesearch)
+    #
+    parser.add_argument("--grad_net",
+                        type=str,
+                        default=s.grad_net,
+                        choices=['softthr', 'charbonnier', 'unet', 'dncnn'],
+                        help="Merged-gradient prior gain: 'softthr' (== classic MTV) | "
+                             "'charbonnier' | 'unet' | 'dncnn' [default=" +
+                             str(s.grad_net) + "].")
+    #
+    parser.add_argument("--grad_form",
+                        type=str,
+                        default=s.grad_form,
+                        choices=['pointwise', 'cnn', 'structure'],
+                        help="Merged-gradient gain support: 'pointwise' | 'cnn' | "
+                             "'structure' [default=" + str(s.grad_form) + "].")
+    #
+    parser.add_argument("--grad_weights",
+                        type=str,
+                        default=s.grad_weights,
+                        help="Path to grad-net weights (None -> untrained/default) "
+                             "[default=" + str(s.grad_weights) + "].")
+    #
+    parser.add_argument("--grad_sigma",
+                        type=float,
+                        default=s.grad_sigma,
+                        help="Learned grad-gain noise level (standardised units); "
+                             "analytic gains ignore it [default=" +
+                             str(s.grad_sigma) + "].")
+    #
+    parser.add_argument("--grad_scale",
+                        type=float,
+                        default=s.grad_scale,
+                        help="Charbonnier edge-preserving knee (grad_net='charbonnier'); "
+                             "0 -> classic JTV, larger -> gentler on weak gradients "
+                             "[default=" + str(s.grad_scale) + "].")
+    #
+    parser.add_argument("--grad_linesearch",
+                        action='store_true',
+                        help="Line search to keep the reported objective monotone for "
+                             "PnP grad-nets [default=" + str(s.grad_linesearch) + "].")
+    parser.add_argument('--no-grad_linesearch', dest='grad_linesearch',
+                        action='store_false')
+    parser.set_defaults(grad_linesearch=s.grad_linesearch)
     #
     args = parser.parse_args()
     # Run UniRes

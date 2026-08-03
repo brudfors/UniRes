@@ -51,8 +51,8 @@ def _check_adjoint(po, method, bound, interpolation, dtype=torch.float32):
     print('<Ay, x> - <Atx, y> = {}'.format(val))
 
 
-def _proj(operator, dat, x, y, method='super-resolution', do=True, 
-          rho=1, n=0, vx_y=None,
+def _proj(operator, dat, x, y, method='super-resolution', do=True,
+          rho=1, n=0, vx_y=None, mu=0.0,
          interpolation='linear', bound='zero', diff='forward'):
     """ Projects image data by A, At or AtA.
 
@@ -62,6 +62,7 @@ def _proj(operator, dat, x, y, method='super-resolution', do=True,
         rho (torch.Tensor): ADMM step size, defaults to 1.
         n (int): Observation index, defaults to 0.
         vx_y (tuple(float)): Output voxel size.
+        mu (float): RED denoiser-prior weight; adds mu*I to AtA (0 = disabled).
         bound (str, optional): Bound for gradient/divergence calculation, defaults to
             constant zero.
         diff (str, optional): Gradient difference operator, defaults to 'forward'.
@@ -74,7 +75,7 @@ def _proj(operator, dat, x, y, method='super-resolution', do=True,
         # AtA
         # (dat = y)
         if not do:  # return dat
-            operator = 'none'        
+            operator = 'none'
         dat = dat[None, None, ...]
         # sum likelihood terms
         dat_p = x[n].tau * _proj_apply(operator, dat, x[n].po, method=method,
@@ -85,6 +86,9 @@ def _proj(operator, dat, x, y, method='super-resolution', do=True,
         dat_p = dat_p[0, 0, ...]
         # add prior term
         dat_p += rho * y.lam ** 2 * _DtD(dat[0, 0, ...], vx_y=vx_y, bound=bound, diff=diff)
+        # add RED denoiser-prior term (mu*I); mu=0 leaves the classic operator unchanged
+        if mu:
+            dat_p += mu * dat[0, 0, ...]
     else:  
         # A, At
         # (dat = x or y)
