@@ -288,21 +288,73 @@ class Denoiser:
 # ----------------------------------------------------------------------------
 #: filename of the released SynthSeg-trained restoration prior
 RED_WEIGHTS_NAME = 'unires_red_synth_full.pt'
+#: GitHub release the weights are published in (see docs/dl_prior.md)
+RED_WEIGHTS_TAG = 'red-prior-v1'
+RED_WEIGHTS_URL = (f'https://github.com/brudfors/UniRes/releases/download/'
+                   f'{RED_WEIGHTS_TAG}/{RED_WEIGHTS_NAME}')
+#: sha256 of the released file; the download is rejected if it does not match
+RED_WEIGHTS_SHA256 = 'c356f6a749bf25406952a2892e799bc91b25f0463f3677039f62b6df1449f06b'
+#: where an auto-download is cached
+RED_WEIGHTS_CACHE = os.path.join(
+    os.environ.get('XDG_CACHE_HOME') or os.path.join(os.path.expanduser('~'), '.cache'),
+    'unires', RED_WEIGHTS_NAME)
 #: search order when ``red_weights`` is not given explicitly
 RED_WEIGHTS_SEARCH = (
     os.environ.get('UNIRES_RED_WEIGHTS'),                                  # 1. explicit env var
     os.path.join(os.path.dirname(__file__), 'weights', RED_WEIGHTS_NAME),  # 2. alongside package
-    os.path.join(os.path.expanduser('~'), '.cache', 'unires', RED_WEIGHTS_NAME),  # 3. user cache
+    RED_WEIGHTS_CACHE,                                                     # 3. user cache
 )
 
 
-def _resolve_red_weights(weights):
+def _sha256(path, chunk=1 << 20):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for blk in iter(lambda: f.read(chunk), b''):
+            h.update(blk)
+    return h.hexdigest()
+
+
+def _download_red_weights(dst=None, url=None, verbose=True):
+    """Fetch the released weights into the cache (stdlib only -- no new dependency).
+
+    Downloads to a temporary file and renames on success, so an interrupted download can
+    never leave a truncated checkpoint behind. The sha256 is verified when
+    ``RED_WEIGHTS_SHA256`` is set to a real digest.
+    """
+    import shutil
+    import urllib.request
+    dst = dst or RED_WEIGHTS_CACHE
+    url = url or RED_WEIGHTS_URL
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    tmp = dst + '.part'
+    if verbose:
+        print(f'UniRes: downloading RED prior weights\n  from {url}\n  to   {dst}', flush=True)
+    try:
+        with urllib.request.urlopen(url) as r, open(tmp, 'wb') as f:
+            shutil.copyfileobj(r, f)
+    except Exception as e:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise RuntimeError(
+            f'Could not download the RED prior weights from {url} ({e}). Download it manually '
+            f'and place it at {dst}, or set settings.red_weights / $UNIRES_RED_WEIGHTS.') from e
+    if RED_WEIGHTS_SHA256 and not RED_WEIGHTS_SHA256.endswith('0' * 16):
+        got = _sha256(tmp)
+        if got != RED_WEIGHTS_SHA256:
+            os.remove(tmp)
+            raise RuntimeError(f'Checksum mismatch for {url}: expected {RED_WEIGHTS_SHA256}, '
+                               f'got {got}. Refusing to use the file.')
+    os.replace(tmp, dst)
+    return dst
+
+
+def _resolve_red_weights(weights, download=True):
     """Locate the biasfree3d checkpoint.
 
-    An explicit path always wins. Otherwise search ``RED_WEIGHTS_SEARCH`` so a user who has
-    copied the released weights into the package dir or ``~/.cache/unires`` just works. The
-    error names every location tried, so a missing model is self-explanatory rather than a
-    bare "requires red_weights".
+    An explicit path always wins. Otherwise search ``RED_WEIGHTS_SEARCH`` (env var, next to
+    the package, user cache) and finally fetch the published release into the cache. Set
+    ``$UNIRES_NO_DOWNLOAD=1`` for offline use: the error then names every location tried.
     """
     if weights:
         if not os.path.isfile(weights):
@@ -315,10 +367,12 @@ def _resolve_red_weights(weights):
         tried.append(cand)
         if os.path.isfile(cand):
             return cand
+    if download and os.environ.get('UNIRES_NO_DOWNLOAD', '') not in ('1', 'true', 'True'):
+        return _download_red_weights()
     raise FileNotFoundError(
         "red_denoiser='biasfree3d' needs a checkpoint. Pass settings.red_weights=<path>, set "
-        "$UNIRES_RED_WEIGHTS, or copy the released weights to one of:\n  "
-        + "\n  ".join(tried))
+        "$UNIRES_RED_WEIGHTS, or place the released weights at one of:\n  "
+        + "\n  ".join(tried) + f"\nRelease: {RED_WEIGHTS_URL}")
 
 
 def make_denoiser(sett):

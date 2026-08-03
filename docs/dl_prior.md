@@ -23,15 +23,32 @@ y, mat, _ = preproc(data, s)
 
 ## Weights
 
-The checkpoint is ~150 MB and is **not** stored in the repository. `red_weights` is resolved as:
+The checkpoint is ~150 MB and is **not** stored in the repository — it is published as a
+**GitHub release asset** and downloaded on first use. `red_weights` is resolved as:
 
 1. `settings.red_weights` — an explicit path (always wins)
 2. `$UNIRES_RED_WEIGHTS`
 3. `unires/weights/unires_red_synth_full.pt` (next to the package)
-4. `~/.cache/unires/unires_red_synth_full.pt`
+4. `~/.cache/unires/unires_red_synth_full.pt` (or `$XDG_CACHE_HOME/unires/`)
+5. otherwise **download** the release asset into (4)
 
-Copy the released file into (3) or (4) and it is picked up automatically. If none is found the
-error names every location tried.
+The download uses only the standard library, writes to a `.part` file and renames on success
+(so an interrupted download cannot leave a truncated checkpoint), and verifies the sha256.
+Set `UNIRES_NO_DOWNLOAD=1` for offline/air-gapped use — resolution then fails with an error
+naming every location tried plus the release URL.
+
+```
+release : red-prior-v1
+asset   : unires_red_synth_full.pt
+sha256  : c356f6a749bf25406952a2892e799bc91b25f0463f3677039f62b6df1449f06b
+```
+
+To fetch it explicitly:
+
+```python
+from unires._denoiser import _download_red_weights
+_download_red_weights()          # -> ~/.cache/unires/unires_red_synth_full.pt
+```
 
 ## Validated defaults
 
