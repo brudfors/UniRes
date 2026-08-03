@@ -36,8 +36,8 @@ while true; do
     --out $SHM --iters $TARGET --sigma_max 0.05 --thick_max ${THICK_MAX:-8.0} --inplane_max ${INPLANE_MAX:-0.0} --blur_max 1.0 \
     --save_every ${SAVE_EVERY:-100} --val_every ${VAL_EVERY:-2000} --log_every 20 \
     --fixed_lr ${FIXED_LR:-0} --lr ${LR:-1e-4} --net ${NET:-biasfree3d} --grad_w 0.5 --res_cond ${RES_COND:-0} \
-    --op_consistent ${OP_CONSISTENT:-0} --recon_iters ${RECON_ITERS:-3} \
-    --realism ${REALISM:-0.0} --texture ${TEXTURE:-0.0} --zero_bg ${ZERO_BG:-0} --multi_ori ${MULTI_ORI:-0.0} --real_frac ${REAL_FRAC:-0.0} >> $LOG 2>&1 &
+    \
+    --realism ${REALISM:-0.0} --zero_bg ${ZERO_BG:-0} >> $LOG 2>&1 &
   PID=$!
   fi
   c=0

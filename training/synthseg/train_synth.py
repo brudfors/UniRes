@@ -134,29 +134,12 @@ def main():
     ap.add_argument("--inplane_max", type=float, default=0.0,
                     help="max isotropic blur sigma applied to the TARGET (in-plane resolution "
                          "variation, e.g. 0.5x0.5..1x1mm). 0 = fixed iso target (original).")
-    ap.add_argument("--op_consistent", type=int, default=0,
-                    help="form the net input with UniRes's OWN projector (A + SIRT recon) instead "
-                         "of trilinear thick-slice, so train/inference distributions match (PnP).")
-    ap.add_argument("--recon_iters", type=int, default=3,
-                    help="SIRT data-term iterations in the operator-consistent degrade (0 = pure "
-                         "adjoint back-projection; a few sharpen toward the least-squares solution).")
-    ap.add_argument("--texture", type=float, default=0.0,
-                    help="within-tissue multi-scale texture amplitude (0 = piecewise-constant GMM). "
-                         "Breaks the over-recoverable synth so the restorer doesn't hallucinate on real T1.")
 
 
-    ap.add_argument("--real_frac", type=float, default=0.0,
-                    help="fraction of batches drawn from REAL IXI instead of synth (HYBRID training). "
-                         "0 = pure synth. Real patches go through the SAME degradation, so the only "
-                         "difference is where the clean image comes from.")
-    ap.add_argument("--real_root", default="/workspace/data/ixi")
-    ap.add_argument("--real_holdout", type=int, default=8,
-                    help="exclude the LAST N subjects per contrast from real training data — these are "
-                         "the benchmark's eval subjects (bench_ixi_compare uses [-n:]). Prevents leakage.")
-    ap.add_argument("--multi_ori", type=float, default=0.0,
-                    help="probability of simulating a FUSED MULTI-ORIENTATION acquisition (2-3 crossed "
-                         "thick stacks averaged), with res set by the same min-aggregation used at "
-                         "inference. Teaches the prior the multi-stack regime UniRes is built for.")
+
+
+
+
     ap.add_argument("--realism", type=float, default=0.0,
                     help="coherent MULTI-SCALE intra-tissue structure amplitude (coarse gradients->fine "
                          "texture) for MRI-realistic appearance -> reconstruct recoverable real-T1 detail.")
@@ -200,42 +183,8 @@ def main():
             args.lr = 1e-4                  # -> halve the default LR for full-image stability
     torch.manual_seed(1234 + rank)
     bank = SynthLabelBank(args.labels, dev, patch=args.patch, zero_bg=int(args.zero_bg),
-                          texture=args.texture, realism=args.realism)
-    # HYBRID: optional REAL-IXI clean patches mixed into the synth stream. The real patches go
-    # through the SAME degradation as synth, so this isolates ONE variable: where the clean image
-    # comes from (synthetic GMM anatomy vs real MRI). Held-out eval subjects are excluded.
-    real_bank = None
-    if args.real_frac > 0:
-        import glob as _glob
-        from data import IXIPatches                      # training/data.py
-        ds = IXIPatches(args.real_root, patch=args.patch, gpu_aug=True, augment=False)
-        heldout = set()
-        for _c in ('T1', 'T2', 'PD'):
-            heldout.update(sorted(_glob.glob(f"{args.real_root}/{_c}/*.nii.gz"))[-args.real_holdout:])
-        before = len(ds.paths)
-        ds.paths = [p for p in ds.paths if p not in heldout]
-        print(f"HYBRID: real IXI patches {len(ds.paths)}/{before} volumes "
-              f"(held out {len(heldout)} eval subjects), real_frac={args.real_frac}", flush=True)
+                          realism=args.realism)
 
-        def real_bank(batch):                            # -> [B,1,P,P,P] clean, GPU, ~[0,1]
-            out = [torch.as_tensor(ds[int(torch.randint(len(ds), (1,)).item())][0]) for _ in range(batch)]
-            v = torch.stack(out).to(dev).float()
-            v = v if v.dim() == 5 else v[:, None]
-            return v.clamp_min(0.0)
-
-        def real_bank_full(size):                        # -> [1,1,D,D,D] WHOLE real volume
-            # full-image hybrid: load a random held-in IXI volume, standardise like the synth
-            # bank (robust [0,1]) and resample to the training cube.
-            from data import _load_standardized
-            p = ds.paths[int(torch.randint(len(ds.paths), (1,)).item())]
-            v = torch.as_tensor(_load_standardized(p)).to(dev).float()[None, None]
-            v = F.interpolate(v, size=(size, size, size), mode='trilinear', align_corners=False)
-            return v.clamp_min(0.0)
-
-    op_degrade = None
-    if args.op_consistent:
-        from op_degrade import op_degrade_batch     # operator-consistent (UniRes projector) input
-        op_degrade = lambda v, ax, fac: op_degrade_batch(v, ax, fac, recon_iters=args.recon_iters)
     if args.net == "basicunet":
         from unires._denoiser_net import BasicUNetRestore  # reference SynthSeg net
         net = BasicUNetRestore(in_ch=1, out_ch=1, res_cond=bool(args.res_cond)).to(dev)
@@ -298,11 +247,7 @@ def main():
     step = start_step
     while step < args.iters:
         # clean random-contrast source: WHOLE volume (full-image mode) or a batch of patches
-        if real_bank is not None and float(torch.rand(1).item()) < args.real_frac:
-            clean = (real_bank_full(args.full_size) if full   # HYBRID: real IXI clean volume/patch
-                     else real_bank(args.batch))
-        else:
-            clean = bank.sample_full(args.full_size) if full else bank.sample(args.batch)
+        clean = bank.sample_full(args.full_size) if full else bank.sample(args.batch)
         torch.cuda.synchronize()   # serialize the random-size synth/degrade ops: leaving
         # sample+degrade+forward concurrently in-flight intermittently WEDGES a CUDA kernel
         # (stream never drains -> .item() blocks forever in cuMemcpyDtoHAsync). Per-phase
@@ -311,8 +256,7 @@ def main():
         noisy, target, s, res = batched_degrade(
             clean, _thick_slice_degrade, _gauss_blur3d,
             sigma_min=0.0, sigma_max=args.sigma_max, rician_prob=0.5,
-            blur_max=args.blur_max, thick_max=args.thick_max, inplane_max=args.inplane_max,
-            op_degrade=op_degrade, multi_ori=args.multi_ori)
+            blur_max=args.blur_max, thick_max=args.thick_max, inplane_max=args.inplane_max)
         torch.cuda.synchronize()
         with torch.autocast("cuda", dtype=torch.bfloat16):
             if full and args.grad_ckpt:

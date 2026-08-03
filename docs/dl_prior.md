@@ -99,9 +99,16 @@ See `training/synthseg/`. The validated recipe:
 --realism 1.0 --zero_bg 2 --fixed_lr 1 --lr 1e-4 --full_image 1 --full_size 192
 ```
 
-Ablations that did **not** pay off: operator-consistent degradation, within-tissue texture alone,
-multi-orientation training (helps crossed stacks, costs single-stack), and mixing in real data
-(`--real_frac`, neutral at best, harmful at high fractions).
+Ablations that did **not** pay off and are therefore **not** in the code: operator-consistent
+degradation (form the input with UniRes's own projector instead of trilinear thick-slicing — no
+measurable benefit); within-tissue texture alone (superseded by the multi-scale `realism` term);
+multi-orientation training (helps crossed stacks but costs single-stack quality); and mixing in
+real MRI (neutral at 25%, harmful at 50–100% — see below).
+
+Training a model on **100% real** data with this same architecture and degradation did *not*
+reproduce a real-data-trained prior's advantage on coarse-axis T1 (it was worse: −0.42 vs +1.00 dB
+at T1@4mm). That advantage therefore comes from that model's own architecture/training regime, not
+from real data — which is why the shipped prior is purely synthetic.
 
 ## Note on naming
 
