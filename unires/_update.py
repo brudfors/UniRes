@@ -137,13 +137,53 @@ def _thick_factor(x, c):
     return max(facs) if facs else 1.0
 
 
+def _thick_factor_axes(x, c):
+    """Per-RECON-AXIS slice-thickness factor (3-vector) = elementwise MIN over observations of
+    po.ratio (the per-axis low/high voxel-size ratio, expressed in RECON voxel axes via the
+    mat_y\\mat_x affine, so it captures WHICH direction is through-plane -- e.g. a 0.5x0.5x6.5mm
+    stack reconstructed to iso -> [1,1,~13]). 1.0 along an axis = fully sampled there. Used for
+    DIRECTIONAL thickness conditioning (res_ch=3).
+
+    MIN, not max: the conditioning must describe how well the FUSED reconstruction constrains
+    each axis, and if ANY observation samples an axis finely, that axis IS well constrained.
+    Multi-orientation is the case that matters -- 3 orthogonal 6mm stacks give per-observation
+    ratios [6,1,1], [1,6,1], [1,1,6]; max would say [6,6,6] ("maximally degraded everywhere"),
+    which is exactly wrong and makes a conditioned prior over-restore (measured: T1 -0.48,
+    PD -1.45 dPSNR at 6mm with max). MIN gives [1,1,1] = well-sampled -> restore conservatively.
+    For a single observation min == max, so single-stack behaviour is unchanged."""
+    axes = None
+    for n in range(len(x[c])):
+        po = getattr(x[c][n], 'po', None)
+        r = getattr(po, 'ratio', None) if po is not None else None
+        if r is not None:
+            vals = [float(v) for v in r]
+            axes = vals if axes is None else [min(a, b) for a, b in zip(axes, vals)]
+    return axes if axes is not None else [1.0, 1.0, 1.0]
+
+
 def _red_res_channels(x, denoiser):
-    """Per-channel normalised slice-thickness for a thickness-conditioned (res_map) denoiser
-    -- res_c = (thick_factor_c - 1)/7 clamped to [0,1] (matches training normalisation).
-    None per channel if the backend is not thickness-conditioned (backward compatible)."""
-    if not getattr(getattr(denoiser, 'backend', None), 'is_res', False):
+    """Per-channel normalised slice-thickness for a thickness-conditioned denoiser, mapped to
+    [0,1] by the trained denominator (thick_max-1). None per channel if the backend is not
+    thickness-conditioned (backward compatible). If the backend takes 3 res channels (res_ch=3)
+    the value is a per-recon-axis 3-vector (DIRECTIONAL: tells the net which axis is through-
+    plane); otherwise a single scalar = the max ratio (legacy isotropic conditioning)."""
+    backend = getattr(denoiser, 'backend', None)
+    if not getattr(backend, 'is_res', False):
         return [None] * len(x)
-    return [min(max((_thick_factor(x, c) - 1.0) / 7.0, 0.0), 1.0) for c in range(len(x))]
+    # denominator = trained (thick_max - 1); read from the backend so an extended-range model
+    # (e.g. thick_max=16 for 0.5x0.5x6.5mm-style ~13x anisotropy) maps thickness -> [0,1]
+    # consistently with how it was trained. Defaults to 7.0 (legacy thick_max=8 models).
+    denom = float(getattr(backend, 'res_denom', 7.0))
+    # DIAGNOSTIC/TUNING knob: scale the conditioning fed to the net. The model was trained (before
+    # red_nullspace existed) to restore CONSERVATIVELY when res is high, to avoid hallucination.
+    # With the null-space restriction now protecting measured bands, that conservatism may be
+    # obsolete and cost real detail on thick/coarse axes. red_res_scale<1 tells the net the input
+    # is LESS degraded than it is -> restore more aggressively. 1.0 = truthful (default).
+    rscale = float(getattr(denoiser, '_red_res_scale', 1.0))
+    norm = lambda f: min(max(rscale * (f - 1.0) / denom, 0.0), 1.0)
+    if int(getattr(backend, 'res_ch', 1)) >= 3:               # directional per-axis conditioning
+        return [[norm(a) for a in _thick_factor_axes(x, c)] for c in range(len(x))]
+    return [norm(_thick_factor(x, c)) for c in range(len(x))]  # legacy isotropic scalar
 
 
 def _thick_taper(x, c, sett):
@@ -163,6 +203,44 @@ def _thick_taper(x, c, sett):
     if t >= zero:
         return 0.0
     return (zero - t) / (zero - full)
+
+
+def _blur1d(dat, sigma, axis):
+    """Separable Gaussian blur along one spatial axis of a 3D tensor."""
+    if sigma <= 0.05:
+        return dat
+    r = max(1, int(3 * sigma + 0.5))     # NB: `round` here is nitorch's tensor round, not builtin
+    c = torch.arange(-r, r + 1, device=dat.device, dtype=dat.dtype)
+    k = torch.exp(-(c ** 2) / (2 * sigma * sigma)); k = k / k.sum()
+    shp = [1, 1, 1, 1, 1]; shp[2 + axis] = k.numel()
+    pad = [0] * 6; pad[2 * (2 - axis)] = r; pad[2 * (2 - axis) + 1] = r
+    v = F.pad(dat[None, None], pad, mode='replicate')
+    return F.conv3d(v, k.view(shp))[0, 0]
+
+
+def _nullspace_restrict(d, y_dat, axes_ratio, beta):
+    """NULL-SPACE-RESTRICTED RED: keep only the part of the denoiser's correction that the DATA
+    does not already constrain.
+
+    The forward operator measures, along each recon axis, frequencies up to Nyquist/ratio. Letting
+    the prior rewrite those MEASURED bands is what blurs real structure -- the mechanism behind the
+    observed dPSNR>0 / dSSIM<0 split (PSNR likes the smoothing, SSIM punishes it). Here the
+    correction (d - y) is split into a measured (low-pass, per-axis cutoff set by that axis's
+    ratio) and an unmeasured (null-space) part, and the measured part is attenuated by `beta`:
+
+        d' = y + (corr - beta * lowpass(corr))
+
+    beta=0 -> unchanged (classic RED). beta=1 -> the prior may ONLY synthesise detail the data
+    cannot see. Note the measured band is not attenuated to zero at beta<1 on purpose: the data
+    are NOISY, so some prior influence in measured bands is legitimately useful (denoising).
+    For a fully-sampled axis (ratio 1) the low-pass is near-identity, so the whole correction is
+    attenuated by beta -- i.e. the prior falls back to gentle denoising, which is correct."""
+    corr = d - y_dat
+    low = corr
+    for ax in range(3):
+        r = float(axes_ratio[ax]) if ax < len(axes_ratio) else 1.0
+        low = _blur1d(low, max(r / 3.14159, 0.3), ax)
+    return y_dat + corr - float(beta) * low
 
 
 def _red_sigma_at(sett, n_iter):
@@ -265,6 +343,10 @@ def _update_admm(x, y, z, w, rho, tmp, obj, n_iter, sett, denoiser=None, grad_pr
         else:
             res_ch = _red_res_channels(x, denoiser)
             d = [denoiser.denoise(y[c].dat, sig_ch[c], res=res_ch[c]) for c in range(len(x))]
+        _beta = float(getattr(sett, 'red_nullspace', 0.0))
+        if _beta > 0:                       # restrict the prior to the operator's null space
+            d = [_nullspace_restrict(d[c], y[c].dat, _thick_factor_axes(x, c), _beta)
+                 for c in range(len(x))]
         if sett.red_linesearch:
             y_old = [y[c].dat.clone() for c in range(len(x))]
             nll_old = _compute_nll(x, y, sett, rho, denoiser=denoiser, red_sigma=sig_ch, grad_prior=grad_prior)[0]
@@ -706,6 +788,10 @@ def _compute_nll(x, y, sett, rho, sum_dtype=torch.float64, denoiser=None, red_si
         else:
             res_list = _red_res_channels(x, denoiser)
             d_all = [denoiser.denoise(y[c].dat, sig_list[c], res=res_list[c]) for c in range(len(x))]
+        _beta = float(getattr(sett, 'red_nullspace', 0.0))
+        if _beta > 0:      # MUST match the y-update's target, else the line-search is inconsistent
+            d_all = [_nullspace_restrict(d_all[c], y[c].dat, _thick_factor_axes(x, c), _beta)
+                     for c in range(len(x))]
         nll_red = torch.tensor(0, device=sett.device, dtype=torch.float64)
         for c in range(len(x)):
             if not mu_ch[c]:
