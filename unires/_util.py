@@ -221,7 +221,7 @@ def _write_image(dat, fname, bids=False, mat=torch.eye(4), file=None,
         s = n.split('_')
         fname = os.path.join(p, '_'.join(s[:-1] + ['space-unires'] + [s[-1]]))
 
-    savef(dat, fname, like=file, affine=mat)
+    savef(dat, fname, like=file, affine=mat, dtype=dtype)
     if do_print:
         print(f"Output saved to: {fname}")
 

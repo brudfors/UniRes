@@ -640,7 +640,8 @@ def _write_data(x, y, sett, jtv=None):
                 pth_label = os.path.join(dir_out, prefix_y + 'label_' + nam)
                 label = y[c].label
                 _write_image(label, pth_label, bids=sett.bids, mat=mat,
-                             file=x[c][0].label[1], do_print=sett.do_print > 0)
+                             file=x[c][0].label[1], dtype=x[c][0].label[1].dtype,
+                             do_print=sett.do_print > 0)
         if c == 0:
             dat_y = dat[..., None].clone()
         else:
